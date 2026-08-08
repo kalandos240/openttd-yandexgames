@@ -118,9 +118,7 @@
       }
     }
 
-    if (JSON.stringify(snapshot).length > MAX_CLOUD_JSON) {
-      snapshot.save = null;
-    }
+    if (JSON.stringify(snapshot).length > MAX_CLOUD_JSON) snapshot.save = null;
     return snapshot;
   }
 
@@ -165,10 +163,7 @@
       const snapshot = await buildCloudSnapshot(FS, personalDir);
       const payload = {};
       payload[CLOUD_KEY] = snapshot;
-      if (JSON.stringify(payload).length > 200000) {
-        console.warn('OpenTTD cloud snapshot exceeds Yandex Games limit; save omitted.');
-        payload[CLOUD_KEY].save = null;
-      }
+      if (JSON.stringify(payload).length > 200000) payload[CLOUD_KEY].save = null;
       await player.setData(payload, true);
     } catch (e) {
       console.warn('OpenTTD cloud backup failed', e);
@@ -185,6 +180,20 @@
     clearTimeout(cloudTimer);
     cloudTimer = setTimeout(() => flushCloud(FS, personalDir), CLOUD_DEBOUNCE_MS);
   };
+
+  function setGamePlatformPaused(paused) {
+    try {
+      if (typeof Module !== 'undefined' && typeof Module._em_openttd_set_platform_pause === 'function') {
+        Module._em_openttd_set_platform_pause(paused ? 1 : 0);
+      }
+    } catch (e) {
+      console.warn('OpenTTD platform pause bridge failed', e);
+    }
+  }
+
+  function updatePlatformPause() {
+    setGamePlatformPaused(adOpen || !pageVisible);
+  }
 
   function currentMusicAudio() {
     try {
@@ -244,11 +253,13 @@
     gameplayAccumulatedMs = 0;
     lastAdAt = Date.now();
     adOpen = true;
+    updatePlatformPause();
     await setPlatformGameplay(false);
     suspendAudio();
 
     const finish = () => {
       adOpen = false;
+      updatePlatformPause();
       resumeAudio();
       setPlatformGameplay(gameplayActive);
     };
@@ -262,7 +273,6 @@
             console.warn('Yandex fullscreen ad failed', error);
             finish();
           },
-          onOffline: finish,
         }
       });
     } catch (e) {
@@ -296,6 +306,7 @@
 
   document.addEventListener('visibilitychange', () => {
     pageVisible = !document.hidden;
+    updatePlatformPause();
     if (!pageVisible) {
       setPlatformGameplay(false);
       suspendAudio();
@@ -307,21 +318,15 @@
 
   window.addEventListener('blur', () => {
     pageVisible = false;
+    updatePlatformPause();
     setPlatformGameplay(false);
     suspendAudio();
   });
 
   window.addEventListener('focus', () => {
     pageVisible = !document.hidden;
+    updatePlatformPause();
     resumeAudio();
     setPlatformGameplay(gameplayActive);
-  });
-
-  sdkReady.then(ysdk => {
-    try {
-      if (ysdk && ysdk.features && ysdk.features.LoadingAPI && typeof ysdk.features.LoadingAPI.ready === 'function') {
-        // The existing OpenTTD postRun hook calls ready() after WebAssembly startup.
-      }
-    } catch (e) {}
   });
 })();
