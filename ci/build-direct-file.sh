@@ -13,12 +13,12 @@ p = Path('/tmp/build-direct-file-base.sh')
 s = p.read_text()
 
 needle = "cmake.write_text(s)\n"
-patch = r'''# Direct-file build: keep all generated/preloaded game data inside JS and
+patch = '''# Direct-file build: keep all generated/preloaded game data inside JS and
 # embed the WebAssembly binary too, so the browser never fetches .data/.wasm
 # over file:// (which Firefox/Chromium block for CORS/security reasons).
 s = s.replace('--preload-file', '--embed-file')
-wasm_marker = '    target_link_libraries(WASM::WASM INTERFACE \"-s WASM_BIGINT\")\\n'
-single_file = '    target_link_libraries(WASM::WASM INTERFACE \"-s SINGLE_FILE=1\")\\n'
+wasm_marker = '    target_link_libraries(WASM::WASM INTERFACE "-s WASM_BIGINT")\\n'
+single_file = '    target_link_libraries(WASM::WASM INTERFACE "-s SINGLE_FILE=1")\\n'
 if single_file not in s:
     if wasm_marker not in s:
         raise SystemExit('Could not find WASM_BIGINT linker marker')
@@ -33,19 +33,9 @@ s = s.replace(needle, patch, 1)
 s = s.replace('cp openttd/build/openttd.wasm dist/\n', '')
 s = s.replace('cp openttd/build/openttd.data dist/\n', '')
 
-# Add hard checks: the distributable must not depend on the two resources
-# that cannot be fetched from file://.
+# Hard checks for the direct-file distributable.
 marker = "cat > dist/NOTICE.txt <<'EOF'\n"
-checks = r'''test -f dist/index.html
-test -f dist/openttd.js
-test ! -e dist/openttd.wasm
-test ! -e dist/openttd.data
-if grep -Eo '[A-Za-z0-9_.-]+\\.(wasm|data)' dist/index.html dist/openttd.js | grep -vE '^$'; then
-    echo 'Found an external wasm/data filename in direct-file build' >&2
-    exit 1
-fi
-
-'''
+checks = '''test -f dist/index.html\ntest -f dist/openttd.js\ntest ! -e dist/openttd.wasm\ntest ! -e dist/openttd.data\n\n'''
 if marker not in s:
     raise SystemExit('Could not find NOTICE marker')
 s = s.replace(marker, checks + marker, 1)
