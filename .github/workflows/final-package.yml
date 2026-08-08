@@ -1,0 +1,23 @@
+name: Final OpenTTD Package
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+      - name: Build final package
+        run: bash ci/build-final.sh
+      - name: Upload final ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-final
+          path: openttd-yandexgames.zip
+          if-no-files-found: error
+          retention-days: 14
