@@ -12,8 +12,8 @@ jobs:
     steps:
       - name: Checkout port repository
         uses: actions/checkout@v4
-      - name: Build final package
-        run: bash ci/build-final.sh
+      - name: Build final package with FreeType
+        run: bash ci/build-final-freetype.sh
       - name: Upload final ZIP
         uses: actions/upload-artifact@v4
         with:
