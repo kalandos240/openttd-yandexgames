@@ -27,9 +27,8 @@ if needle not in s:
     raise SystemExit('Could not patch OpenTTD CMake mutation block')
 s = s.replace(needle, patch, 1)
 
-# On a file:// launch, some browsers do not expose persistent IndexedDB in a
-# usable way. Skip the IDBFS mount only for file:// so the game still starts;
-# HTTPS/Yandex keeps the normal persistent IDBFS path.
+# On file://, skip only the persistent IDBFS mount. The in-memory filesystem
+# remains usable, so OpenTTD can start normally. HTTPS/Yandex still uses IDBFS.
 needle = "pre.write_text(s)\n"
 patch = '''file_mount = "    FS.mount(IDBFS, {}, personal_dir);\\n"
 file_mount_replacement = """    if (typeof location !== 'undefined' && location.protocol === 'file:') {
@@ -50,9 +49,12 @@ s = s.replace(needle, patch, 1)
 # SINGLE_FILE + --embed-file intentionally produce no external .wasm/.data.
 s = s.replace('cp openttd/build/openttd.wasm dist/\n', '')
 s = s.replace('cp openttd/build/openttd.data dist/\n', '')
+# Depending on Emscripten output mode, SINGLE_FILE may inline JS into the HTML
+# or leave one JS file containing every subresource. Accept both layouts.
+s = s.replace('cp openttd/build/openttd.js dist/\n', '[ ! -f openttd/build/openttd.js ] || cp openttd/build/openttd.js dist/\n')
 
 marker = "cat > dist/NOTICE.txt <<'EOF'\n"
-checks = '''test -f dist/index.html\ntest -f dist/openttd.js\ntest ! -e dist/openttd.wasm\ntest ! -e dist/openttd.data\n\n'''
+checks = '''test -f dist/index.html\ntest ! -e dist/openttd.wasm\ntest ! -e dist/openttd.data\n\n'''
 if marker not in s:
     raise SystemExit('Could not find NOTICE marker')
 s = s.replace(marker, checks + marker, 1)
