@@ -17,13 +17,13 @@ jobs:
       - name: Checkout port repository
         uses: actions/checkout@v4
 
-      - name: Build direct-file package
-        run: bash ci/build-direct-file.sh
+      - name: Build Yandex Games release package
+        run: bash ci/build-yandex-release.sh
 
-      - name: Upload direct-file ZIP
+      - name: Upload Yandex Games ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-yandexgames-direct-file
+          name: openttd-yandexgames-yandex-release
           path: OpenTTD-YandexGames-Direct.zip
           if-no-files-found: error
           retention-days: 14
