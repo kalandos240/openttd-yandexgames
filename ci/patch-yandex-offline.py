@@ -16,6 +16,15 @@ def edit(rel, transform):
 
 
 def patch_source():
+    def patch_cmake(text):
+        old = '\\"_main\\", \\"_em_openttd_add_server\\"' 
+        new = '\\"_main\\", \\"_em_openttd_add_server\\", \\"_em_openttd_set_platform_pause\\"' 
+        if old not in text:
+            raise SystemExit('Could not find Emscripten exported functions list')
+        return text.replace(old, new, 1)
+
+    edit('CMakeLists.txt', patch_cmake)
+
     def patch_network(text):
         pattern = re.compile(
             r'void NetworkStartUp\(\)\n\{\n.*?\n\}\n\n/\*\* This shuts the network down \*/',
@@ -128,17 +137,12 @@ def patch_source():
     edit('src/fios_gui.cpp', patch_fios)
 
     def patch_settings(text):
-        # Keep the survey widget tree structurally intact, but make it permanently
-        # invisible. This is safer than deleting nested widget containers and also
-        # prevents the old first-run data-collection controls from ever being shown.
         survey_old = 'if constexpr (!NetworkSurveyHandler::IsSurveyPossible()) this->GetWidget<NWidgetStacked>(WID_GO_SURVEY_SEL)->SetDisplayedPlane(SZSP_NONE);'
         survey_new = 'this->GetWidget<NWidgetStacked>(WID_GO_SURVEY_SEL)->SetDisplayedPlane(SZSP_NONE);'
         if survey_old not in text:
             raise SystemExit('Could not find survey visibility line in Game Options')
         text = text.replace(survey_old, survey_new, 1)
 
-        # Remove the Social tab entry from the tab strip. The pane may remain in the
-        # binary, but there is no player-facing route to it in this edition.
         text, social_tab = re.subn(r'\n[ \t]*NWidget\(WWT_TEXTBTN, GAME_OPTIONS_BUTTON, WID_GO_TAB_SOCIAL\),[^\n]*', '', text, count=1)
         if social_tab != 1:
             raise SystemExit('Could not remove Social tab button')
@@ -146,7 +150,6 @@ def patch_source():
         text = text.replace('\t\t\tcase WID_GO_TAB_SOCIAL: plane = 3; break;\n', '')
         text = text.replace('\t\t\tcase WID_GO_TAB_SOCIAL:\n', '')
 
-        # Remove online-download and external-site buttons for bundled base sets.
         ids = [
             'WID_GO_BASE_GRF_CONTENT_DOWNLOAD', 'WID_GO_BASE_SFX_CONTENT_DOWNLOAD', 'WID_GO_BASE_MUSIC_CONTENT_DOWNLOAD',
             'WID_GO_BASE_GRF_OPEN_URL', 'WID_GO_BASE_SFX_OPEN_URL', 'WID_GO_BASE_MUSIC_OPEN_URL',
@@ -170,7 +173,30 @@ def patch_source():
             text = text.replace(anchor, '#ifdef __EMSCRIPTEN__\n#include <emscripten.h>\n#endif\n\n' + anchor, 1)
         text = re.sub(
             r'static void UpdateSocialIntegration\(GameMode game_mode\)\n\{.*?\n\}\n\nvoid SwitchToMode',
-            'static void UpdateSocialIntegration([[maybe_unused]] GameMode game_mode)\n{\n}\n\nvoid SwitchToMode',
+            '''static void UpdateSocialIntegration([[maybe_unused]] GameMode game_mode)
+{
+}
+
+#ifdef __EMSCRIPTEN__
+static bool _yandex_platform_pause_applied = false;
+
+extern "C" void em_openttd_set_platform_pause(int paused)
+{
+    if (_game_mode != GM_NORMAL) return;
+
+    if (paused != 0) {
+        if (!_pause_mode.Test(PauseMode::Normal)) {
+            _yandex_platform_pause_applied = true;
+            Command<CMD_PAUSE>::Post(PauseMode::Normal, true);
+        }
+    } else if (_yandex_platform_pause_applied) {
+        _yandex_platform_pause_applied = false;
+        Command<CMD_PAUSE>::Post(PauseMode::Normal, false);
+    }
+}
+#endif
+
+void SwitchToMode''',
             text, count=1, flags=re.S)
         text = text.replace('\tif (_game_mode == GM_NORMAL && new_mode != SM_SAVE_GAME) _survey.Transmit(NetworkSurveyHandler::Reason::LEAVE);\n', '')
         text = re.sub(
