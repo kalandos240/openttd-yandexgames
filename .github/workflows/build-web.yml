@@ -19,10 +19,10 @@ jobs:
           path: openttd
           fetch-depth: 1
 
-      - name: Install host compiler and packaging tools
+      - name: Install build and packaging tools
         run: |
           apt-get update
-          apt-get install -y gcc-12 g++-12 zip
+          apt-get install -y gcc-12 g++-12 zip unzip curl ca-certificates
           update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
           update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
 
@@ -30,20 +30,91 @@ jobs:
         run: |
           cp "$GITHUB_WORKSPACE/openttd/os/emscripten/ports/liblzma.py" /emsdk/upstream/emscripten/tools/ports/contrib/
 
-      - name: Enable Russian language in WebAssembly package
+      - name: Patch OpenTTD for Yandex Games
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('openttd/CMakeLists.txt')
-          s = p.read_text()
-          needle = '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/english.lng@/lang/english.lng")\n'
-          addition = needle + '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/russian.lng@/lang/russian.lng")\n'
+
+          cmake = Path('openttd/CMakeLists.txt')
+          s = cmake.read_text()
+          english = '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/english.lng@/lang/english.lng")\n'
+          extra = (
+              english
+              + '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/russian.lng@/lang/russian.lng")\n'
+              + '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/yandex_baseset@/baseset")\n'
+          )
           if 'russian.lng@/lang/russian.lng' not in s:
-              if needle not in s:
+              if english not in s:
                   raise SystemExit('Could not find Emscripten language preload line')
-              s = s.replace(needle, addition)
-              p.write_text(s)
+              s = s.replace(english, extra, 1)
+          cmake.write_text(s)
+
+          pre = Path('openttd/os/emscripten/pre.js')
+          s = pre.read_text()
+          old = """    FS.syncfs(true, function (err) {
+        Module.removeRunDependency('syncfs');
+    });
+"""
+          new = """    FS.syncfs(true, function (err) {
+        /* On a fresh profile choose one of the two bundled languages from
+         * the Yandex Games locale. Keep the player's later in-game choice. */
+        const finish_startup = function() {
+            try {
+                const config_path = personal_dir + '/openttd.cfg';
+                let config = '';
+                try {
+                    config = FS.readFile(config_path, { encoding: 'utf8' });
+                } catch (e) {}
+
+                if (!/^language\\s*=.*$/m.test(config)) {
+                    const locale = String(window.yandexGameLanguage || 'en').toLowerCase();
+                    const language = locale.startsWith('ru') ? 'russian.lng' : 'english.lng';
+                    if (/^\\[misc\\]\\s*$/m.test(config)) {
+                        config = config.replace(/^\\[misc\\]\\s*$/m, '[misc]\\nlanguage = ' + language);
+                    } else {
+                        config = '[misc]\\nlanguage = ' + language + '\\n\\n' + config;
+                    }
+                    FS.writeFile(config_path, config);
+                }
+            } catch (e) {
+                console.warn('Could not apply Yandex locale to OpenTTD', e);
+            }
+            Module.removeRunDependency('syncfs');
+        };
+
+        if (window.yandexGamesSDKReady) {
+            Promise.race([
+                window.yandexGamesSDKReady,
+                new Promise(resolve => setTimeout(() => resolve(null), 3000))
+            ]).then(finish_startup, finish_startup);
+        } else {
+            finish_startup();
+        }
+    });
+"""
+          if old not in s:
+              raise SystemExit('Could not find initial IDBFS sync block')
+          s = s.replace(old, new, 1)
+
+          s += """
+
+/* Yandex Games considers loading complete only when OpenTTD has entered its
+ * runtime. Waiting for postRun avoids signalling readiness while WASM/data
+ * are still downloading or initialising. */
+Module.postRun.push(function() {
+    if (!window.yandexGamesSDKReady) return;
+    window.yandexGamesSDKReady.then(function(ysdk) {
+        if (!ysdk) return;
+        try {
+            if (ysdk.features && ysdk.features.LoadingAPI) ysdk.features.LoadingAPI.ready();
+        } catch (e) {
+            console.warn('LoadingAPI.ready failed', e);
+        }
+    });
+});
+"""
+          pre.write_text(s)
           PY
 
       - name: Build host tools
@@ -54,7 +125,7 @@ jobs:
           cmake .. -DOPTION_TOOLS_ONLY=ON -DCMAKE_BUILD_TYPE=Release
           cmake --build . -j "$(nproc)" --target tools
 
-      - name: Build OpenTTD WebAssembly
+      - name: Configure OpenTTD WebAssembly
         working-directory: openttd
         run: |
           mkdir -p build
@@ -63,12 +134,47 @@ jobs:
             -DHOST_BINARY_DIR=../build-host \
             -DCMAKE_BUILD_TYPE=Release \
             -DOPTION_USE_ASSERTS=OFF
+
+      - name: Bundle OpenGFX OpenSFX and OpenMSX
+        working-directory: openttd
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/yandex_baseset /tmp/ottd-assets
+
+          curl -L --fail --retry 3 -o /tmp/opengfx.zip https://cdn.openttd.org/opengfx-releases/8.0/opengfx-8.0-all.zip
+          echo '43a0c1dabf39cb865394f3a6cc36d4da5c10ecfaaf55652043104806810903be  /tmp/opengfx.zip' | sha256sum -c -
+
+          curl -L --fail --retry 3 -o /tmp/opensfx.zip https://cdn.openttd.org/opensfx-releases/1.0.3/opensfx-1.0.3-all.zip
+          echo 'e0a218b7dd9438e701503b0f84c25a97c1c11b7c2f025323fb19d6db16ef3759  /tmp/opensfx.zip' | sha256sum -c -
+
+          curl -L --fail --retry 3 -o /tmp/openmsx.zip https://cdn.openttd.org/openmsx-releases/0.4.2/openmsx-0.4.2-all.zip
+          echo '5a4277a2e62d87f2952ea5020dc20fb2f6ffafdccf9913fbf35ad45ee30ec762  /tmp/openmsx.zip' | sha256sum -c -
+
+          unzip -q /tmp/opengfx.zip -d /tmp/ottd-assets/opengfx
+          unzip -q /tmp/opensfx.zip -d /tmp/ottd-assets/opensfx
+          unzip -q /tmp/openmsx.zip -d /tmp/ottd-assets/openmsx
+
+          find /tmp/ottd-assets -type f \( \
+            -name '*.tar' -o -name '*.grf' -o -name '*.obg' -o \
+            -name '*.obs' -o -name '*.cat' -o -name '*.obm' -o -name '*.mid' \
+          \) -exec cp -f '{}' build/yandex_baseset/ \;
+
+          echo 'Bundled base-set files:'
+          ls -lah build/yandex_baseset
+          test -n "$(find build/yandex_baseset -type f -print -quit)"
+
+      - name: Build OpenTTD WebAssembly
+        working-directory: openttd
+        run: |
+          cd build
           cmake --build . -j "$(nproc)" --target openttd
           ls -lah openttd*
 
       - name: Prepare Yandex Games package
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp openttd/build/openttd.html dist/index.html
           cp openttd/build/openttd.js dist/
@@ -79,7 +185,7 @@ jobs:
           from pathlib import Path
           p = Path('dist/index.html')
           s = p.read_text()
-          sdk = '''\n    <!-- Yandex Games SDK -->\n    <script src="/sdk.js"></script>\n    <script>\n      window.yandexGamesSDKReady = (async () => {\n        try {\n          const ysdk = await YaGames.init();\n          window.ysdk = ysdk;\n          const lang = ysdk.environment && ysdk.environment.i18n ? ysdk.environment.i18n.lang : 'en';\n          window.yandexGameLanguage = lang;\n          window.addEventListener('load', () => {\n            setTimeout(() => {\n              try { ysdk.features.LoadingAPI?.ready(); } catch (e) { console.warn('LoadingAPI.ready failed', e); }\n            }, 500);\n          }, { once: true });\n          return ysdk;\n        } catch (e) {\n          console.warn('Yandex Games SDK initialization failed', e);\n          return null;\n        }\n      })();\n    </script>\n'''
+          sdk = '''\n    <!-- Yandex Games SDK -->\n    <script src="/sdk.js"></script>\n    <script>\n      window.yandexGamesSDKReady = (async () => {\n        try {\n          const ysdk = await YaGames.init();\n          window.ysdk = ysdk;\n          window.yandexGameLanguage = (ysdk.environment && ysdk.environment.i18n && ysdk.environment.i18n.lang) || 'en';\n          return ysdk;\n        } catch (e) {\n          console.warn('Yandex Games SDK initialization failed', e);\n          window.yandexGameLanguage = navigator.language || 'en';\n          return null;\n        }\n      })();\n    </script>\n'''
           if '</head>' not in s:
               raise SystemExit('No </head> found in generated HTML')
           s = s.replace('</head>', sdk + '  </head>', 1)
@@ -88,14 +194,17 @@ jobs:
 
           cat > dist/NOTICE.txt <<'EOF'
           OpenTTD 15.3 WebAssembly port for Yandex Games.
-          OpenTTD is licensed under GNU GPL v2. See the OpenTTD project for source and license details.
+          OpenTTD is licensed under GNU GPL v2.
+          Bundled free base sets: OpenGFX 8.0, OpenSFX 1.0.3, OpenMSX 0.4.2.
           Yandex Games integration/build automation: kalandos240/openttd-yandexgames.
           EOF
 
+          uncompressed_bytes=$(du -sb dist | cut -f1)
+          echo "Uncompressed bytes: ${uncompressed_bytes}"
+          test "${uncompressed_bytes}" -lt 100000000
+
           (cd dist && zip -9 -r ../openttd-yandexgames.zip .)
           ls -lah dist openttd-yandexgames.zip
-          echo "Uncompressed package size:"
-          du -sh dist
 
       - name: Upload ready ZIP
         uses: actions/upload-artifact@v4
