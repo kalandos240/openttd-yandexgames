@@ -1,0 +1,106 @@
+name: Build OpenTTD Web
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout OpenTTD 15.3
+        uses: actions/checkout@v4
+        with:
+          repository: OpenTTD/OpenTTD
+          ref: '15.3'
+          path: openttd
+          fetch-depth: 1
+
+      - name: Install host compiler and packaging tools
+        run: |
+          apt-get update
+          apt-get install -y gcc-12 g++-12 zip
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+
+      - name: Add Emscripten liblzma port
+        run: |
+          cp "$GITHUB_WORKSPACE/openttd/os/emscripten/ports/liblzma.py" /emsdk/upstream/emscripten/tools/ports/contrib/
+
+      - name: Enable Russian language in WebAssembly package
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('openttd/CMakeLists.txt')
+          s = p.read_text()
+          needle = '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/english.lng@/lang/english.lng")\n'
+          addition = needle + '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/lang/russian.lng@/lang/russian.lng")\n'
+          if 'russian.lng@/lang/russian.lng' not in s:
+              if needle not in s:
+                  raise SystemExit('Could not find Emscripten language preload line')
+              s = s.replace(needle, addition)
+              p.write_text(s)
+          PY
+
+      - name: Build host tools
+        working-directory: openttd
+        run: |
+          mkdir -p build-host
+          cd build-host
+          cmake .. -DOPTION_TOOLS_ONLY=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j "$(nproc)" --target tools
+
+      - name: Build OpenTTD WebAssembly
+        working-directory: openttd
+        run: |
+          mkdir -p build
+          cd build
+          emcmake cmake .. \
+            -DHOST_BINARY_DIR=../build-host \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPTION_USE_ASSERTS=OFF
+          cmake --build . -j "$(nproc)" --target openttd
+          ls -lah openttd*
+
+      - name: Prepare Yandex Games package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp openttd/build/openttd.html dist/index.html
+          cp openttd/build/openttd.js dist/
+          cp openttd/build/openttd.wasm dist/
+          cp openttd/build/openttd.data dist/
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('dist/index.html')
+          s = p.read_text()
+          sdk = '''\n    <!-- Yandex Games SDK -->\n    <script src="/sdk.js"></script>\n    <script>\n      window.yandexGamesSDKReady = (async () => {\n        try {\n          const ysdk = await YaGames.init();\n          window.ysdk = ysdk;\n          const lang = ysdk.environment && ysdk.environment.i18n ? ysdk.environment.i18n.lang : 'en';\n          window.yandexGameLanguage = lang;\n          window.addEventListener('load', () => {\n            setTimeout(() => {\n              try { ysdk.features.LoadingAPI?.ready(); } catch (e) { console.warn('LoadingAPI.ready failed', e); }\n            }, 500);\n          }, { once: true });\n          return ysdk;\n        } catch (e) {\n          console.warn('Yandex Games SDK initialization failed', e);\n          return null;\n        }\n      })();\n    </script>\n'''
+          if '</head>' not in s:
+              raise SystemExit('No </head> found in generated HTML')
+          s = s.replace('</head>', sdk + '  </head>', 1)
+          p.write_text(s)
+          PY
+
+          cat > dist/NOTICE.txt <<'EOF'
+          OpenTTD 15.3 WebAssembly port for Yandex Games.
+          OpenTTD is licensed under GNU GPL v2. See the OpenTTD project for source and license details.
+          Yandex Games integration/build automation: kalandos240/openttd-yandexgames.
+          EOF
+
+          (cd dist && zip -9 -r ../openttd-yandexgames.zip .)
+          ls -lah dist openttd-yandexgames.zip
+          echo "Uncompressed package size:"
+          du -sh dist
+
+      - name: Upload ready ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames
+          path: openttd-yandexgames.zip
+          if-no-files-found: error
+          retention-days: 14
