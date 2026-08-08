@@ -14,19 +14,16 @@ from pathlib import Path
 p = Path('/tmp/build-direct-file-base.sh')
 s = p.read_text()
 
-# Tools used only while building the browser soundtrack.
 old_apt = 'apt-get install -y --no-install-recommends git gcc-12 g++-12 zip unzip curl ca-certificates\n'
 new_apt = 'apt-get install -y --no-install-recommends git gcc-12 g++-12 zip unzip curl ca-certificates fluidsynth fluid-soundfont-gm ffmpeg\n'
 if old_apt not in s:
     raise SystemExit('Could not find apt package line')
 s = s.replace(old_apt, new_apt, 1)
 
-# Add a browser music driver to the temporary OpenTTD source checkout and
-# make the telemetry/survey preference default to No for this distribution.
 clone_marker = 'cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/\n'
 driver_hook = r'''cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/
 
-# Yandex build: never show the first-run survey consent popup.
+# Never display OpenTTD's first-run telemetry/survey question in this build.
 sed -i '/var      = network.participate_survey/,/full     = _participate_survey/ s/def      = PS_ASK/def      = PS_NO/' openttd/src/table/settings/network_private_settings.ini
 grep -A8 'var      = network.participate_survey' openttd/src/table/settings/network_private_settings.ini | grep -q 'def      = PS_NO'
 
@@ -82,13 +79,7 @@ std::optional<std::string_view> MusicDriver_WebAudio::Start(const StringList &)
 {
     EM_ASM({
         if (!Module.openTTDWebMusic) {
-            Module.openTTDWebMusic = {
-                audio: null,
-                url: null,
-                volume: 1,
-                pending: false,
-                generation: 0
-            };
+            Module.openTTDWebMusic = { audio: null, url: null, volume: 1, pending: false, generation: 0 };
         }
     });
     return std::nullopt;
@@ -113,7 +104,6 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
 
         state.generation++;
         const generation = state.generation;
-
         if (state.audio) {
             try { state.audio.pause(); } catch (e) {}
             state.audio.src = '';
@@ -136,7 +126,6 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
         const bytes = new Uint8Array(data.length);
         bytes.set(data);
         state.url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
-
         const audio = new Audio();
         state.audio = audio;
         audio.preload = 'auto';
@@ -152,11 +141,7 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
         const attemptPlay = function() {
             if (state.generation !== generation || state.audio !== audio) return;
             let result;
-            try {
-                result = audio.play();
-            } catch (e) {
-                return;
-            }
+            try { result = audio.play(); } catch (e) { return; }
             if (result && typeof result.then === 'function') {
                 result.then(function() {
                     if (state.generation === generation) state.pending = false;
@@ -229,7 +214,6 @@ if clone_marker not in s:
     raise SystemExit('Could not find liblzma copy marker')
 s = s.replace(clone_marker, driver_hook, 1)
 
-# Extend the Python patch that build-final.sh applies to OpenTTD's CMake.
 needle = "cmake.write_text(s)\n"
 patch = r'''# Direct-file build: embed all files and the WebAssembly binary.
 s = s.replace('--preload-file', '--embed-file')
@@ -245,7 +229,6 @@ if needle not in s:
     raise SystemExit('Could not patch OpenTTD CMake mutation block')
 s = s.replace(needle, patch, 1)
 
-# Patch the generated Emscripten startup code before pre.js is written.
 needle = "pre.write_text(s)\n"
 patch = r'''args_old = "Module.arguments.push('-mnull', '-snull', '-vsdl');"
 args_new = "Module.arguments.push('-mwebaudio', '-ssdl', '-vsdl');"
@@ -253,8 +236,7 @@ if args_old not in s:
     raise SystemExit('Could not find Emscripten null audio arguments')
 s = s.replace(args_old, args_new, 1)
 
-# Keep this config write as a second layer for users who already have an old
-# private.cfg in IndexedDB from a previous build.
+# Also overwrite old persisted choices from earlier development builds.
 survey_dependency = "            Module.removeRunDependency('syncfs');"
 survey_lines = [
     "            try {",
@@ -308,8 +290,15 @@ test -n "${SOUNDFONT}"
 echo "SoundFont: ${SOUNDFONT}"
 export HOME=/tmp/fs-home
 export XDG_CONFIG_HOME=/tmp/fs-home
+
+# FluidSynth can read stdin, so do not feed the file list through the loop's
+# stdin. Materialize it first, then iterate over the array.
+mapfile -d '' midi_files < <(find /tmp/openmsx-render/src -type f \( -iname '*.mid' -o -iname '*.midi' \) -print0 | sort -z)
+echo "OpenMSX MIDI files found: ${#midi_files[@]}"
+test "${#midi_files[@]}" -ge 31
+
 rendered=0
-while IFS= read -r midi; do
+for midi in "${midi_files[@]}"; do
     base="$(basename "${midi}")"
     stem="${base%.*}"
     wav="/tmp/openmsx-render/wav/${stem}.wav"
@@ -319,13 +308,13 @@ while IFS= read -r midi; do
     cp -f -- "${midi}" "${input}"
     test -s "${input}"
     rm -f "${wav}"
-    fluidsynth -ni -q -r 22050 -T wav -F "${wav}" "${SOUNDFONT}" "${input}"
+    fluidsynth -ni -q -r 22050 -T wav -F "${wav}" "${SOUNDFONT}" "${input}" </dev/null
     test -s "${wav}"
-    ffmpeg -loglevel error -y -i "${wav}" -ar 32000 -ac 2 -codec:a libmp3lame -b:a 48k "${mp3}"
+    ffmpeg -loglevel error -y -i "${wav}" -ar 32000 -ac 2 -codec:a libmp3lame -b:a 48k "${mp3}" </dev/null
     test -s "${mp3}"
     rm -f "${wav}" "${input}"
     rendered=$((rendered + 1))
-done < <(find /tmp/openmsx-render/src -type f \( -iname '*.mid' -o -iname '*.midi' \) -print | sort)
+done
 echo "Rendered OpenMSX tracks: ${rendered}"
 test "${rendered}" -ge 31
 
@@ -334,7 +323,6 @@ if asset_marker not in s:
     raise SystemExit('Could not find base-set listing marker')
 s = s.replace(asset_marker, render_hook + asset_marker, 1)
 
-# SINGLE_FILE + --embed-file intentionally produce no external .wasm/.data.
 s = s.replace('cp openttd/build/openttd.wasm dist/\n', '')
 s = s.replace('cp openttd/build/openttd.data dist/\n', '')
 s = s.replace('cp openttd/build/openttd.js dist/\n', '[ ! -f openttd/build/openttd.js ] || cp openttd/build/openttd.js dist/\n')
