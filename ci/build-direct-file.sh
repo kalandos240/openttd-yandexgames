@@ -27,10 +27,42 @@ if needle not in s:
     raise SystemExit('Could not patch OpenTTD CMake mutation block')
 s = s.replace(needle, patch, 1)
 
-# On file://, skip only the persistent IDBFS mount. The in-memory filesystem
-# remains usable, so OpenTTD can start normally. HTTPS/Yandex still uses IDBFS.
+# Patch the generated OpenTTD Emscripten runtime before pre.js is written.
+# Upstream WebAssembly starts with -snull, explicitly disabling OpenSFX.
+# We switch to SDL audio and also pre-answer the OpenTTD survey prompt with No.
+# On file://, skip only the persistent IDBFS mount; HTTPS/Yandex keeps IDBFS.
 needle = "pre.write_text(s)\n"
-patch = '''file_mount = "    FS.mount(IDBFS, {}, personal_dir);\\n"
+patch = r'''args_old = "Module.arguments.push('-mnull', '-snull', '-vsdl');"
+args_new = "Module.arguments.push('-mnull', '-ssdl', '-vsdl');"
+if args_old not in s:
+    raise SystemExit('Could not find Emscripten null sound arguments')
+s = s.replace(args_old, args_new, 1)
+
+survey_dependency = "            Module.removeRunDependency('syncfs');"
+survey_patch = r'''            try {
+                const private_path = personal_dir + '/private.cfg';
+                let private_config = '';
+                try {
+                    private_config = FS.readFile(private_path, { encoding: 'utf8' });
+                } catch (e) {}
+
+                if (/^participate_survey\s*=.*$/m.test(private_config)) {
+                    private_config = private_config.replace(/^participate_survey\s*=.*$/m, 'participate_survey = no');
+                } else if (/^\[network\]\s*$/m.test(private_config)) {
+                    private_config = private_config.replace(/^\[network\]\s*$/m, '[network]\nparticipate_survey = no');
+                } else {
+                    private_config += (private_config.length === 0 || private_config.endsWith('\n') ? '' : '\n') + '[network]\nparticipate_survey = no\n';
+                }
+                FS.writeFile(private_path, private_config);
+            } catch (e) {
+                console.warn('Could not disable OpenTTD survey prompt', e);
+            }
+'''
+if survey_dependency not in s:
+    raise SystemExit('Could not find startup dependency removal point')
+s = s.replace(survey_dependency, survey_patch + survey_dependency, 1)
+
+file_mount = "    FS.mount(IDBFS, {}, personal_dir);\n"
 file_mount_replacement = """    if (typeof location !== 'undefined' && location.protocol === 'file:') {
         console.warn('OpenTTD direct-file mode: IndexedDB persistence is disabled for this local launch.');
     } else {
