@@ -128,7 +128,6 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
             return;
         }
 
-        /* Copy out of wasm-backed memory before creating the Blob. */
         const bytes = new Uint8Array(data.length);
         bytes.set(data);
         state.url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
@@ -156,18 +155,13 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
             if (result && typeof result.then === 'function') {
                 result.then(function() {
                     if (state.generation === generation) state.pending = false;
-                }).catch(function() {
-                    /* Browser autoplay policy: the one-shot listeners below
-                     * will retry after the first real user gesture. */
-                });
+                }).catch(function() {});
             } else {
                 state.pending = false;
             }
         };
 
-        const resumeAfterGesture = function() {
-            attemptPlay();
-        };
+        const resumeAfterGesture = function() { attemptPlay(); };
         document.addEventListener('pointerdown', resumeAfterGesture, { once: true, capture: true });
         document.addEventListener('keydown', resumeAfterGesture, { once: true, capture: true });
         document.addEventListener('touchstart', resumeAfterGesture, { once: true, capture: true });
@@ -199,8 +193,6 @@ bool MusicDriver_WebAudio::IsSongPlaying()
     return EM_ASM_INT({
         const state = Module.openTTDWebMusic;
         if (!state || !state.audio) return 0;
-        /* While waiting for the first user gesture, keep OpenTTD on the same
-         * track instead of rapidly advancing the playlist. */
         if (state.pending) return 1;
         return state.audio.ended ? 0 : 1;
     }) != 0;
@@ -249,8 +241,6 @@ if needle not in s:
 s = s.replace(needle, patch, 1)
 
 # Patch the generated Emscripten startup code before pre.js is written.
-# Enable SDL sound + our browser music driver, suppress the survey prompt,
-# and keep direct-file startup usable without IndexedDB.
 needle = "pre.write_text(s)\n"
 patch = r'''args_old = "Module.arguments.push('-mnull', '-snull', '-vsdl');"
 args_new = "Module.arguments.push('-mwebaudio', '-ssdl', '-vsdl');"
@@ -296,9 +286,6 @@ if needle not in s:
     raise SystemExit('Could not patch OpenTTD pre.js mutation block')
 s = s.replace(needle, patch, 1)
 
-# Render OpenMSX MIDI files to compact browser-playable MP3 tracks. The
-# original OpenMSX tar stays bundled too, so OpenTTD still validates and
-# exposes the proper soundtrack/metadata in its normal music UI.
 asset_marker = "echo 'Bundled base-set files:'\n"
 render_hook = r'''echo 'Rendering OpenMSX MIDI soundtrack for browser playback...'
 OPENMSX_TAR="$(find /tmp/ottd-assets/openmsx -type f -name '*.tar' -print -quit)"
@@ -308,13 +295,15 @@ mkdir -p /tmp/openmsx-render/src /tmp/openmsx-render/wav
 tar -xf "${OPENMSX_TAR}" -C /tmp/openmsx-render/src
 SOUNDFONT="$(find /usr/share/sounds -type f -iname '*.sf2' -print -quit)"
 test -n "${SOUNDFONT}"
+echo "SoundFont: ${SOUNDFONT}"
 rendered=0
 while IFS= read -r midi; do
     base="$(basename "${midi}")"
     stem="${base%.*}"
     wav="/tmp/openmsx-render/wav/${stem}.wav"
     mp3="openttd/build/yandex_baseset/${stem}.mp3"
-    fluidsynth -ni -r 22050 -F "${wav}" "${SOUNDFONT}" "${midi}" >/dev/null 2>&1
+    echo "Rendering ${base}"
+    fluidsynth -ni -q -r 22050 -T wav -F "${wav}" "${SOUNDFONT}" "${midi}"
     ffmpeg -loglevel error -y -i "${wav}" -ar 32000 -ac 2 -codec:a libmp3lame -b:a 48k "${mp3}"
     rm -f "${wav}"
     rendered=$((rendered + 1))
@@ -338,7 +327,6 @@ if marker not in s:
     raise SystemExit('Could not find NOTICE marker')
 s = s.replace(marker, checks + marker, 1)
 
-# Update release notes inside the package.
 s = s.replace(
     'Bundled free base sets: OpenGFX 8.0, OpenSFX 1.0.3, OpenMSX 0.4.2.',
     'Bundled free base sets: OpenGFX 8.0, OpenSFX 1.0.3, OpenMSX 0.4.2. OpenMSX is rendered to MP3 at build time for browser playback.'
@@ -347,7 +335,6 @@ s = s.replace('openttd-yandexgames.zip', 'OpenTTD-YandexGames-Direct.zip')
 p.write_text(s)
 PY
 
-# Preserve Cyrillic/TrueType support.
 echo 'Preparing Emscripten FreeType for Russian/Cyrillic text...'
 embuilder build freetype
 
