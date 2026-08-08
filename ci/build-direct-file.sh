@@ -282,6 +282,13 @@ test -n "${OPENMSX_TAR}"
 rm -rf /tmp/openmsx-render
 mkdir -p /tmp/openmsx-render/src /tmp/openmsx-render/wav /tmp/fs-home
 tar -xf "${OPENMSX_TAR}" -C /tmp/openmsx-render/src
+
+# Unlike graphics/sounds, OpenTTD intentionally does not scan music base sets
+# inside tar archives. Embed the original .obm + MIDI files unpacked as well,
+# so OpenMSX is detected by the normal OpenTTD music-set code.
+find /tmp/openmsx-render/src -type f \( -iname '*.obm' -o -iname '*.mid' -o -iname '*.midi' \) -exec cp -f '{}' openttd/build/yandex_baseset/ \;
+test -n "$(find openttd/build/yandex_baseset -maxdepth 1 -type f -iname '*.obm' -print -quit)"
+
 SOUNDFONT="$(find /usr/share/sounds -type f -iname 'FluidR3_GM.sf2' -print -quit)"
 if [ -z "${SOUNDFONT}" ]; then
     SOUNDFONT="$(find /usr/share/sounds -type f -iname '*.sf2' -print -quit)"
@@ -291,8 +298,7 @@ echo "SoundFont: ${SOUNDFONT}"
 export HOME=/tmp/fs-home
 export XDG_CONFIG_HOME=/tmp/fs-home
 
-# FluidSynth can read stdin, so do not feed the file list through the loop's
-# stdin. Materialize it first, then iterate over the array.
+# FluidSynth can read stdin, so materialize the list before invoking it.
 mapfile -d '' midi_files < <(find /tmp/openmsx-render/src -type f \( -iname '*.mid' -o -iname '*.midi' \) -print0 | sort -z)
 echo "OpenMSX MIDI files found: ${#midi_files[@]}"
 test "${#midi_files[@]}" -ge 31
