@@ -39,7 +39,7 @@ if args_old not in s:
 s = s.replace(args_old, args_new, 1)
 
 survey_dependency = "            Module.removeRunDependency('syncfs');"
-survey_patch = r'''            try {
+survey_patch = r"""            try {
                 const private_path = personal_dir + '/private.cfg';
                 let private_config = '';
                 try {
@@ -57,7 +57,7 @@ survey_patch = r'''            try {
             } catch (e) {
                 console.warn('Could not disable OpenTTD survey prompt', e);
             }
-'''
+"""
 if survey_dependency not in s:
     raise SystemExit('Could not find startup dependency removal point')
 s = s.replace(survey_dependency, survey_patch + survey_dependency, 1)
