@@ -36,6 +36,21 @@ def patch_source():
         new, count = pattern.subn(replacement, text, count=1)
         if count != 1:
             raise SystemExit('Could not patch NetworkStartUp')
+        shutdown_pattern = re.compile(
+            r'void NetworkShutDown\(\)\n\{\n.*?\n\}',
+            re.S,
+        )
+        shutdown_replacement = '''void NetworkShutDown()
+{
+    _network_available = false;
+    _networking = false;
+    _network_server = false;
+    _network_dedicated = false;
+    _is_network_server = false;
+}'''
+        new, shutdown_count = shutdown_pattern.subn(shutdown_replacement, new, count=1)
+        if shutdown_count != 1:
+            raise SystemExit('Could not patch NetworkShutDown')
         return new
 
     edit('src/network/network.cpp', patch_network)
@@ -127,6 +142,9 @@ def patch_source():
         text, social_tab = re.subn(r'\n[ \t]*NWidget\(WWT_TEXTBTN, GAME_OPTIONS_BUTTON, WID_GO_TAB_SOCIAL\),[^\n]*', '', text, count=1)
         if social_tab != 1:
             raise SystemExit('Could not remove Social tab button')
+        text = text.replace(', WID_GO_TAB_SOCIAL);', ');')
+        text = text.replace('\t\t\tcase WID_GO_TAB_SOCIAL: plane = 3; break;\n', '')
+        text = text.replace('\t\t\tcase WID_GO_TAB_SOCIAL:\n', '')
 
         # Remove online-download and external-site buttons for bundled base sets.
         ids = [
