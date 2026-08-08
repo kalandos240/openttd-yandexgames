@@ -79,7 +79,12 @@ std::optional<std::string_view> MusicDriver_WebAudio::Start(const StringList &)
 {
     EM_ASM({
         if (!Module.openTTDWebMusic) {
-            Module.openTTDWebMusic = { audio: null, url: null, volume: 1, pending: false, generation: 0 };
+            Module.openTTDWebMusic = new Object();
+            Module.openTTDWebMusic.audio = null;
+            Module.openTTDWebMusic.url = null;
+            Module.openTTDWebMusic.volume = 1;
+            Module.openTTDWebMusic.pending = false;
+            Module.openTTDWebMusic.generation = 0;
         }
     });
     return std::nullopt;
@@ -98,15 +103,22 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
     EM_ASM({
         const path = UTF8ToString($0);
         const loop = !!$1;
-        const state = Module.openTTDWebMusic || (Module.openTTDWebMusic = {
-            audio: null, url: null, volume: 1, pending: false, generation: 0
-        });
+
+        if (!Module.openTTDWebMusic) {
+            Module.openTTDWebMusic = new Object();
+            Module.openTTDWebMusic.audio = null;
+            Module.openTTDWebMusic.url = null;
+            Module.openTTDWebMusic.volume = 1;
+            Module.openTTDWebMusic.pending = false;
+            Module.openTTDWebMusic.generation = 0;
+        }
+        const state = Module.openTTDWebMusic;
 
         state.generation++;
         const generation = state.generation;
         if (state.audio) {
             try { state.audio.pause(); } catch (e) {}
-            state.audio.src = '';
+            try { state.audio.removeAttribute("src"); } catch (e) {}
             state.audio = null;
         }
         if (state.url) {
@@ -118,23 +130,26 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
         try {
             data = FS.readFile(path);
         } catch (e) {
-            console.warn('OpenTTD browser music: missing rendered track', path, e);
+            console.warn("OpenTTD browser music: missing rendered track" + path);
             state.pending = false;
             return;
         }
 
         const bytes = new Uint8Array(data.length);
         bytes.set(data);
-        state.url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+        const blobOptions = new Object();
+        blobOptions.type = "audio/mpeg";
+        state.url = URL.createObjectURL(new Blob([bytes], blobOptions));
+
         const audio = new Audio();
         state.audio = audio;
-        audio.preload = 'auto';
+        audio.preload = "auto";
         audio.src = state.url;
         audio.loop = loop;
         audio.volume = state.volume;
         state.pending = true;
 
-        audio.addEventListener('ended', function() {
+        audio.addEventListener("ended", function() {
             if (state.generation === generation) state.pending = false;
         });
 
@@ -142,7 +157,7 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
             if (state.generation !== generation || state.audio !== audio) return;
             let result;
             try { result = audio.play(); } catch (e) { return; }
-            if (result && typeof result.then === 'function') {
+            if (result && typeof result.then === "function") {
                 result.then(function() {
                     if (state.generation === generation) state.pending = false;
                 }).catch(function() {});
@@ -151,10 +166,15 @@ void MusicDriver_WebAudio::PlaySong(const MusicSongInfo &song)
             }
         };
 
-        const resumeAfterGesture = function() { attemptPlay(); };
-        document.addEventListener('pointerdown', resumeAfterGesture, { once: true, capture: true });
-        document.addEventListener('keydown', resumeAfterGesture, { once: true, capture: true });
-        document.addEventListener('touchstart', resumeAfterGesture, { once: true, capture: true });
+        const resumeAfterGesture = function() {
+            document.removeEventListener("pointerdown", resumeAfterGesture, true);
+            document.removeEventListener("keydown", resumeAfterGesture, true);
+            document.removeEventListener("touchstart", resumeAfterGesture, true);
+            attemptPlay();
+        };
+        document.addEventListener("pointerdown", resumeAfterGesture, true);
+        document.addEventListener("keydown", resumeAfterGesture, true);
+        document.addEventListener("touchstart", resumeAfterGesture, true);
         attemptPlay();
     }, path.c_str(), loop);
 }
@@ -168,7 +188,7 @@ void MusicDriver_WebAudio::StopSong()
         state.pending = false;
         if (state.audio) {
             try { state.audio.pause(); } catch (e) {}
-            state.audio.src = '';
+            try { state.audio.removeAttribute("src"); } catch (e) {}
             state.audio = null;
         }
         if (state.url) {
@@ -191,9 +211,15 @@ bool MusicDriver_WebAudio::IsSongPlaying()
 void MusicDriver_WebAudio::SetVolume(uint8_t vol)
 {
     EM_ASM({
-        const state = Module.openTTDWebMusic || (Module.openTTDWebMusic = {
-            audio: null, url: null, volume: 1, pending: false, generation: 0
-        });
+        if (!Module.openTTDWebMusic) {
+            Module.openTTDWebMusic = new Object();
+            Module.openTTDWebMusic.audio = null;
+            Module.openTTDWebMusic.url = null;
+            Module.openTTDWebMusic.volume = 1;
+            Module.openTTDWebMusic.pending = false;
+            Module.openTTDWebMusic.generation = 0;
+        }
+        const state = Module.openTTDWebMusic;
         state.volume = Math.max(0, Math.min(1, $0 / 127.0));
         if (state.audio) state.audio.volume = state.volume;
     }, static_cast<int>(vol));
