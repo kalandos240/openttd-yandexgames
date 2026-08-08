@@ -6,7 +6,7 @@ set -euo pipefail
 # - OpenSFX uses SDL2 audio
 # - OpenMSX MIDI tracks are rendered to compact MP3 files at build time and
 #   played by a small Emscripten/HTMLAudio music driver
-# - the upstream survey prompt is pre-answered with "No"
+# - the upstream survey prompt is disabled by default
 cp ci/build-final.sh /tmp/build-direct-file-base.sh
 
 python3 - <<'PY'
@@ -21,9 +21,14 @@ if old_apt not in s:
     raise SystemExit('Could not find apt package line')
 s = s.replace(old_apt, new_apt, 1)
 
-# Add a browser music driver to the temporary OpenTTD source checkout.
+# Add a browser music driver to the temporary OpenTTD source checkout and
+# make the telemetry/survey preference default to No for this distribution.
 clone_marker = 'cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/\n'
 driver_hook = r'''cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/
+
+# Yandex build: never show the first-run survey consent popup.
+sed -i '/var      = network.participate_survey/,/full     = _participate_survey/ s/def      = PS_ASK/def      = PS_NO/' openttd/src/table/settings/network_private_settings.ini
+grep -A8 'var      = network.participate_survey' openttd/src/table/settings/network_private_settings.ini | grep -q 'def      = PS_NO'
 
 cat > openttd/src/music/webaudio_m.h <<'EOF_WEBMUSIC_H'
 /* Browser music driver for the Yandex Games WebAssembly port. */
@@ -248,6 +253,8 @@ if args_old not in s:
     raise SystemExit('Could not find Emscripten null audio arguments')
 s = s.replace(args_old, args_new, 1)
 
+# Keep this config write as a second layer for users who already have an old
+# private.cfg in IndexedDB from a previous build.
 survey_dependency = "            Module.removeRunDependency('syncfs');"
 survey_lines = [
     "            try {",
@@ -291,23 +298,34 @@ render_hook = r'''echo 'Rendering OpenMSX MIDI soundtrack for browser playback..
 OPENMSX_TAR="$(find /tmp/ottd-assets/openmsx -type f -name '*.tar' -print -quit)"
 test -n "${OPENMSX_TAR}"
 rm -rf /tmp/openmsx-render
-mkdir -p /tmp/openmsx-render/src /tmp/openmsx-render/wav
+mkdir -p /tmp/openmsx-render/src /tmp/openmsx-render/wav /tmp/fs-home
 tar -xf "${OPENMSX_TAR}" -C /tmp/openmsx-render/src
-SOUNDFONT="$(find /usr/share/sounds -type f -iname '*.sf2' -print -quit)"
+SOUNDFONT="$(find /usr/share/sounds -type f -iname 'FluidR3_GM.sf2' -print -quit)"
+if [ -z "${SOUNDFONT}" ]; then
+    SOUNDFONT="$(find /usr/share/sounds -type f -iname '*.sf2' -print -quit)"
+fi
 test -n "${SOUNDFONT}"
 echo "SoundFont: ${SOUNDFONT}"
+export HOME=/tmp/fs-home
+export XDG_CONFIG_HOME=/tmp/fs-home
 rendered=0
 while IFS= read -r midi; do
     base="$(basename "${midi}")"
     stem="${base%.*}"
     wav="/tmp/openmsx-render/wav/${stem}.wav"
     mp3="openttd/build/yandex_baseset/${stem}.mp3"
+    input="/tmp/openmsx-render/current.mid"
     echo "Rendering ${base}"
-    fluidsynth -ni -q -r 22050 -T wav -F "${wav}" "${SOUNDFONT}" "${midi}"
-    ffmpeg -loglevel error -y -i "${wav}" -ar 32000 -ac 2 -codec:a libmp3lame -b:a 48k "${mp3}"
+    cp -f -- "${midi}" "${input}"
+    test -s "${input}"
     rm -f "${wav}"
+    fluidsynth -ni -q -r 22050 -T wav -F "${wav}" "${SOUNDFONT}" "${input}"
+    test -s "${wav}"
+    ffmpeg -loglevel error -y -i "${wav}" -ar 32000 -ac 2 -codec:a libmp3lame -b:a 48k "${mp3}"
+    test -s "${mp3}"
+    rm -f "${wav}" "${input}"
     rendered=$((rendered + 1))
-done < <(find /tmp/openmsx-render/src -type f \( -iname '*.mid' -o -iname '*.midi' \) | sort)
+done < <(find /tmp/openmsx-render/src -type f \( -iname '*.mid' -o -iname '*.midi' \) -print | sort)
 echo "Rendered OpenMSX tracks: ${rendered}"
 test "${rendered}" -ge 31
 
