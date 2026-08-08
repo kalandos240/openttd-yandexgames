@@ -1,0 +1,36 @@
+name: Emscripten FreeType Probe
+
+on:
+  pull_request:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Probe FreeType port and CMake discovery
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y cmake
+          embuilder build freetype
+          mkdir -p /tmp/ftprobe
+          cat > /tmp/ftprobe/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.17)
+          project(ftprobe LANGUAGES CXX)
+          find_package(Freetype REQUIRED)
+          message(STATUS "Freetype_FOUND=${Freetype_FOUND}")
+          message(STATUS "FREETYPE_INCLUDE_DIRS=${FREETYPE_INCLUDE_DIRS}")
+          add_executable(ftprobe main.cpp)
+          target_link_libraries(ftprobe PRIVATE Freetype::Freetype)
+          EOF
+          cat > /tmp/ftprobe/main.cpp <<'EOF'
+          #include <ft2build.h>
+          #include FT_FREETYPE_H
+          int main() { FT_Library lib; return FT_Init_FreeType(&lib); }
+          EOF
+          mkdir -p /tmp/ftprobe/build
+          cd /tmp/ftprobe/build
+          emcmake cmake ..
+          cmake --build . -j 2
