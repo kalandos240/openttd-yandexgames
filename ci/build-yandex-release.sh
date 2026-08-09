@@ -98,5 +98,7 @@ s = s.replace(notice_marker, bridge_hook + notice_marker, 1)
 p.write_text(s)
 PY
 
+python3 -m py_compile ci/patch-yandex-offline.py ci/patch-yandex-no-help.py ci/patch-yandex-gameplay-state.py ci/patch-yandex-sdk-events.py
 python3 ci/patch-yandex-sdk-events.py
+node --check ci/yandex-bridge.js
 bash ci/build-direct-file.sh
