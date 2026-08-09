@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/banner.jpg" alt="OpenTTD Yandex Games" width="800">
+
 # OpenTTD · Yandex Games Port
 
 **OpenTTD 15.3 running in the browser through WebAssembly, packaged for Yandex Games.**
@@ -35,39 +37,49 @@ The OpenTTD source code itself is not vendored here. During CI builds the pipeli
 - **FreeType-enabled build** for proper Cyrillic font rendering.
 - **Browser persistence** based on OpenTTD's Emscripten filesystem support.
 - Bundled free base sets used by the current package: **OpenGFX**, **OpenSFX** and **OpenMSX**.
-- Final distribution is assembled as a **Yandex Games-ready ZIP**.
-- The packaging pipeline checks that the uncompressed game package stays below the platform's **100 MB** limit.
+- Final distribution assembled as a **Yandex Games-ready ZIP**.
+- Packaging pipeline check for the port's **100 MB uncompressed package target**.
 
-## Build pipeline
+## Quick build
 
-The recommended build path is GitHub Actions.
+The recommended build path is GitHub Actions:
 
 1. Open the **Actions** tab.
 2. Select **Final OpenTTD Package**.
 3. Run the workflow manually with **Run workflow**.
-4. After a successful run, download the `openttd-yandexgames-final` artifact.
+4. Download the `openttd-yandexgames-final` artifact after a successful run.
 
-The final workflow runs inside `emscripten/emsdk:3.1.57` and calls:
-
-```text
-ci/build-final-freetype.sh
-```
-
-The resulting package is uploaded as:
+The resulting package is:
 
 ```text
 openttd-yandexgames.zip
 ```
+
+For the full build notes, see **[docs/BUILDING.md](docs/BUILDING.md)**.
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [Build guide](docs/BUILDING.md) | Build environment, final workflow and troubleshooting |
+| [Yandex Games integration](docs/YANDEX_GAMES.md) | SDK startup, locale flow, loading API and package layout |
+| [Third-party notices](THIRD_PARTY_NOTICES.md) | OpenTTD and bundled third-party project notice overview |
+| [Contributing](CONTRIBUTING.md) | Scope for issues and pull requests |
 
 ## Repository structure
 
 ```text
 .
 ├── .github/
+│   ├── ISSUE_TEMPLATE/  # Port-specific issue forms
 │   └── workflows/       # GitHub Actions build/package pipelines
+├── assets/              # Repository artwork
 ├── ci/                  # Build, patching and packaging scripts
-├── README.md            # English project overview
-└── README.ru.md         # Russian project overview
+├── docs/                # Build and Yandex Games documentation
+├── CONTRIBUTING.md
+├── THIRD_PARTY_NOTICES.md
+├── README.md
+└── README.ru.md
 ```
 
 The repository intentionally focuses on the **porting layer and reproducible build automation** instead of maintaining a forked copy of the full OpenTTD source tree.
@@ -87,19 +99,19 @@ The packaging scripts adapt the generated Emscripten build for Yandex Games. The
 
 Platform-specific changes are applied by the build pipeline instead of permanently rewriting the upstream source tree. This makes the port easier to audit and rebuild against the exact OpenTTD release it targets.
 
+See **[docs/YANDEX_GAMES.md](docs/YANDEX_GAMES.md)** for the integration flow.
+
 ## Licensing
 
 **OpenTTD is licensed under the GNU General Public License version 2.** The OpenTTD source used for builds comes from the official upstream repository and retains its original copyright and license terms.
 
 Bundled third-party base sets such as OpenGFX, OpenSFX and OpenMSX retain their own respective licenses and copyright notices. This repository does not claim ownership of OpenTTD or those third-party projects and does not relicense their content.
 
-When redistributing a compiled package, make sure all license, source-code and notice obligations of OpenTTD and bundled third-party components are preserved.
+See **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** before redistributing a compiled package.
 
 ## Project status
 
-The repository currently contains a working automated pipeline for producing the Yandex Games web package of OpenTTD 15.3, including the FreeType/Cyrillic build path.
-
-Further repository work can include release documentation, screenshots from the actual web build, a dedicated third-party notices file and cleaner release packaging metadata.
+The repository contains an automated path for producing the Yandex Games web package of OpenTTD 15.3, including the FreeType/Cyrillic build path, bundled free base sets and Yandex Games startup integration.
 
 ---
 
