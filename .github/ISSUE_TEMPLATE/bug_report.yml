@@ -1,0 +1,57 @@
+name: Port bug report
+description: Report a problem specific to the OpenTTD WebAssembly / Yandex Games port
+title: "[Bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please use this form for issues specific to the browser/Yandex Games port. If the same bug also happens in the official OpenTTD release, report it upstream instead.
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: "Firefox 153 / Chrome 140 / etc."
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "Yandex Games draft, local index.html, desktop browser..."
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Launch the game
+        2. Open ...
+        3. Click ...
+        4. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console output
+      description: Paste relevant warnings or errors. Remove personal information before posting.
+      render: shell
+  - type: dropdown
+    id: upstream
+    attributes:
+      label: Does this also happen in official OpenTTD 15.3?
+      options:
+        - "No / port-specific"
+        - "I have not tested upstream"
+        - "Yes"
+    validations:
+      required: true
