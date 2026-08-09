@@ -1,4 +1,10 @@
+<div align="center">
 
+<img src="assets/banner.jpg" alt="OpenTTD Yandex Games" width="800">
+
+# OpenTTD · Yandex Games Port
+
+**OpenTTD 15.3 running in the browser through WebAssembly, packaged for Yandex Games.**
 
 [![Final package](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml/badge.svg)](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml)
 ![OpenTTD](https://img.shields.io/badge/OpenTTD-15.3-2f7d32?style=flat-square)
