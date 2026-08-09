@@ -17,16 +17,16 @@ ai_instance = Path('openttd/src/ai/ai_instance.cpp')
 replace_once(
     ai_instance,
     'Script_CreateDummy(this->engine->GetVM(), STR_ERROR_AI_NO_AI_FOUND, "AI");',
-    'Script_CreateDummy(this->engine->GetVM(), STR_NULL, "AI");',
+    'Script_CreateDummy(this->engine->GetVM(), INVALID_STRING_ID, "AI");',
     'AI dummy fallback message',
 )
 
-# STR_NULL is used only by our offline AI fallback above. Make the generic dummy
-# script support a no-message mode: it still provides a valid no-op controller,
-# but emits no AILog.Error line and therefore no red technical popup.
+# INVALID_STRING_ID is already part of OpenTTD's public StringID type API and
+# is visible here through the normal string headers. Treat it as a private
+# no-message sentinel: the dummy controller stays valid but logs no error text.
 dummy = Path('openttd/src/script/script_info_dummy.cpp')
 old = '''\tstd::string error_message = GetString(string);\n\tstd::vector<std::string> messages = EscapeQuotesAndSlashesAndSplitOnNewLines(error_message);'''
-new = '''\tstd::string error_message;\n\tstd::vector<std::string> messages;\n\tif (string != STR_NULL) {\n\t\terror_message = GetString(string);\n\t\tmessages = EscapeQuotesAndSlashesAndSplitOnNewLines(error_message);\n\t}'''
+new = '''\tstd::string error_message;\n\tstd::vector<std::string> messages;\n\tif (string != INVALID_STRING_ID) {\n\t\terror_message = GetString(string);\n\t\tmessages = EscapeQuotesAndSlashesAndSplitOnNewLines(error_message);\n\t}'''
 replace_once(dummy, old, new, 'silent dummy script mode')
 
 print('Offline AI fallback technical message disabled.')
