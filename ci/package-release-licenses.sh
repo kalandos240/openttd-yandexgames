@@ -26,25 +26,51 @@ copy_if_exists openttd/src/3rdparty/monocypher/LICENSE.md dist/licenses/OpenTTD/
 copy_if_exists openttd/src/3rdparty/openttd_social_integration_api/LICENSE dist/licenses/OpenTTD/SOCIAL-INTEGRATION-API-LICENSE.txt
 copy_if_exists openttd/cmake/3rdparty/llvm/LICENSE.txt dist/licenses/OpenTTD/LLVM-CMAKE-LICENSE.txt
 
-# The downloaded official base-set release archives contain their own legal /
-# credits documentation. Copy those files from the exact versions used by this
-# build, instead of relying on a moving branch in a source repository.
+# The official downloadable base-set ZIPs primarily contain a versioned .tar
+# package. Their license/readme/credits files live inside that tar, so inspect
+# both the outer extraction tree and every embedded tar. This deliberately uses
+# the exact release packages bundled into the game rather than a moving branch.
 copy_release_docs() {
   local root="$1"
   local dest="$2"
   local found=0
+
+  mkdir -p "$dest"
+
+  # Some release layouts expose documentation next to the tar archive.
   while IFS= read -r -d '' f; do
-    local base
-    base="$(basename "$f")"
-    cp "$f" "$dest/$base"
+    local rel safe
+    rel="${f#"$root"/}"
+    safe="${rel//\//__}"
+    cp "$f" "$dest/$safe"
     found=1
   done < <(find "$root" -type f \( \
       -iname 'license*' -o -iname 'copying*' -o -iname 'readme*' -o \
       -iname 'credits*' -o -iname 'authors*' -o -iname 'changelog*' \
     \) -print0)
 
+  # The normal OpenTTD content-service packages keep these documents inside
+  # their .tar. Extract only documentation, never arbitrary archive paths.
+  while IFS= read -r -d '' archive; do
+    while IFS= read -r member; do
+      [ -n "$member" ] || continue
+      local safe
+      safe="${member#./}"
+      safe="${safe//\//__}"
+      # Avoid an unlikely basename collision between outer and inner docs.
+      if [ -e "$dest/$safe" ]; then
+        safe="archive__${safe}"
+      fi
+      tar -xOf "$archive" "$member" > "$dest/$safe"
+      test -s "$dest/$safe"
+      found=1
+    done < <(tar -tf "$archive" | grep -Ei '(^|/)(license|copying|readme|credits|authors|changelog)([^/]*)$' || true)
+  done < <(find "$root" -type f -name '*.tar' -print0)
+
   if [ "$found" -eq 0 ]; then
-    echo "No legal/readme documentation found under $root" >&2
+    echo "No legal/readme documentation found in release package under $root" >&2
+    echo "Package contents were:" >&2
+    find "$root" -maxdepth 3 -type f -print >&2 || true
     return 1
   fi
 }
