@@ -1,9 +1,9 @@
 name: Build direct-file OpenTTD
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/direct-file-launch
+      - main
   workflow_dispatch:
 
 concurrency:
