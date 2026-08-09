@@ -30,6 +30,60 @@ from pathlib import Path
 p = Path('dist/index.html')
 html = p.read_text()
 bridge = Path('ci/yandex-bridge.js').read_text()
+
+# `build-final.sh` uses the normal synchronous SDK tag. Replace it only in the
+# Yandex/direct-file edition with the equally-supported dynamic loader so a
+# local file:// launch does not try to fetch file:///sdk.js.
+old_sdk = '''\
+    <!-- Yandex Games SDK -->
+    <script src="/sdk.js"></script>
+    <script>
+      window.yandexGameLanguage = navigator.language || 'en';
+      window.yandexGamesSDKReady = (async () => {
+        try {
+          const ysdk = await YaGames.init();
+          window.ysdk = ysdk;
+          window.yandexGameLanguage = (ysdk.environment && ysdk.environment.i18n && ysdk.environment.i18n.lang) || window.yandexGameLanguage;
+          return ysdk;
+        } catch (e) {
+          console.warn('Yandex Games SDK initialization failed', e);
+          return null;
+        }
+      })();
+    </script>
+'''
+new_sdk = '''\
+    <!-- Yandex Games SDK -->
+    <script>
+      window.yandexGameLanguage = navigator.language || 'en';
+      window.yandexGamesSDKReady = (async () => {
+        if (location.protocol === 'file:') return null;
+        try {
+          if (typeof window.YaGames === 'undefined') {
+            await new Promise((resolve, reject) => {
+              const script = document.createElement('script');
+              script.src = '/sdk.js';
+              script.async = true;
+              script.onload = resolve;
+              script.onerror = () => reject(new Error('Could not load /sdk.js'));
+              document.head.appendChild(script);
+            });
+          }
+          const ysdk = await YaGames.init();
+          window.ysdk = ysdk;
+          window.yandexGameLanguage = (ysdk.environment && ysdk.environment.i18n && ysdk.environment.i18n.lang) || window.yandexGameLanguage;
+          return ysdk;
+        } catch (e) {
+          console.warn('Yandex Games SDK initialization failed', e);
+          return null;
+        }
+      })();
+    </script>
+'''
+if old_sdk not in html:
+    raise SystemExit('Could not find generated Yandex SDK block')
+html = html.replace(old_sdk, new_sdk, 1)
+
 if '</head>' not in html:
     raise SystemExit('No </head> found while injecting Yandex bridge')
 html = html.replace('</head>', '<script>\n' + bridge + '\n</script>\n  </head>', 1)
