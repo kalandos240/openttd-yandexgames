@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - fix/direct-file-launch
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
