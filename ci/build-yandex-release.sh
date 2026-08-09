@@ -4,6 +4,7 @@ set -euo pipefail
 # Extend the already-tested direct-file/audio build with:
 # - a strictly single-player/offline OpenTTD UI/runtime
 # - Yandex Games cloud saves, gameplay lifecycle and interstitial ads
+# - CSP-safe external scripts while keeping embedded WASM/assets for file://
 #
 # We patch the base build script rather than duplicating its large, tested body.
 python3 - <<'PY'
@@ -13,13 +14,21 @@ p = Path('ci/build-final.sh')
 s = p.read_text()
 
 clone_marker = 'cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/\n'
-source_hook = 'python3 ci/patch-yandex-offline.py source\npython3 ci/patch-yandex-no-help.py\npython3 ci/patch-yandex-gameplay-state.py\n'
+source_hook = (
+    'python3 ci/patch-yandex-offline.py source\n'
+    'python3 ci/patch-yandex-no-help.py\n'
+    'python3 ci/patch-yandex-gameplay-state.py\n'
+    'python3 ci/patch-yandex-runtime-cleanup.py source\n'
+)
 if clone_marker not in s:
     raise SystemExit('Could not find OpenTTD clone/source patch marker')
 s = s.replace(clone_marker, clone_marker + source_hook, 1)
 
 host_marker = 'mkdir -p openttd/build-host\n'
-pre_hook = 'python3 ci/patch-yandex-offline.py pre\n\n'
+pre_hook = (
+    'python3 ci/patch-yandex-offline.py pre\n'
+    'python3 ci/patch-yandex-runtime-cleanup.py pre\n\n'
+)
 if host_marker not in s:
     raise SystemExit('Could not find host build marker')
 s = s.replace(host_marker, pre_hook + host_marker, 1)
@@ -32,8 +41,8 @@ html = p.read_text()
 bridge = Path('ci/yandex-bridge.js').read_text()
 
 # `build-final.sh` uses the normal synchronous SDK tag. Replace it only in the
-# Yandex/direct-file edition with the equally-supported dynamic loader so a
-# local file:// launch does not try to fetch file:///sdk.js.
+# Yandex/direct-file edition with a dynamic loader so a local file:// launch
+# does not try to fetch file:///sdk.js. The block is externalized later for CSP.
 old_sdk = '''\
     <!-- Yandex Games SDK -->
     <script src="/sdk.js"></script>
@@ -90,6 +99,11 @@ html = html.replace('</head>', '<script>\n' + bridge + '\n</script>\n  </head>',
 p.write_text(html)
 PY_YANDEX_BRIDGE
 
+# Yandex uses nonce-based CSP. Move every inline script to same-origin files
+# without changing DOM execution order. The huge runtime still contains the
+# embedded WASM/assets, so local file:// launch remains serverless.
+python3 ci/patch-yandex-runtime-cleanup.py dist
+
 """
 if notice_marker not in s:
     raise SystemExit('Could not find final HTML/NOTICE marker')
@@ -98,7 +112,13 @@ s = s.replace(notice_marker, bridge_hook + notice_marker, 1)
 p.write_text(s)
 PY
 
-python3 -m py_compile ci/patch-yandex-offline.py ci/patch-yandex-no-help.py ci/patch-yandex-gameplay-state.py ci/patch-yandex-sdk-events.py
+python3 -m py_compile \
+  ci/patch-yandex-offline.py \
+  ci/patch-yandex-no-help.py \
+  ci/patch-yandex-gameplay-state.py \
+  ci/patch-yandex-sdk-events.py \
+  ci/patch-yandex-runtime-cleanup.py
 python3 ci/patch-yandex-sdk-events.py
+python3 ci/patch-yandex-runtime-cleanup.py bridge
 node --check ci/yandex-bridge.js
 bash ci/build-direct-file.sh
