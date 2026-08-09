@@ -13,7 +13,7 @@ p = Path('ci/build-final.sh')
 s = p.read_text()
 
 clone_marker = 'cp openttd/os/emscripten/ports/liblzma.py /emsdk/upstream/emscripten/tools/ports/contrib/\n'
-source_hook = 'python3 ci/patch-yandex-offline.py source\npython3 ci/repair-yandex-newgrf.py\n'
+source_hook = 'python3 ci/patch-yandex-offline.py source\npython3 ci/repair-yandex-newgrf.py\npython3 ci/patch-yandex-gameplay-state.py\n'
 if clone_marker not in s:
     raise SystemExit('Could not find OpenTTD clone/source patch marker')
 s = s.replace(clone_marker, clone_marker + source_hook, 1)
