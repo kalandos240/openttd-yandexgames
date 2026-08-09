@@ -123,7 +123,10 @@
   }
 
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
-    const player = await getPlayer();
+    const player = await Promise.race([
+      getPlayer(),
+      new Promise(resolve => setTimeout(() => resolve(null), 2000)),
+    ]);
     if (!player || typeof player.getData !== 'function') return;
     try {
       const data = await player.getData([CLOUD_KEY]);
