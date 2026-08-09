@@ -98,4 +98,5 @@ s = s.replace(notice_marker, bridge_hook + notice_marker, 1)
 p.write_text(s)
 PY
 
+python3 ci/patch-yandex-sdk-events.py
 bash ci/build-direct-file.sh
