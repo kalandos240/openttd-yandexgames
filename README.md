@@ -9,6 +9,8 @@
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-Emscripten-654ff0?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Yandex%20Games-ffcc00?style=flat-square)
 
+**English** · [Русский](README.ru.md)
+
 *Unofficial community port and build/integration project.*
 
 </div>
@@ -64,7 +66,8 @@ openttd-yandexgames.zip
 ├── .github/
 │   └── workflows/       # GitHub Actions build/package pipelines
 ├── ci/                  # Build, patching and packaging scripts
-└── README.md            # Project overview and build documentation
+├── README.md            # English project overview
+└── README.ru.md         # Russian project overview
 ```
 
 The repository intentionally focuses on the **porting layer and reproducible build automation** instead of maintaining a forked copy of the full OpenTTD source tree.
