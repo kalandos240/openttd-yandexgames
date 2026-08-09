@@ -5,6 +5,7 @@ set -euo pipefail
 # - a strictly single-player/offline OpenTTD UI/runtime
 # - Yandex Games cloud saves, gameplay lifecycle and interstitial ads
 # - CSP-safe external scripts while keeping embedded WASM/assets for file://
+# - complete release licensing/source notices
 #
 # We patch the base build script rather than duplicating its large, tested body.
 python3 - <<'PY'
@@ -110,6 +111,14 @@ if notice_marker not in s:
     raise SystemExit('Could not find final HTML/NOTICE marker')
 s = s.replace(notice_marker, bridge_hook + notice_marker, 1)
 
+# The base build writes a short NOTICE. Replace/augment it afterwards with the
+# full legal/source bundle, once the official base-set release archives have
+# already been downloaded and extracted.
+size_marker = 'uncompressed_bytes=$(du -sb dist | cut -f1)\n'
+if size_marker not in s:
+    raise SystemExit('Could not find release size-check marker')
+s = s.replace(size_marker, 'bash ci/package-release-licenses.sh\n\n' + size_marker, 1)
+
 p.write_text(s)
 PY
 
@@ -123,4 +132,5 @@ python3 -m py_compile \
 python3 ci/patch-yandex-sdk-events.py
 python3 ci/patch-yandex-runtime-cleanup.py bridge
 node --check ci/yandex-bridge.js
+bash -n ci/package-release-licenses.sh
 bash ci/build-direct-file.sh
