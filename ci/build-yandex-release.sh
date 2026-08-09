@@ -25,7 +25,7 @@ if host_marker not in s:
 s = s.replace(host_marker, pre_hook + host_marker, 1)
 
 notice_marker = "cat > dist/NOTICE.txt <<'EOF'\n"
-bridge_hook = r'''python3 - <<'PY_YANDEX_BRIDGE'
+bridge_hook = r"""python3 - <<'PY_YANDEX_BRIDGE'
 from pathlib import Path
 p = Path('dist/index.html')
 html = p.read_text()
@@ -90,7 +90,7 @@ html = html.replace('</head>', '<script>\n' + bridge + '\n</script>\n  </head>',
 p.write_text(html)
 PY_YANDEX_BRIDGE
 
-'''
+"""
 if notice_marker not in s:
     raise SystemExit('Could not find final HTML/NOTICE marker')
 s = s.replace(notice_marker, bridge_hook + notice_marker, 1)
