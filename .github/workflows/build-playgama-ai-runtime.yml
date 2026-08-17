@@ -1,0 +1,229 @@
+name: Build Playgama AI-enabled OpenTTD
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-playgama-ai-runtime.yml'
+      - 'playgama/**'
+
+permissions:
+  contents: read
+
+env:
+  LEGACY_BUILD_REF: fix/direct-file-launch
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout current Playgama integration
+        uses: actions/checkout@v4
+        with:
+          path: port
+
+      - name: Checkout tested OpenTTD browser build pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LEGACY_BUILD_REF }}
+          path: legacy
+
+      - name: Remove Yandex-only native AI hard-disable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+          needle = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(needle) != 1:
+              raise SystemExit(f'Expected exactly one native AI hard-disable hook, found {text.count(needle)}')
+          text = text.replace(needle, '', 1)
+          p.write_text(text, encoding='utf-8')
+          print('Removed patch-yandex-ai-offline.py from the release source hook.')
+          PY
+          grep -q "python3 ci/patch-yandex-ai-offline.py" legacy/ci/build-yandex-release.sh && {
+            echo 'The filename may remain in py_compile validation, but must not be in source_hook:'
+            grep -n "patch-yandex-ai-offline.py" legacy/ci/build-yandex-release.sh
+          } || true
+
+      - name: Build OpenTTD 15.3 WebAssembly runtime with native AI enabled
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          # Critical regression check: the Yandex-only build historically replaced
+          # AI::CanStartNew() with `return false;`. The Playgama runtime must retain
+          # upstream OpenTTD's normal single-player AI gate.
+          grep -Fq 'return !_networking || (_network_server && _settings_game.ai.ai_in_multiplayer);' openttd/src/ai/ai_core.cpp
+          ! grep -Fq 'downloadable AI modules / Online Content are intentionally disabled' openttd/src/ai/ai_core.cpp
+          ! grep -Fq 'AI competitors hard-disabled' openttd/src/ai/ai_core.cpp
+
+      - name: Extract rebuilt browser runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-playgama
+          mkdir dist-playgama
+          unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d dist-playgama
+          test -s dist-playgama/index.html
+          test -s dist-playgama/openttd-runtime.js
+          test -s dist-playgama/yandex-bridge.js
+          test -s dist-playgama/openttd-shell-2.js
+          echo 'Rebuilt runtime files:'
+          ls -lh dist-playgama/index.html dist-playgama/openttd-runtime.js dist-playgama/yandex-bridge.js
+
+      - name: Build bundled SimpleAI payload from BaNaNaS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          import json
+          from openttdlab import download_from_bananas
+
+          payload = {}
+          manifest = []
+          with download_from_bananas('ai/534d504c') as files:
+              for item in files:
+                  if len(item) == 5:
+                      content_id, filename, license_name, md5, get_data = item
+                  elif len(item) == 4:
+                      content_id, filename, md5, get_data = item
+                      license_name = 'unknown'
+                  else:
+                      raise RuntimeError(f'Unexpected BaNaNaS item: {item!r}')
+
+                  with get_data() as chunks:
+                      data = b''.join(chunks)
+                  if not data:
+                      raise RuntimeError(f'Empty BaNaNaS payload: {content_id}')
+
+                  if str(content_id).startswith('ai/'):
+                      relative = 'ai/' + filename
+                  elif str(content_id).startswith(('ai-library/', 'ailibrary/')):
+                      relative = 'ai/library/' + filename
+                  else:
+                      raise RuntimeError(f'Unexpected dependency type: {content_id}')
+
+                  payload[relative] = base64.b64encode(data).decode('ascii')
+                  manifest.append({
+                      'content_id': content_id,
+                      'filename': filename,
+                      'license': str(license_name),
+                      'md5': md5,
+                      'bytes': len(data),
+                      'install_path': relative,
+                  })
+
+          if not any(row['content_id'] == 'ai/534d504c' for row in manifest):
+              raise RuntimeError('SimpleAI was not returned by BaNaNaS')
+          if len(manifest) < 3:
+              raise RuntimeError(f'Expected SimpleAI plus dependencies, got {manifest!r}')
+
+          out = Path('port/playgama/openttd-classic-ai.generated.js')
+          out.write_text(
+              '/* Generated in CI from OpenTTD BaNaNaS content and dependencies. */\n'
+              'window.__openttdClassicAIArchives = ' + json.dumps(payload, separators=(',', ':')) + ';\n'
+              'window.__openttdClassicAIManifest = ' + json.dumps(manifest, separators=(',', ':')) + ';\n',
+              encoding='utf-8',
+          )
+          Path('port/playgama/openttd-classic-ai-manifest.json').write_text(
+              json.dumps(manifest, indent=2), encoding='utf-8'
+          )
+          print(json.dumps(manifest, indent=2))
+          PY
+          node --check port/playgama/openttd-classic-ai.generated.js
+
+      - name: Install Playgama Bridge v2 integration and AI compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 port/playgama/package_playgama.py dist-playgama \
+            --adapter port/playgama/playgama-yandex-compat.js \
+            --config port/playgama/playgama-bridge-config.json \
+            --fixes port/playgama/openttd-playgama-fixes.js \
+            --ai-bundle port/playgama/openttd-classic-ai.generated.js
+          cp port/playgama/openttd-classic-ai-manifest.json dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
+
+      - name: Validate native AI-enabled Playgama package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
+          ! grep -q 'bridge.playgama.com/v1/' dist-playgama/index.html
+          grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
+          grep -q 'openttd-classic-ai.js' dist-playgama/index.html
+          grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
+
+          # Browser config and the native core must both allow competitors.
+          test "$(grep -ao 'max_no_competitors = 3' dist-playgama/openttd-runtime.js | wc -l)" -ge 3
+          ! grep -aq 'max_no_competitors = 0' dist-playgama/openttd-runtime.js
+          grep -q 'const COMPETITORS = 3' dist-playgama/openttd-playgama-fixes.js
+
+          # SimpleAI + dependencies and OpenTTD API compatibility chain.
+          grep -q '__openttdClassicAIArchives' dist-playgama/openttd-classic-ai.js
+          grep -q 'ai/534d504c' dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
+          grep -q 'compat_14.nut' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'compat_1.2.nut' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'installAICompatibility' dist-playgama/openttd-playgama-fixes.js
+
+          # Previous Playgama fixes remain present.
+          grep -q 'Browser.mainLoop.pause' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'PAUSE_STATE_CHANGED' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'AUDIO_STATE_CHANGED' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'aspect-ratio: 16 / 9' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'english.lng' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'russian.lng' dist-playgama/openttd-playgama-fixes.js
+
+          node --check dist-playgama/playgama-yandex-compat.js
+          node --check dist-playgama/openttd-playgama-fixes.js
+          node --check dist-playgama/openttd-classic-ai.js
+          python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
+          python3 -m json.tool dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
+
+          python3 - <<'PY'
+          import json
+          with open('dist-playgama/playgama-bridge-config.json', encoding='utf-8') as f:
+              cfg = json.load(f)
+          assert cfg['advertisement']['interstitial']['disable'] is False
+          assert cfg['advertisement']['rewarded']['disable'] is True
+          assert cfg['advertisement']['banner']['disable'] is True
+          assert cfg['device']['supportedOrientations'] == ['landscape']
+          with open('dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json', encoding='utf-8') as f:
+              manifest = json.load(f)
+          assert any(row['content_id'] == 'ai/534d504c' for row in manifest)
+          assert len(manifest) >= 3
+          PY
+
+          unpacked_bytes="$(du -sb dist-playgama | cut -f1)"
+          echo "Unpacked Playgama bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create Playgama v5 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v5-ai-core-fixed.zip .)
+          unzip -t openttd-playgama-v5-ai-core-fixed.zip
+          ls -lh openttd-playgama-v5-ai-core-fixed.zip
+          sha256sum openttd-playgama-v5-ai-core-fixed.zip
+
+      - name: Upload Playgama v5 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v5-ai-core-fixed
+          path: openttd-playgama-v5-ai-core-fixed.zip
+          if-no-files-found: error
+          retention-days: 90
