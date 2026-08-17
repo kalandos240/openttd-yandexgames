@@ -47,63 +47,70 @@ jobs:
           echo 'e85a89f0610fc178b75c8d3b8a23707d0c11f6bc27bbb4058724c4466ec2f6ff  dist-playgama/yandex-bridge.js' | sha256sum -c -
           echo 'af77f33fc3e0aad897400af1e8ba4b3c81732dce71b201b2be74fbecd2f681be  dist-playgama/openttd-shell-2.js' | sha256sum -c -
 
-      - name: Build bundled classic AI payload
+      - name: Build bundled classic AI payload from BaNaNaS
         shell: bash
         run: |
           set -euo pipefail
-
-          download_any() {
-            local dest="$1"; shift
-            for url in "$@"; do
-              echo "Trying ${url}"
-              if curl -fL --retry 2 --connect-timeout 20 -o "${dest}" "${url}"; then
-                test -s "${dest}"
-                return 0
-              fi
-            done
-            echo "Could not download ${dest}" >&2
-            return 1
-          }
-
-          download_any /tmp/SimpleAI-14.tar.gz \
-            'https://binaries.openttd.org/bananas/ai/SimpleAI-14.tar.gz' \
-            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ai/SimpleAI-14.tar.gz'
-
-          download_any /tmp/Pathfinder.Road-4.tar.gz \
-            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Road-4-1.tar.gz' \
-            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Road-4.tar.gz' \
-            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ailibrary/Pathfinder.Road-4-1.tar.gz'
-
-          download_any /tmp/Pathfinder.Rail-1.tar.gz \
-            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Rail-1.tar.gz' \
-            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ailibrary/Pathfinder.Rail-1.tar.gz'
-
-          gzip -dc /tmp/SimpleAI-14.tar.gz > /tmp/SimpleAI-14.tar
-          gzip -dc /tmp/Pathfinder.Road-4.tar.gz > /tmp/Pathfinder.Road-4.tar
-          gzip -dc /tmp/Pathfinder.Rail-1.tar.gz > /tmp/Pathfinder.Rail-1.tar
-          tar -tf /tmp/SimpleAI-14.tar | head -n 30
-          tar -tf /tmp/Pathfinder.Road-4.tar | head -n 20
-          tar -tf /tmp/Pathfinder.Rail-1.tar | head -n 20
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
 
           python3 - <<'PY'
           from pathlib import Path
-          import base64, json
+          import base64
+          import json
+          from openttdlab import download_from_bananas
 
-          archives = {
-              'ai/SimpleAI-14.tar': Path('/tmp/SimpleAI-14.tar'),
-              'ai/library/Pathfinder.Road-4.tar': Path('/tmp/Pathfinder.Road-4.tar'),
-              'ai/library/Pathfinder.Rail-1.tar': Path('/tmp/Pathfinder.Rail-1.tar'),
-          }
-          payload = {
-              name: base64.b64encode(path.read_bytes()).decode('ascii')
-              for name, path in archives.items()
-          }
+          # SimpleAI content id from BaNaNaS. OpenTTDLab resolves and downloads
+          # all direct/transitive AI-library dependencies from the content service.
+          payload = {}
+          manifest = []
+          with download_from_bananas('ai/534d504c') as files:
+              for item in files:
+                  if len(item) == 5:
+                      content_id, filename, license_name, md5, get_data = item
+                  elif len(item) == 4:
+                      content_id, filename, md5, get_data = item
+                      license_name = 'unknown'
+                  else:
+                      raise RuntimeError(f'Unexpected BaNaNaS item: {item!r}')
+
+                  with get_data() as chunks:
+                      data = b''.join(chunks)
+                  if not data:
+                      raise RuntimeError(f'Empty BaNaNaS payload: {content_id}')
+
+                  if str(content_id).startswith('ai/'):
+                      relative = 'ai/' + filename
+                  elif str(content_id).startswith(('ai-library/', 'ailibrary/')):
+                      relative = 'ai/library/' + filename
+                  else:
+                      raise RuntimeError(f'Unexpected dependency type: {content_id}')
+
+                  payload[relative] = base64.b64encode(data).decode('ascii')
+                  manifest.append({
+                      'content_id': content_id,
+                      'filename': filename,
+                      'license': str(license_name),
+                      'md5': md5,
+                      'bytes': len(data),
+                      'install_path': relative,
+                  })
+
+          if not any(row['content_id'] == 'ai/534d504c' for row in manifest):
+              raise RuntimeError('SimpleAI was not returned by BaNaNaS')
+          if len(manifest) < 3:
+              raise RuntimeError(f'Expected SimpleAI plus pathfinder dependencies, got {manifest!r}')
+
           out = Path('playgama/openttd-classic-ai.generated.js')
           out.write_text(
-              '/* Generated in CI from the official/fallback BaNaNaS AI release archives. */\n'
-              'window.__openttdClassicAIArchives = ' + json.dumps(payload, separators=(',', ':')) + ';\n',
+              '/* Generated in CI from OpenTTD BaNaNaS content and dependencies. */\n'
+              'window.__openttdClassicAIArchives = ' + json.dumps(payload, separators=(',', ':')) + ';\n'
+              'window.__openttdClassicAIManifest = ' + json.dumps(manifest, separators=(',', ':')) + ';\n',
               encoding='utf-8',
           )
+          Path('playgama/openttd-classic-ai-manifest.json').write_text(
+              json.dumps(manifest, indent=2), encoding='utf-8'
+          )
+          print(json.dumps(manifest, indent=2))
           print('Generated AI bundle bytes:', out.stat().st_size)
           PY
           node --check playgama/openttd-classic-ai.generated.js
@@ -116,6 +123,7 @@ jobs:
             --config playgama/playgama-bridge-config.json \
             --fixes playgama/openttd-playgama-fixes.js \
             --ai-bundle playgama/openttd-classic-ai.generated.js
+          cp playgama/openttd-classic-ai-manifest.json dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
 
       - name: Validate Playgama v3 package
         run: |
@@ -145,11 +153,13 @@ jobs:
           grep -q 'AUDIO_STATE_CHANGED' dist-playgama/openttd-playgama-fixes.js
           grep -q 'aspect-ratio: 16 / 9' dist-playgama/openttd-playgama-fixes.js
           grep -q '__openttdClassicAIArchives' dist-playgama/openttd-classic-ai.js
+          grep -q 'ai/534d504c' dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
 
           node --check dist-playgama/playgama-yandex-compat.js
           node --check dist-playgama/openttd-playgama-fixes.js
           node --check dist-playgama/openttd-classic-ai.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
+          python3 -m json.tool dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
           python3 - <<'PY'
           import json
           with open('dist-playgama/playgama-bridge-config.json', encoding='utf-8') as f:
@@ -158,6 +168,10 @@ jobs:
           assert cfg['advertisement']['rewarded']['disable'] is True
           assert cfg['advertisement']['banner']['disable'] is True
           assert cfg['device']['supportedOrientations'] == ['landscape']
+          with open('dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json', encoding='utf-8') as f:
+              manifest = json.load(f)
+          assert any(row['content_id'] == 'ai/534d504c' for row in manifest)
+          assert len(manifest) >= 3
           PY
 
           # Files unrelated to the targeted runtime startup patch stay identical
