@@ -24,8 +24,7 @@ jobs:
             'https://grf.farm/road-hog/1.4.1/index.html'; do
             echo "===== ${url} ====="
             curl -fLsS --retry 3 "$url" -o /tmp/page.html
-            grep -Eoi 'href=["'"'][^"'"']+["'"']' /tmp/page.html | sed -n '1,120p' || true
-            grep -Eoi 'https?://[^"'"' <>]+' /tmp/page.html | sed -n '1,120p' || true
+            grep -Eoi 'href="[^"]+"' /tmp/page.html | sed -n '1,160p' || true
           done
 
       - name: Inspect GitHub releases
@@ -42,6 +41,6 @@ jobs:
             curl -fsSL --retry 3 \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/${repo}/releases?per_page=10" \
+              "https://api.github.com/repos/${repo}/releases?per_page=20" \
               | python3 -c 'import json,sys; data=json.load(sys.stdin); [(print(r.get("tag_name"), r.get("name")), [print("  ",a.get("name"),a.get("size"),a.get("browser_download_url")) for a in r.get("assets",[])]) for r in data]'
           done
