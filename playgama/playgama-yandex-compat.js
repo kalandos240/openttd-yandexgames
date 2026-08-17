@@ -1,4 +1,4 @@
-/* Playgama Bridge v1 compatibility layer for Yandex-integrated browser ports. */
+/* Playgama Bridge v2 compatibility layer for the OpenTTD Yandex-style browser integration. */
 (() => {
   'use strict';
   if (window.__playgamaYandexCompatInstalled) return;
@@ -18,10 +18,12 @@
   const safeCall = (callback, ...args) => {
     try { callback?.(...args); } catch (error) { console.warn('[Playgama] callback failed:', error); }
   };
+
   const normalizeLanguage = (value) => {
     const code = String(value || navigator.language || 'en').trim().toLowerCase().split(/[-_]/)[0];
     return code || 'en';
   };
+
   const wrapAudioContext = () => {
     const NativeAudioContext = window.AudioContext || window.webkitAudioContext;
     if (!NativeAudioContext || NativeAudioContext.__playgamaCompatWrapped) return;
@@ -36,6 +38,7 @@
     window.AudioContext = WrappedAudioContext;
     if (window.webkitAudioContext === NativeAudioContext) window.webkitAudioContext = WrappedAudioContext;
   };
+
   const pauseTrackedAudio = () => {
     trackedAudioContexts.forEach((context) => {
       if (context?.state === 'running') context.suspend?.().catch?.(() => {});
@@ -47,6 +50,7 @@
       }
     });
   };
+
   const resumeTrackedAudio = () => {
     if (pauseReasons.size || !platformAudioEnabled || document.hidden) return;
     trackedAudioContexts.forEach((context) => {
@@ -57,12 +61,14 @@
       try { media.play?.().catch?.(() => {}); } catch (_) {}
     });
   };
+
   const emitPauseState = () => {
     const paused = pauseReasons.size > 0;
     const listeners = paused ? pauseListeners : resumeListeners;
     listeners.forEach((listener) => safeCall(listener));
     if (paused) pauseTrackedAudio(); else resumeTrackedAudio();
   };
+
   const setPauseReason = (reason, active) => {
     const wasPaused = pauseReasons.size > 0;
     if (active) pauseReasons.add(reason); else pauseReasons.delete(reason);
@@ -76,28 +82,47 @@
     if (!window.bridge || typeof window.bridge.initialize !== 'function') {
       throw new Error('Playgama Bridge script is unavailable');
     }
+
+    window.bridge.engine = 'javascript';
     await window.bridge.initialize({ configFilePath: './playgama-bridge-config.json' });
     const bridge = window.bridge;
+
+    if (!String(bridge.version || '').startsWith('2.')) {
+      throw new Error(`Playgama Bridge v2 required, loaded ${bridge.version || 'unknown'}`);
+    }
+
     try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(120); } catch (_) {}
+
     platformAudioEnabled = bridge.platform?.isAudioEnabled !== false;
     if (!platformAudioEnabled) pauseTrackedAudio();
+
     try {
-      bridge.platform?.on?.(bridge.EVENT_NAME.PAUSE_STATE_CHANGED, (paused) => setPauseReason('platform', Boolean(paused)));
-    } catch (error) { console.warn('[Playgama] pause event subscription failed:', error); }
+      bridge.platform?.on?.(bridge.EVENT_NAME.PAUSE_STATE_CHANGED, (paused) => {
+        setPauseReason('platform', Boolean(paused));
+      });
+    } catch (error) {
+      console.warn('[Playgama] pause event subscription failed:', error);
+    }
+
     try {
       bridge.platform?.on?.(bridge.EVENT_NAME.AUDIO_STATE_CHANGED, (enabled) => {
         platformAudioEnabled = enabled !== false;
         if (platformAudioEnabled) resumeTrackedAudio(); else pauseTrackedAudio();
       });
-    } catch (error) { console.warn('[Playgama] audio event subscription failed:', error); }
-    try {
-      const markerKey = '__playgama_bridge_port_v1';
-      await bridge.storage.get(markerKey).catch(() => undefined);
-      await bridge.storage.set(markerKey, { version: 1, updatedAt: Date.now() });
     } catch (error) {
-      console.info('[Playgama] default storage unavailable; local persistence remains available.', error);
+      console.warn('[Playgama] audio event subscription failed:', error);
     }
+
+    try {
+      const markerKey = '__openttd_playgama_bridge_v2';
+      await bridge.storage.get(markerKey).catch(() => undefined);
+      await bridge.storage.set(markerKey, { version: 2, updatedAt: Date.now() });
+    } catch (error) {
+      console.info('[Playgama] storage marker unavailable; game persistence can still use local storage.', error);
+    }
+
     document.documentElement.dataset.playgamaBridge = 'ready';
+    document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || '2');
     return bridge;
   };
 
@@ -107,21 +132,6 @@
     return null;
   });
 
-  const fallbackStorageType = (bridge) => bridge?.STORAGE_TYPE?.LOCAL_STORAGE || 'local_storage';
-  const storageGet = async (bridge, key) => {
-    try { return await bridge.storage.get(key); }
-    catch (_) {
-      try { return await bridge.storage.get(key, fallbackStorageType(bridge)); }
-      catch (_) { return undefined; }
-    }
-  };
-  const storageSet = async (bridge, key, value) => {
-    try { await bridge.storage.set(key, value); return true; }
-    catch (_) {
-      try { await bridge.storage.set(key, value, fallbackStorageType(bridge)); return true; }
-      catch (_) { return false; }
-    }
-  };
   const createPlayer = (bridge) => {
     if (pseudoPlayer) return pseudoPlayer;
     pseudoPlayer = {
@@ -129,15 +139,16 @@
         const requested = Array.isArray(keys) ? keys : (keys == null ? [] : [keys]);
         const result = {};
         for (const key of requested) {
-          const value = await storageGet(bridge, String(key));
-          if (value !== undefined && value !== null) result[key] = value;
+          try {
+            const value = await bridge.storage.get(String(key));
+            if (value !== undefined && value !== null) result[key] = value;
+          } catch (_) {}
         }
         return result;
       },
       async setData(data) {
         for (const [key, value] of Object.entries(data || {})) {
-          const ok = await storageSet(bridge, String(key), value);
-          if (!ok) throw new Error(`Could not persist Playgama storage key: ${key}`);
+          await bridge.storage.set(String(key), value);
         }
       },
       getMode() { return 'full'; },
@@ -146,12 +157,7 @@
     };
     return pseudoPlayer;
   };
-  const bindAdPause = (bridge, eventName, openedState, closedStates, reason) => {
-    bridge.advertisement?.on?.(eventName, (state) => {
-      if (state === openedState) setPauseReason(reason, true);
-      else if (closedStates.includes(state)) setPauseReason(reason, false);
-    });
-  };
+
   const createFullscreenAd = (bridge) => (options = {}) => {
     const callbacks = options.callbacks || {};
     const advertisement = bridge.advertisement;
@@ -159,60 +165,53 @@
       safeCall(callbacks.onError, new Error('Interstitial advertising is not supported'));
       return;
     }
+
     const eventName = bridge.EVENT_NAME.INTERSTITIAL_STATE_CHANGED;
     const openedState = bridge.INTERSTITIAL_STATE.OPENED;
     const closedState = bridge.INTERSTITIAL_STATE.CLOSED;
     const failedState = bridge.INTERSTITIAL_STATE.FAILED;
     let opened = false;
     let finished = false;
+
     const cleanup = () => advertisement.off?.(eventName, listener);
     const listener = (state) => {
       if (finished) return;
       if (state === openedState) {
-        opened = true; setPauseReason('interstitial', true); safeCall(callbacks.onOpen);
+        opened = true;
+        setPauseReason('interstitial', true);
+        safeCall(callbacks.onOpen);
       } else if (state === closedState) {
-        finished = true; setPauseReason('interstitial', false); cleanup(); safeCall(callbacks.onClose, opened);
+        finished = true;
+        setPauseReason('interstitial', false);
+        cleanup();
+        safeCall(callbacks.onClose, opened);
       } else if (state === failedState) {
-        finished = true; setPauseReason('interstitial', false); cleanup(); safeCall(callbacks.onError, new Error('Playgama interstitial failed'));
+        finished = true;
+        setPauseReason('interstitial', false);
+        cleanup();
+        safeCall(callbacks.onError, new Error('Playgama interstitial failed'));
       }
     };
+
     advertisement.on?.(eventName, listener);
     try { advertisement.showInterstitial(options.placement || null); }
-    catch (error) { finished = true; cleanup(); setPauseReason('interstitial', false); safeCall(callbacks.onError, error); }
-  };
-  const createRewardedAd = (bridge) => (options = {}) => {
-    const callbacks = options.callbacks || {};
-    const advertisement = bridge.advertisement;
-    if (!advertisement?.isRewardedSupported) {
-      safeCall(callbacks.onError, new Error('Rewarded advertising is not supported'));
-      return;
+    catch (error) {
+      finished = true;
+      cleanup();
+      setPauseReason('interstitial', false);
+      safeCall(callbacks.onError, error);
     }
-    const eventName = bridge.EVENT_NAME.REWARDED_STATE_CHANGED;
-    const openedState = bridge.REWARDED_STATE.OPENED;
-    const rewardedState = bridge.REWARDED_STATE.REWARDED;
-    const closedState = bridge.REWARDED_STATE.CLOSED;
-    const failedState = bridge.REWARDED_STATE.FAILED;
-    let rewarded = false;
-    let finished = false;
-    const cleanup = () => advertisement.off?.(eventName, listener);
-    const listener = (state) => {
-      if (finished) return;
-      if (state === openedState) { setPauseReason('rewarded', true); safeCall(callbacks.onOpen); }
-      else if (state === rewardedState) { rewarded = true; safeCall(callbacks.onRewarded); }
-      else if (state === closedState) { finished = true; setPauseReason('rewarded', false); cleanup(); safeCall(callbacks.onClose, rewarded); }
-      else if (state === failedState) { finished = true; setPauseReason('rewarded', false); cleanup(); safeCall(callbacks.onError, new Error('Playgama rewarded advertisement failed')); }
-    };
-    advertisement.on?.(eventName, listener);
-    try { advertisement.showRewarded(options.placement || null); }
-    catch (error) { finished = true; cleanup(); setPauseReason('rewarded', false); safeCall(callbacks.onError, error); }
   };
+
   const sendPlatformMessage = async (bridge, message) => {
     try { await bridge.platform?.sendMessage?.(message); }
     catch (error) { console.info(`[Playgama] platform message ${message} was not accepted.`, error); }
   };
+
   const createSdk = (bridge) => {
     if (pseudoSdk) return pseudoSdk;
     const player = createPlayer(bridge);
+
     pseudoSdk = {
       environment: {
         i18n: { lang: normalizeLanguage(bridge.platform?.language) },
@@ -223,25 +222,24 @@
           ready() {
             if (gameReadySent) return Promise.resolve(false);
             gameReadySent = true;
-            return sendPlatformMessage(bridge, 'game_ready').then(() => true);
+            return sendPlatformMessage(bridge, bridge.PLATFORM_MESSAGE?.GAME_READY || 'game_ready').then(() => true);
           }
         },
         GameplayAPI: {
           start() {
             if (gameplayStarted) return Promise.resolve(false);
             gameplayStarted = true;
-            return sendPlatformMessage(bridge, 'gameplay_started').then(() => true);
+            return sendPlatformMessage(bridge, bridge.PLATFORM_MESSAGE?.GAMEPLAY_STARTED || 'gameplay_started').then(() => true);
           },
           stop() {
             if (!gameplayStarted) return Promise.resolve(false);
             gameplayStarted = false;
-            return sendPlatformMessage(bridge, 'gameplay_stopped').then(() => true);
+            return sendPlatformMessage(bridge, bridge.PLATFORM_MESSAGE?.GAMEPLAY_STOPPED || 'gameplay_stopped').then(() => true);
           }
         }
       },
       adv: {
-        showFullscreenAdv: createFullscreenAd(bridge),
-        showRewardedVideo: createRewardedAd(bridge)
+        showFullscreenAdv: createFullscreenAd(bridge)
       },
       async getPlayer() { return player; },
       on(eventName, listener) {
@@ -254,11 +252,15 @@
       },
       isAvailableMethod(methodName) {
         return Promise.resolve(new Set([
-          'getPlayer', 'adv.showFullscreenAdv', 'adv.showRewardedVideo',
-          'features.LoadingAPI.ready', 'features.GameplayAPI.start', 'features.GameplayAPI.stop'
+          'getPlayer',
+          'adv.showFullscreenAdv',
+          'features.LoadingAPI.ready',
+          'features.GameplayAPI.start',
+          'features.GameplayAPI.stop'
         ]).has(String(methodName || '')));
       }
     };
+
     window.ysdk = pseudoSdk;
     window.playgamaYandexCompatSdk = pseudoSdk;
     return pseudoSdk;
@@ -272,14 +274,8 @@
       });
     }
   };
-  document.addEventListener('visibilitychange', () => setPauseReason('document-hidden', document.hidden));
-  window.playgamaBridgeReady.then((bridge) => {
-    if (!bridge) return;
-    try {
-      bindAdPause(bridge, bridge.EVENT_NAME.INTERSTITIAL_STATE_CHANGED, bridge.INTERSTITIAL_STATE.OPENED,
-        [bridge.INTERSTITIAL_STATE.CLOSED, bridge.INTERSTITIAL_STATE.FAILED], 'interstitial');
-      bindAdPause(bridge, bridge.EVENT_NAME.REWARDED_STATE_CHANGED, bridge.REWARDED_STATE.OPENED,
-        [bridge.REWARDED_STATE.CLOSED, bridge.REWARDED_STATE.FAILED], 'rewarded');
-    } catch (error) { console.warn('[Playgama] ad lifecycle subscription failed:', error); }
+
+  document.addEventListener('visibilitychange', () => {
+    setPauseReason('document-hidden', document.hidden);
   });
 })();
