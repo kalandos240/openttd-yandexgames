@@ -1,14 +1,15 @@
 /* Optional bundled OpenTTD add-ons for the Playgama build.
  *
  * This file does NOT activate any NewGRF or base graphics set. It only makes
- * approved, redistributable packages available in OpenTTD's normal local
- * content directories before main() starts. Players opt in through OpenTTD's
- * own NewGRF Settings / Game Options UI.
+ * approved packages available in OpenTTD's normal local content directories
+ * before main() starts. Players opt in through OpenTTD's own NewGRF Settings /
+ * Game Options UI.
  *
- * Payloads are kept as raw package files under ./addons instead of being
- * base64-embedded in JavaScript. This avoids base64 expansion, JS parsing cost
- * and unnecessary peak memory. Existing IDBFS copies are detected by size and
- * skipped, so subsequent launches normally perform no payload fetches.
+ * Large payloads are stored as gzip-compressed files under ./addons. They are
+ * decompressed only once into the persistent OpenTTD IDBFS area. Subsequent
+ * launches compare the installed byte size and skip both download/decompression
+ * when the local copy is already present. Installation is serial on purpose to
+ * keep peak browser memory low on large NewGRFs.
  */
 (() => {
   'use strict';
@@ -16,7 +17,7 @@
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
-  const INSTALL_CONCURRENCY = 2;
+  const INSTALL_CONCURRENCY = 1;
   let manifestPromise = null;
 
   const ensureDir = (FS, path) => {
@@ -33,6 +34,7 @@
         if (!response.ok) throw new Error(`HTTP ${response.status} while loading addon manifest`);
         const manifest = await response.json();
         if (!manifest || !Array.isArray(manifest.items)) throw new Error('Invalid bundled addon manifest');
+        if (manifest.enabled_by_default !== false) throw new Error('Bundled add-ons must remain opt-in');
         return manifest;
       });
     }
@@ -45,28 +47,60 @@
     throw new Error(`Unsupported bundled addon type: ${item.type}`);
   };
 
+  const inflateGzip = async (packed) => {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('This browser does not support DecompressionStream(gzip)');
+    }
+    const stream = new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  };
+
+  const decodeAsset = async (item, packed) => {
+    const compression = item.compression || 'none';
+    if (compression === 'none') return packed;
+    if (compression === 'gzip') return inflateGzip(packed);
+    throw new Error(`Unsupported compression ${compression} for ${item.content_id}`);
+  };
+
   const installOne = async (FS, personalDir, item) => {
     const root = installRootFor(personalDir, item);
     ensureDir(FS, root);
     const target = root + '/' + item.install_filename;
+    const installedBytes = Number(item.installed_bytes ?? item.bytes);
+    const packagedBytes = Number(item.packaged_bytes ?? item.bytes);
+
+    if (!Number.isFinite(installedBytes) || installedBytes <= 0) {
+      throw new Error(`Invalid installed byte count for ${item.content_id}`);
+    }
 
     try {
       const stat = FS.stat(target);
-      if (Number(stat.size) === Number(item.bytes)) {
-        return { id: item.content_id, state: 'cached', bytes: item.bytes };
+      if (Number(stat.size) === installedBytes) {
+        return { id: item.content_id, state: 'cached', installed_bytes: installedBytes };
       }
     } catch (_) {}
 
     const assetUrl = new URL(item.asset, document.baseURI).toString();
     const response = await fetch(assetUrl, { cache: 'force-cache' });
     if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${item.content_id}`);
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (data.byteLength !== Number(item.bytes)) {
-      throw new Error(`Size mismatch for ${item.content_id}: expected ${item.bytes}, got ${data.byteLength}`);
+
+    const packed = new Uint8Array(await response.arrayBuffer());
+    if (Number.isFinite(packagedBytes) && packagedBytes > 0 && packed.byteLength !== packagedBytes) {
+      throw new Error(`Packaged size mismatch for ${item.content_id}: expected ${packagedBytes}, got ${packed.byteLength}`);
+    }
+
+    const data = await decodeAsset(item, packed);
+    if (data.byteLength !== installedBytes) {
+      throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
     }
 
     FS.writeFile(target, data);
-    return { id: item.content_id, state: 'installed', bytes: data.byteLength };
+    return {
+      id: item.content_id,
+      state: 'installed',
+      packaged_bytes: packed.byteLength,
+      installed_bytes: data.byteLength,
+    };
   };
 
   const mapLimit = async (items, limit, worker) => {
@@ -124,16 +158,15 @@
   };
 
   /* Loaded after openttd-playgama-fixes.js, so this wraps the already-installed
-     AI/config/cloud restore hook. The optional content is installed only after
-     cloud restore has finished, preventing old cloud state from overwriting it. */
+     AI/config/cloud restore hook. Optional content is installed after cloud
+     restore so older cloud state cannot overwrite the local bundled catalog. */
   const previousRestore = window.yandexRestoreOpenTTDCloud;
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
     if (typeof previousRestore === 'function') await previousRestore(FS, personalDir);
     try {
       await installBundledAddons(FS, personalDir);
     } catch (error) {
-      /* Optional add-ons must never make the base game unbootable. CI verifies
-         that all packaged assets exist; this catch is for runtime/network edge cases. */
+      /* Add-on failure must never make the base game unbootable. */
       console.warn('[Playgama/OpenTTD] Optional addon installation failed; continuing with base game', error);
     }
   };
