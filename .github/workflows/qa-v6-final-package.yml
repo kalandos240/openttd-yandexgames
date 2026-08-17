@@ -1,0 +1,261 @@
+name: Final QA OpenTTD Playgama v6 add-ons
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/qa-v6-final-package.yml'
+      - 'playgama/extract_newgrf_archive.py'
+      - 'playgama/package_optional_addons.py'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'docs/PLAYGAMA_ADDONS.md'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  V5_ARTIFACT_ID: '9302568671'
+  IRON_HORSE_COMMIT: 'ec0523c6f80459ec40cb4488e9a23e5aaa3705c3'
+  FIRS_COMMIT: '8844b7da36e919690322dcd69ffd9977e4e9a9c4'
+  EARLY_COMMIT: 'ae1a35b127cf089bce697afee1bc7cb6a0608b2a'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout integration
+        uses: actions/checkout@v4
+
+      - name: Validate packaging scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            playgama/extract_newgrf_archive.py \
+            playgama/package_optional_addons.py
+          node --check playgama/openttd-bundled-addons.js
+
+          rm -rf /tmp/newgrf-extractor-test
+          mkdir -p /tmp/newgrf-extractor-test/inner /tmp/newgrf-extractor-test/out
+          printf 'dummy-newgrf-payload' > /tmp/newgrf-extractor-test/inner/test.grf
+          expected="$(md5sum /tmp/newgrf-extractor-test/inner/test.grf | cut -d' ' -f1)"
+          tar -cf /tmp/newgrf-extractor-test/nested.tar -C /tmp/newgrf-extractor-test/inner test.grf
+          (cd /tmp/newgrf-extractor-test && zip -q outer.zip nested.tar)
+          selected="$(python3 playgama/extract_newgrf_archive.py \
+            /tmp/newgrf-extractor-test/outer.zip \
+            /tmp/newgrf-extractor-test/out \
+            "$expected")"
+          test -s "$selected"
+          test "$(md5sum "$selected" | cut -d' ' -f1)" = "$expected"
+
+      - name: Download verified v5 runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V5_ARTIFACT_ID}/zip" \
+            -o /tmp/v5-artifact.zip
+          rm -rf /tmp/v5-artifact dist-playgama
+          mkdir -p /tmp/v5-artifact dist-playgama
+          unzip -q /tmp/v5-artifact.zip -d /tmp/v5-artifact
+          inner="$(find /tmp/v5-artifact -type f -name '*.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-playgama
+          test -s dist-playgama/index.html
+          test -s dist-playgama/openttd-runtime.js
+          test -s dist-playgama/openttd-classic-ai.js
+          test -s dist-playgama/openttd-playgama-fixes.js
+          grep -q 'playgama-bridge' dist-playgama/index.html
+          grep -q 'openttd-classic-ai.js' dist-playgama/index.html
+
+      - name: Install NewGRF compiler toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make zip unzip xz-utils graphviz grfcodec
+          python3 -m pip install --disable-pip-version-check --no-cache-dir \
+            'nml==0.9.0' chameleon markdown pillow
+          nmlc --version
+
+      - name: Restore source add-on build cache
+        id: source-cache
+        uses: actions/cache@v4
+        with:
+          path: source-addon-cache
+          key: playgama-v6-source-grfs-nml090-${{ env.IRON_HORSE_COMMIT }}-${{ env.FIRS_COMMIT }}-${{ env.EARLY_COMMIT }}
+
+      - name: Build pinned GPL add-ons from source
+        if: steps.source-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf source-addon-cache addon-source
+          mkdir -p source-addon-cache/licenses addon-source
+
+          git clone --filter=blob:none https://github.com/andythenorth/iron-horse.git addon-source/iron-horse
+          cd addon-source/iron-horse
+          git checkout "${IRON_HORSE_COMMIT}"
+          make grf GRF=horse PW=2 SD=True
+          test -s generated/iron-horse.grf
+          cp generated/iron-horse.grf ../../source-addon-cache/iron-horse-4.29.0.grf
+          cp license.pt ../../source-addon-cache/licenses/iron-horse-GPL-2.0.txt
+          cd ../..
+
+          git clone --filter=blob:none https://github.com/andythenorth/firs.git addon-source/firs
+          cd addon-source/firs
+          git checkout "${FIRS_COMMIT}"
+          make grf
+          test -s generated/firs.grf
+          cp generated/firs.grf ../../source-addon-cache/firs-5.2.0.grf
+          if test -f license.pt; then cp license.pt ../../source-addon-cache/licenses/firs-GPL-2.0.txt; fi
+          cd ../..
+
+          git clone https://github.com/DonaldDuck313/OpenTTD-NewGRFs.git addon-source/early
+          cd addon-source/early
+          git checkout "${EARLY_COMMIT}"
+          cd EarlyVehicleSet
+          nmlc -c --grf=EarlyVehicleSet.grf EarlyVehicleSet.nml
+          test -s EarlyVehicleSet.grf
+          cp EarlyVehicleSet.grf ../../../source-addon-cache/early-vehicle-set-0.0.2.grf
+          cp readme.md ../../../source-addon-cache/licenses/early-vehicle-set-readme.txt
+          cd ../../..
+
+          printf '%s\n' "${EARLY_COMMIT}" > source-addon-cache/EARLY-VEHICLE-SOURCE-COMMIT.txt
+          sha256sum source-addon-cache/*.grf | tee source-addon-cache/SOURCE-GRF-SHA256SUMS.txt
+
+      - name: Verify source cache and stage files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s source-addon-cache/iron-horse-4.29.0.grf
+          test -s source-addon-cache/firs-5.2.0.grf
+          test -s source-addon-cache/early-vehicle-set-0.0.2.grf
+          rm -rf dist-addons
+          mkdir -p dist-addons/licenses
+          cp source-addon-cache/*.grf dist-addons/
+          cp source-addon-cache/EARLY-VEHICLE-SOURCE-COMMIT.txt dist-addons/
+          cp -a source-addon-cache/licenses/. dist-addons/licenses/
+          sha256sum dist-addons/*.grf
+          ls -lh dist-addons/*.grf
+
+      - name: Download verify and compress HTTPS add-ons
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 playgama/package_optional_addons.py --work-dir dist-addons
+          python3 -m json.tool dist-addons/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          sha256sum dist-addons/addons/*
+          du -h dist-addons/addons/*
+
+      - name: Assemble v6 over verified runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-playgama/addons dist-playgama/licenses/addons
+          cp playgama/openttd-bundled-addons.js dist-playgama/openttd-bundled-addons.js
+          cp docs/PLAYGAMA_ADDONS.md dist-playgama/BUNDLED-ADDONS.md
+          cp dist-addons/THIRD-PARTY-ADDONS.md dist-playgama/THIRD-PARTY-ADDONS.md
+          cp dist-addons/ADDON-PACKAGE-SHA256SUMS.txt dist-playgama/ADDON-PACKAGE-SHA256SUMS.txt
+          cp dist-addons/OPENTTD-BUNDLED-ADDONS.json dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          cp -a dist-addons/addons dist-playgama/addons
+          mkdir -p dist-playgama/licenses/addons
+          cp -a dist-addons/licenses/. dist-playgama/licenses/addons/
+          cp dist-addons/EARLY-VEHICLE-SOURCE-COMMIT.txt dist-playgama/licenses/addons/
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('dist-playgama/index.html')
+          html=p.read_text(encoding='utf-8')
+          marker='<script src="openttd-playgama-fixes.js"></script>'
+          addon='<script src="openttd-bundled-addons.js"></script>'
+          if addon not in html:
+              if marker not in html:
+                  raise SystemExit('Missing Playgama fixes insertion point')
+              html=html.replace(marker, marker + addon, 1)
+          p.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Validate functionality and optimized payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check dist-playgama/openttd-bundled-addons.js
+          grep -q 'openttd-bundled-addons.js' dist-playgama/index.html
+          grep -q 'openttd-classic-ai.js' dist-playgama/index.html
+          grep -q "INSTALL_CONCURRENCY = 1" dist-playgama/openttd-bundled-addons.js
+          grep -q "DecompressionStream('gzip')" dist-playgama/openttd-bundled-addons.js
+          grep -q "cache: 'force-cache'" dist-playgama/openttd-bundled-addons.js
+          grep -q 'FS.stat(target)' dist-playgama/openttd-bundled-addons.js
+
+          python3 - <<'PY'
+          import gzip, hashlib, json
+          from pathlib import Path
+          root=Path('dist-playgama')
+          manifest=json.loads((root/'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          required={
+              'newgrf/43411223','newgrf/f1250009','newgrf/9787eafe',
+              'newgrf/55440100','newgrf/474c0501','newgrf/4f475a01',
+              'base-graphics/6f676678'
+          }
+          items=manifest['items']
+          assert {x['content_id'] for x in items} == required
+          assert manifest['enabled_by_default'] is False
+          assert all(x['enabled_by_default'] is False for x in items)
+          assert all(x['compression'] == 'gzip' for x in items)
+          conflicts={x['content_id'] for x in items if x.get('conflict_group') == 'industry-set'}
+          assert conflicts == {'newgrf/f1250009','newgrf/55440100'}
+          for item in items:
+              asset=root/item['asset']
+              packed=asset.read_bytes()
+              assert len(packed) == item['packaged_bytes']
+              assert hashlib.sha256(packed).hexdigest() == item['packaged_sha256']
+              raw=gzip.decompress(packed)
+              assert len(raw) == item['installed_bytes']
+              assert hashlib.sha256(raw).hexdigest() == item['sha256']
+              assert item['install_filename'].endswith(('.grf','.tar'))
+          print('packaged optional bytes:', manifest['total_packaged_bytes'])
+          print('installed optional bytes:', manifest['total_installed_bytes'])
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          bad=[]
+          for p in Path('dist-playgama').rglob('*'):
+              if not p.is_file(): continue
+              rel=p.relative_to('dist-playgama').as_posix()
+              if ' ' in rel or any(ord(ch)>127 for ch in rel): bad.append(rel)
+          if bad: raise SystemExit(f'Invalid paths: {bad}')
+          PY
+
+          unpacked="$(du -sb dist-playgama | cut -f1)"
+          echo "Unpacked package bytes: ${unpacked}"
+          test "$unpacked" -lt 300000000
+
+      - name: Create final v6 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f openttd-playgama-v6-addons.zip
+          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v6-addons.zip .)
+          unzip -t openttd-playgama-v6-addons.zip
+          test "$(unzip -Z1 openttd-playgama-v6-addons.zip | grep -c '^index.html$')" = 1
+          sha256sum openttd-playgama-v6-addons.zip | tee OPENTTD-PLAYGAMA-V6-SHA256.txt
+          ls -lh openttd-playgama-v6-addons.zip
+
+      - name: Upload final v6 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v6-addons-final
+          path: |
+            openttd-playgama-v6-addons.zip
+            OPENTTD-PLAYGAMA-V6-SHA256.txt
+          if-no-files-found: error
+          retention-days: 90

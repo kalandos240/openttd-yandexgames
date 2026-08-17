@@ -31,7 +31,7 @@ Iron Horse, Road Hog and Early Vehicle Set all add vehicles. They can be selecte
 - OpenTTD / BaNaNaS package metadata: `https://bananas.openttd.org/`
 - Iron Horse: `https://grf.farm/iron-horse/index.html`
 - FIRS: `https://grf.farm/firs/index.html`
-- Road Hog project thread: `https://www.tt-forums.net/viewtopic.php?f=26&t=70241`
+- Road Hog: `https://grf.farm/road-hog/latest.html`
 - GIST source: `https://github.com/UweDomaratius/GermanIndustries`
 - Early Vehicle Set source: `https://github.com/DonaldDuck313/OpenTTD-NewGRFs/tree/main/EarlyVehicleSet`
 - OpenGFX2 source: `https://github.com/OpenTTD/OpenGFX2`
@@ -41,3 +41,7 @@ The build downloads the exact BaNaNaS package versions checked by the workflow a
 ## Performance / packaging design
 
 The add-on archives are stored as raw files under `addons/` in the Playgama package. They are **not** converted to base64 JavaScript. On first launch the installer copies missing packages into OpenTTD's virtual local content folders before `main()` starts. On later launches it checks the persistent IDBFS copy by byte size and skips already-installed content, so the large add-on payloads are normally not fetched or rewritten again. Installation uses a small concurrency limit to avoid large transient memory spikes.
+
+## Release QA
+
+The v6 packaging workflow verifies pinned BaNaNaS IDs and MD5 prefixes, package readability, local asset sizes, the FIRS/GIST conflict group, opt-in-only behavior, ASCII archive paths and the Playgama 300 MB unpacked-size ceiling before publishing the ZIP artifact.
