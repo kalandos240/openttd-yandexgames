@@ -1,4 +1,4 @@
-name: Package Playgama v2 build
+name: Package Playgama v3 build
 
 on:
   workflow_dispatch:
@@ -39,23 +39,92 @@ jobs:
           test -s dist-playgama/openttd-runtime.js
           test -s dist-playgama/yandex-bridge.js
           test -s dist-playgama/openttd-shell-2.js
+
+          # The packaging fixes below intentionally patch only the three browser
+          # startup competitor defaults in openttd-runtime.js. Verify the exact
+          # tested input before making any changes.
           echo 'e730bceadfef3a51adf9b830586a10df81801e697dd6726570287a6609001ce4  dist-playgama/openttd-runtime.js' | sha256sum -c -
           echo 'e85a89f0610fc178b75c8d3b8a23707d0c11f6bc27bbb4058724c4466ec2f6ff  dist-playgama/yandex-bridge.js' | sha256sum -c -
           echo 'af77f33fc3e0aad897400af1e8ba4b3c81732dce71b201b2be74fbecd2f681be  dist-playgama/openttd-shell-2.js' | sha256sum -c -
 
-      - name: Install Playgama Bridge v2 integration
+      - name: Build bundled classic AI payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          download_any() {
+            local dest="$1"; shift
+            for url in "$@"; do
+              echo "Trying ${url}"
+              if curl -fL --retry 2 --connect-timeout 20 -o "${dest}" "${url}"; then
+                test -s "${dest}"
+                return 0
+              fi
+            done
+            echo "Could not download ${dest}" >&2
+            return 1
+          }
+
+          download_any /tmp/SimpleAI-14.tar.gz \
+            'https://binaries.openttd.org/bananas/ai/SimpleAI-14.tar.gz' \
+            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ai/SimpleAI-14.tar.gz'
+
+          download_any /tmp/Pathfinder.Road-4.tar.gz \
+            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Road-4-1.tar.gz' \
+            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Road-4.tar.gz' \
+            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ailibrary/Pathfinder.Road-4-1.tar.gz'
+
+          download_any /tmp/Pathfinder.Rail-1.tar.gz \
+            'https://binaries.openttd.org/bananas/ailibrary/Pathfinder.Rail-1.tar.gz' \
+            'https://kompot.snt.utwente.nl/pub/games/openttd/bananas/ailibrary/Pathfinder.Rail-1.tar.gz'
+
+          gzip -dc /tmp/SimpleAI-14.tar.gz > /tmp/SimpleAI-14.tar
+          gzip -dc /tmp/Pathfinder.Road-4.tar.gz > /tmp/Pathfinder.Road-4.tar
+          gzip -dc /tmp/Pathfinder.Rail-1.tar.gz > /tmp/Pathfinder.Rail-1.tar
+          tar -tf /tmp/SimpleAI-14.tar | head -n 30
+          tar -tf /tmp/Pathfinder.Road-4.tar | head -n 20
+          tar -tf /tmp/Pathfinder.Rail-1.tar | head -n 20
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, json
+
+          archives = {
+              'ai/SimpleAI-14.tar': Path('/tmp/SimpleAI-14.tar'),
+              'ai/library/Pathfinder.Road-4.tar': Path('/tmp/Pathfinder.Road-4.tar'),
+              'ai/library/Pathfinder.Rail-1.tar': Path('/tmp/Pathfinder.Rail-1.tar'),
+          }
+          payload = {
+              name: base64.b64encode(path.read_bytes()).decode('ascii')
+              for name, path in archives.items()
+          }
+          out = Path('playgama/openttd-classic-ai.generated.js')
+          out.write_text(
+              '/* Generated in CI from the official/fallback BaNaNaS AI release archives. */\n'
+              'window.__openttdClassicAIArchives = ' + json.dumps(payload, separators=(',', ':')) + ';\n',
+              encoding='utf-8',
+          )
+          print('Generated AI bundle bytes:', out.stat().st_size)
+          PY
+          node --check playgama/openttd-classic-ai.generated.js
+
+      - name: Install Playgama Bridge v2 integration and QA fixes
         run: |
           set -euo pipefail
           python3 playgama/package_playgama.py dist-playgama \
             --adapter playgama/playgama-yandex-compat.js \
-            --config playgama/playgama-bridge-config.json
+            --config playgama/playgama-bridge-config.json \
+            --fixes playgama/openttd-playgama-fixes.js \
+            --ai-bundle playgama/openttd-classic-ai.generated.js
 
-      - name: Validate Playgama v2 package
+      - name: Validate Playgama v3 package
         run: |
           set -euo pipefail
           grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
           ! grep -q 'bridge.playgama.com/v1/' dist-playgama/index.html
           grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
+          grep -q 'openttd-classic-ai.js' dist-playgama/index.html
+          grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
           grep -q "window.bridge.engine = 'javascript'" dist-playgama/playgama-yandex-compat.js
           grep -q "Bridge v2 required" dist-playgama/playgama-yandex-compat.js
           ! grep -q 'showRewardedVideo' dist-playgama/playgama-yandex-compat.js
@@ -64,7 +133,22 @@ jobs:
           grep -q 'player.getData' dist-playgama/yandex-bridge.js
           grep -q 'player.setData' dist-playgama/yandex-bridge.js
           grep -q 'showFullscreenAdv' dist-playgama/yandex-bridge.js
+
+          # Intentional OpenTTD-specific fixes.
+          test "$(grep -ao 'max_no_competitors = 3' dist-playgama/openttd-runtime.js | wc -l)" -ge 3
+          ! grep -aq 'max_no_competitors = 0' dist-playgama/openttd-runtime.js
+          grep -q 'max_no_competitors = 3' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'english.lng' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'russian.lng' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'Browser.mainLoop.pause' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'PAUSE_STATE_CHANGED' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'AUDIO_STATE_CHANGED' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'aspect-ratio: 16 / 9' dist-playgama/openttd-playgama-fixes.js
+          grep -q '__openttdClassicAIArchives' dist-playgama/openttd-classic-ai.js
+
           node --check dist-playgama/playgama-yandex-compat.js
+          node --check dist-playgama/openttd-playgama-fixes.js
+          node --check dist-playgama/openttd-classic-ai.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
           python3 - <<'PY'
           import json
@@ -75,9 +159,12 @@ jobs:
           assert cfg['advertisement']['banner']['disable'] is True
           assert cfg['device']['supportedOrientations'] == ['landscape']
           PY
-          echo 'e730bceadfef3a51adf9b830586a10df81801e697dd6726570287a6609001ce4  dist-playgama/openttd-runtime.js' | sha256sum -c -
+
+          # Files unrelated to the targeted runtime startup patch stay identical
+          # to the pinned tested package.
           echo 'e85a89f0610fc178b75c8d3b8a23707d0c11f6bc27bbb4058724c4466ec2f6ff  dist-playgama/yandex-bridge.js' | sha256sum -c -
           echo 'af77f33fc3e0aad897400af1e8ba4b3c81732dce71b201b2be74fbecd2f681be  dist-playgama/openttd-shell-2.js' | sha256sum -c -
+
           unpacked_bytes="$(du -sb dist-playgama | cut -f1)"
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
@@ -85,14 +172,14 @@ jobs:
       - name: Create Playgama ZIP
         run: |
           set -euo pipefail
-          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v2.zip .)
-          unzip -t openttd-playgama-v2.zip
-          ls -lh openttd-playgama-v2.zip
+          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v3-fixed.zip .)
+          unzip -t openttd-playgama-v3-fixed.zip
+          ls -lh openttd-playgama-v3-fixed.zip
 
-      - name: Upload Playgama v2 build
+      - name: Upload Playgama v3 build
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v2
-          path: openttd-playgama-v2.zip
+          name: openttd-playgama-v3-fixed
+          path: openttd-playgama-v3-fixed.zip
           if-no-files-found: error
           retention-days: 90
