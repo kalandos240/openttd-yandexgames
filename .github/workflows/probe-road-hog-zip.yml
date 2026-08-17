@@ -1,0 +1,29 @@
+name: Probe Road Hog release archive
+
+on:
+  push:
+    paths:
+      - '.github/workflows/probe-road-hog-zip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Inspect Road Hog archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            'https://bundles.openttdcoop.org/road-hog/releases/LATEST/road-hog-1.4.1.zip' \
+            -o /tmp/road.zip
+          file /tmp/road.zip
+          sha256sum /tmp/road.zip
+          unzip -Z1 /tmp/road.zip | sed -n '1,120p'
+          rm -rf /tmp/road && mkdir /tmp/road
+          unzip -q /tmp/road.zip -d /tmp/road
+          find /tmp/road -maxdepth 4 -type f -printf '%p %s bytes\n' | sort
+          find /tmp/road -type f -iname '*.grf' -print -exec md5sum '{}' \;
