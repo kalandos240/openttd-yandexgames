@@ -6,6 +6,88 @@
   if (window.__openttdPlaygamaFixesInstalled) return;
   window.__openttdPlaygamaFixesInstalled = true;
 
+  /* OpenTTD 15.3 AI compatibility chain for bundled SimpleAI 14 (API 1.2).
+   * Derived from OpenTTD 15.3 bin/ai/compat_*.nut, GPL-2.0.
+   * OpenTTD loads every intermediate API downgrade, so the complete 15 -> 1.2
+   * chain must exist in AI_DIR before AIInstance::Initialize(). */
+  const AI_COMPAT_SCRIPTS = Object.freeze({
+  "compat_14.nut": `/* OpenTTD 15.3: downgrade API 15 -> 14. GPL-2.0. */
+AIBridge.GetBridgeID <- AIBridge.GetBridgeType;
+
+class AICompat14 {
+\tfunction Text(text)
+\t{
+\t\tif (typeof text == "string") return text;
+\t\treturn null;
+\t}
+}
+
+AIBaseStation.SetNameCompat14 <- AIBaseStation.SetName;
+AIBaseStation.SetName <- function(id, name) { return AIBaseStation.SetNameCompat14(id, AICompat14.Text(name)); }
+
+AICompany.SetNameCompat14 <- AICompany.SetName;
+AICompany.SetName <- function(name) { return AICompany.SetNameCompat14(AICompat14.Text(name)); }
+AICompany.SetPresidentNameCompat14 <- AICompany.SetPresidentName;
+AICompany.SetPresidentName <- function(name) { return AICompany.SetPresidentNameCompat14(AICompat14.Text(name)); }
+
+AIGroup.SetNameCompat14 <- AIGroup.SetName;
+AIGroup.SetName <- function(id, name) { return AIGroup.SetNameCompat14(id, AICompat14.Text(name)); }
+
+AISign.BuildSignCompat14 <- AISign.BuildSign;
+AISign.BuildSign <- function(id, name) { return AISign.BuildSignCompat14(id, AICompat14.Text(name)); }
+
+AITown.FoundTownCompat14 <- AITown.FoundTown;
+AITown.FoundTown <- function(tile, size, city, layout, name) { return AITown.FoundTownCompat14(tile, size, city, layout, AICompat14.Text(name)); }
+
+AIVehicle.SetNameCompat14 <- AIVehicle.SetName;
+AIVehicle.SetName <- function(id, name) { return AIVehicle.SetNameCompat14(id, AICompat14.Text(name)); }
+
+AIObject.constructorCompat14 <- AIObject.constructor;
+foreach(name, object in CompatScriptRootTable) {
+\tif (type(object) != "class") continue;
+\tif (!object.rawin("constructor")) continue;
+\tif (object.constructor != AIObject.constructorCompat14) continue;
+\tobject.constructor <- function() : (name) { AILog.Error("'" + name + "' is not instantiable"); }
+}
+`,
+  "compat_13.nut": `/* OpenTTD 15.3: downgrade API 14 -> 13. GPL-2.0. */\n`,
+  "compat_12.nut": `/* OpenTTD 15.3: downgrade API 13 -> 12. GPL-2.0. */
+AIRoad.HasRoadTypeCompat12 <- AIRoad.HasRoadType;
+AIRoad.HasRoadType <- function(tile, road_type)
+{
+\tlocal list = AIRoadTypeList(AIRoad.GetRoadTramType(road_type));
+\tforeach (rt, _ in list) {
+\t\tif (AIRoad.HasRoadTypeCompat12(tile, rt)) {
+\t\t\treturn true;
+\t\t}
+\t}
+\treturn false;
+}
+`,
+  "compat_1.11.nut": `/* OpenTTD 15.3: downgrade API 12 -> 1.11. GPL-2.0. */\n`,
+  "compat_1.10.nut": `/* OpenTTD 15.3: downgrade API 1.11 -> 1.10. GPL-2.0. */\n`,
+  "compat_1.9.nut": `/* OpenTTD 15.3: downgrade API 1.10 -> 1.9. GPL-2.0. */\n`,
+  "compat_1.8.nut": `/* OpenTTD 15.3: downgrade API 1.9 -> 1.8. GPL-2.0. */
+AIBridge.GetNameCompat1_8 <- AIBridge.GetName;
+AIBridge.GetName <- function(bridge_id)
+{
+\treturn AIBridge.GetNameCompat1_8(bridge_id, AIVehicle.VT_RAIL);
+}
+
+AIGroup.CreateGroupCompat1_8 <- AIGroup.CreateGroup;
+AIGroup.CreateGroup <- function(vehicle_type)
+{
+\treturn AIGroup.CreateGroupCompat1_8(vehicle_type, AIGroup.GROUP_INVALID);
+}
+`,
+  "compat_1.7.nut": `/* OpenTTD 15.3: downgrade API 1.8 -> 1.7. GPL-2.0. */\n`,
+  "compat_1.6.nut": `/* OpenTTD 15.3: downgrade API 1.7 -> 1.6. GPL-2.0. */\n`,
+  "compat_1.5.nut": `/* OpenTTD 15.3: downgrade API 1.6 -> 1.5. GPL-2.0. */\n`,
+  "compat_1.4.nut": `/* OpenTTD 15.3: downgrade API 1.5 -> 1.4. GPL-2.0. */\n`,
+  "compat_1.3.nut": `/* OpenTTD 15.3: downgrade API 1.4 -> 1.3. GPL-2.0. */\n`,
+  "compat_1.2.nut": `/* OpenTTD 15.3: downgrade API 1.3 -> 1.2. GPL-2.0. */\n`
+});
+
   const COMPETITORS = 3;
   let platformPaused = false;
   let platformAudioEnabled = true;
@@ -67,6 +149,33 @@
     }
   };
 
+  const installAICompatibility = (FS, personalDir) => {
+    const scripts = AI_COMPAT_SCRIPTS;
+
+    const aiDir = personalDir + '/ai';
+    ensureDir(FS, aiDir);
+    let installed = 0;
+    for (const [filename, source] of Object.entries(scripts)) {
+      const fullPath = aiDir + '/' + filename;
+      try {
+        let same = false;
+        try { same = FS.readFile(fullPath, { encoding: 'utf8' }) === source; } catch (_) {}
+        if (!same) FS.writeFile(fullPath, source);
+        installed++;
+      } catch (error) {
+        console.error('[Playgama/OpenTTD] Could not install AI API compatibility script', filename, error);
+      }
+    }
+
+    window.__openttdAICompatInstalled = installed;
+    if (installed !== 13) {
+      console.error('[Playgama/OpenTTD] Incomplete AI compatibility chain:', installed, '/ 13');
+    } else {
+      console.info('[Playgama/OpenTTD] AI compatibility chain 15 -> 1.2 installed (13 scripts)');
+    }
+    return installed;
+  };
+
   const forcePlatformConfig = (FS, personalDir) => {
     const path = personalDir + '/openttd.cfg';
     let config = '';
@@ -96,13 +205,17 @@
   };
 
   /* The cloud restore hook runs after IDBFS has been mounted and loaded, but
-     before OpenTTD main() starts. That is the safe point to install AI tar files
-     and to make platform language authoritative for the current launch. */
+     before OpenTTD main() starts. That is the safe point to install AI tar files,
+     the native API compatibility chain, and platform settings. */
   const originalRestore = window.yandexRestoreOpenTTDCloud;
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
+    /* Install before restore so even an empty/first-launch profile is complete.
+       Install again after restore because cloud data may replace the local AI dir. */
     installClassicAI(FS, personalDir);
+    installAICompatibility(FS, personalDir);
     if (typeof originalRestore === 'function') await originalRestore(FS, personalDir);
     installClassicAI(FS, personalDir);
+    installAICompatibility(FS, personalDir);
     forcePlatformConfig(FS, personalDir);
   };
 
