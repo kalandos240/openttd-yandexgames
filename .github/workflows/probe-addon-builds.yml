@@ -1,0 +1,117 @@
+name: Probe deterministic OpenTTD addon builds
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/.qa-v6-addon-build-probe'
+      - '.github/workflows/probe-addon-builds.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install NewGRF build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make zip unzip xz-utils graphviz grfcodec
+          python3 -m pip install --disable-pip-version-check --no-cache-dir \
+            'nml>=0.7.5' chameleon markdown pillow
+          command -v nmlc
+          command -v grfcodec
+          nmlc --version
+          grfcodec -h | head -5 || true
+
+      - name: Build Iron Horse 4.29.0 from pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/andythenorth/iron-horse.git iron-horse
+          cd iron-horse
+          git checkout ec0523c6f80459ec40cb4488e9a23e5aaa3705c3
+          make grf GRF=horse PW=2 SD=True
+          test -s generated/iron-horse.grf
+          echo "Iron Horse MD5: $(md5sum generated/iron-horse.grf)"
+          test "$(md5sum generated/iron-horse.grf | cut -c1-8)" = 'bd0a3c2f'
+
+      - name: Build FIRS 5.2.0 from pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/andythenorth/firs.git firs
+          cd firs
+          git checkout 8844b7da36e919690322dcd69ffd9977e4e9a9c4
+          make grf
+          test -s generated/firs.grf
+          echo "FIRS MD5: $(md5sum generated/firs.grf)"
+          test "$(md5sum generated/firs.grf | cut -c1-8)" = '6bb8b38e'
+
+      - name: Build Early Vehicle Set 0.0.2 from historical source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/DonaldDuck313/OpenTTD-NewGRFs.git early-repo
+          cd early-repo
+          commit="$(git rev-list -1 --before='2022-02-06T14:43:05Z' main -- EarlyVehicleSet)"
+          test -n "$commit"
+          echo "Historical Early Vehicle source commit: $commit"
+          git checkout "$commit"
+          cd EarlyVehicleSet
+          nmlc -c --grf=EarlyVehicleSet.grf EarlyVehicleSet.nml
+          test -s EarlyVehicleSet.grf
+          echo "Early Vehicle MD5: $(md5sum EarlyVehicleSet.grf)"
+          test "$(md5sum EarlyVehicleSet.grf | cut -c1-8)" = 'f13d428d'
+
+      - name: Verify HTTPS-prebuilt add-ons
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prebuilt/road prebuilt/gist prebuilt/ogfx
+
+          curl -fL --retry 5 --retry-all-errors \
+            'https://bundles.openttdcoop.org/road-hog/releases/LATEST/road-hog-1.4.1.zip' \
+            -o prebuilt/road-hog.zip
+          unzip -q prebuilt/road-hog.zip -d prebuilt/road
+          road="$(find prebuilt/road -type f -iname '*.grf' -print -quit)"
+          test -s "$road"
+          echo "Road Hog MD5: $(md5sum "$road")"
+          test "$(md5sum "$road" | cut -c1-8)" = '04acd20a'
+
+          curl -fL --retry 5 --retry-all-errors \
+            'https://github.com/UweDomaratius/GermanIndustries/releases/download/v0.21.10/german_industries.zip' \
+            -o prebuilt/gist.zip
+          unzip -q prebuilt/gist.zip -d prebuilt/gist
+          gist="$(find prebuilt/gist -type f -iname '*.grf' -print -quit)"
+          test -s "$gist"
+          echo "GIST MD5: $(md5sum "$gist")"
+          test "$(md5sum "$gist" | cut -c1-8)" = 'e314aaa0'
+
+          curl -fL --retry 5 --retry-all-errors \
+            'https://github.com/OpenTTD/OpenGFX2/releases/download/v0.7/ogfx2_settings.grf' \
+            -o prebuilt/ogfx/ogfx2_settings.grf
+          echo "OpenGFX2 Settings MD5: $(md5sum prebuilt/ogfx/ogfx2_settings.grf)"
+          test "$(md5sum prebuilt/ogfx/ogfx2_settings.grf | cut -c1-8)" = '0d04bc9a'
+
+          curl -fL --retry 5 --retry-all-errors \
+            'https://github.com/OpenTTD/OpenGFX2/releases/download/0.8.1/OpenGFX2_Classic-0.8.1.tar' \
+            -o prebuilt/ogfx/OpenGFX2_Classic-0.8.1.tar
+          test -s prebuilt/ogfx/OpenGFX2_Classic-0.8.1.tar
+          tar -tf prebuilt/ogfx/OpenGFX2_Classic-0.8.1.tar | head -40
+          echo "OpenGFX2 Classic TAR MD5: $(md5sum prebuilt/ogfx/OpenGFX2_Classic-0.8.1.tar)"
+
+      - name: Summarize built payload sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          du -h \
+            iron-horse/generated/iron-horse.grf \
+            firs/generated/firs.grf \
+            early-repo/EarlyVehicleSet/EarlyVehicleSet.grf \
+            prebuilt/road-hog.zip prebuilt/gist.zip \
+            prebuilt/ogfx/ogfx2_settings.grf \
+            prebuilt/ogfx/OpenGFX2_Classic-0.8.1.tar
