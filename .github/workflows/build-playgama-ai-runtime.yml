@@ -1,4 +1,4 @@
-name: Build Playgama AI-enabled OpenTTD
+name: Build Playgama OpenTTD with AI and add-ons
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-playgama-ai-runtime.yml'
       - 'playgama/**'
+      - 'docs/PLAYGAMA_ADDONS.md'
 
 permissions:
   contents: read
@@ -60,9 +61,8 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
-          # Critical regression check: the Yandex-only build historically replaced
-          # AI::CanStartNew() with `return false;`. The Playgama runtime must retain
-          # upstream OpenTTD's normal single-player AI gate.
+          # Regression check: the Playgama build must retain upstream OpenTTD's
+          # normal single-player AI gate instead of the old Yandex hard-disable.
           grep -Fq 'return !_networking || (_network_server && _settings_game.ai.ai_in_multiplayer);' openttd/src/ai/ai_core.cpp
           ! grep -Fq 'downloadable AI modules / Online Content are intentionally disabled' openttd/src/ai/ai_core.cpp
           ! grep -Fq 'AI competitors hard-disabled' openttd/src/ai/ai_core.cpp
@@ -81,12 +81,16 @@ jobs:
           echo 'Rebuilt runtime files:'
           ls -lh dist-playgama/index.html dist-playgama/openttd-runtime.js dist-playgama/yandex-bridge.js
 
-      - name: Build bundled SimpleAI payload from BaNaNaS
+      - name: Install BaNaNaS client
         shell: bash
         run: |
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
 
+      - name: Build bundled SimpleAI payload from BaNaNaS
+        shell: bash
+        run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import base64
@@ -146,7 +150,195 @@ jobs:
           PY
           node --check port/playgama/openttd-classic-ai.generated.js
 
-      - name: Install Playgama Bridge v2 integration and AI compatibility
+      - name: Build optional offline add-on catalog from BaNaNaS
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-addons
+          mkdir -p dist-addons/addons
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import tarfile
+          from openttdlab import download_from_bananas
+
+          catalog = [
+              {
+                  'content_id': 'newgrf/43411223',
+                  'name': 'Iron Horse 4 (Trains)',
+                  'version': '4.29.0',
+                  'md5_prefix': 'bd0a3c2f',
+                  'license_expected': 'GPL v2',
+                  'category': 'trains',
+                  'source': 'https://grf.farm/iron-horse/index.html',
+              },
+              {
+                  'content_id': 'newgrf/f1250009',
+                  'name': 'FIRS Industries 5',
+                  'version': '5.2.0',
+                  'md5_prefix': '6bb8b38e',
+                  'license_expected': 'GPL v2',
+                  'category': 'industry',
+                  'conflict_group': 'industry-set',
+                  'source': 'https://grf.farm/firs/index.html',
+              },
+              {
+                  'content_id': 'newgrf/9787eafe',
+                  'name': 'Road Hog (Buses, Trucks, Trams)',
+                  'version': '1.4.1',
+                  'md5_prefix': '04acd20a',
+                  'license_expected': 'GPL v2',
+                  'category': 'road-vehicles',
+                  'source': 'https://www.tt-forums.net/viewtopic.php?f=26&t=70241',
+              },
+              {
+                  'content_id': 'newgrf/55440100',
+                  'name': 'GIST - German Industries Set',
+                  'version': '0.21.10',
+                  'md5_prefix': 'e314aaa0',
+                  'license_expected': 'GPL v2',
+                  'category': 'industry',
+                  'conflict_group': 'industry-set',
+                  'source': 'https://github.com/UweDomaratius/GermanIndustries',
+              },
+              {
+                  'content_id': 'newgrf/474c0501',
+                  'name': 'Early Vehicle Set',
+                  'version': '0.0.2',
+                  'md5_prefix': 'f13d428d',
+                  'license_expected': 'GPL v2',
+                  'category': 'vehicles',
+                  'source': 'https://github.com/DonaldDuck313/OpenTTD-NewGRFs/tree/main/EarlyVehicleSet',
+              },
+              {
+                  'content_id': 'newgrf/4f475a01',
+                  'name': 'OpenGFX2 Settings',
+                  'version': '0.7',
+                  'md5_prefix': '0d04bc9a',
+                  'license_expected': 'GPL v2',
+                  'category': 'graphics-settings',
+                  'source': 'https://github.com/OpenTTD/OpenGFX2',
+              },
+              {
+                  'content_id': 'base-graphics/6f676678',
+                  'name': 'OpenGFX2 Classic',
+                  'version': '0.8.1',
+                  'md5_prefix': '9511dce1',
+                  'license_expected': 'Custom',
+                  'category': 'base-graphics',
+                  'source': 'https://github.com/OpenTTD/OpenGFX2',
+                  'source_license': 'GPL-2.0',
+              },
+          ]
+
+          by_key = {}
+          target_specs = {row['content_id']: row for row in catalog}
+          found_targets = set()
+
+          for spec in catalog:
+              with download_from_bananas(spec['content_id']) as files:
+                  for item in files:
+                      if len(item) == 5:
+                          content_id, filename, license_name, md5, get_data = item
+                      elif len(item) == 4:
+                          content_id, filename, md5, get_data = item
+                          license_name = 'unknown'
+                      else:
+                          raise RuntimeError(f'Unexpected BaNaNaS item: {item!r}')
+
+                      content_id = str(content_id)
+                      filename = str(filename)
+                      md5 = str(md5)
+                      license_name = str(license_name)
+
+                      if content_id == spec['content_id']:
+                          found_targets.add(content_id)
+                          if not md5.startswith(spec['md5_prefix']):
+                              raise RuntimeError(
+                                  f"Pinned {content_id} changed: expected MD5 prefix {spec['md5_prefix']}, got {md5}. "
+                                  'Review the new upstream version before updating the pin.'
+                              )
+                          if license_name != spec['license_expected']:
+                              raise RuntimeError(
+                                  f"License metadata changed for {content_id}: expected {spec['license_expected']!r}, got {license_name!r}"
+                              )
+
+                      if not content_id.startswith(('newgrf/', 'base-graphics/')):
+                          raise RuntimeError(f'Unsupported add-on dependency type: {content_id}')
+
+                      key = (content_id, md5)
+                      if key in by_key:
+                          if spec['content_id'] not in by_key[key]['requested_by']:
+                              by_key[key]['requested_by'].append(spec['content_id'])
+                          continue
+
+                      with get_data() as chunks:
+                          data = b''.join(chunks)
+                      if not data:
+                          raise RuntimeError(f'Empty BaNaNaS payload: {content_id}')
+
+                      suffix = Path(filename).suffix.lower() or '.bin'
+                      safe_id = content_id.replace('/', '_').replace('-', '_')
+                      asset_name = f'{safe_id}-{md5[:8]}{suffix}'
+                      asset_path = Path('dist-addons/addons') / asset_name
+                      asset_path.write_bytes(data)
+
+                      # BaNaNaS content is normally distributed as .tar archives.
+                      # Validate archive readability and expected payload type now,
+                      # instead of discovering a broken package in the browser.
+                      if suffix == '.tar':
+                          with tarfile.open(asset_path, 'r') as archive:
+                              names = [name.lower() for name in archive.getnames()]
+                          if content_id.startswith('newgrf/') and not any(name.endswith('.grf') for name in names):
+                              raise RuntimeError(f'NewGRF package contains no .grf: {content_id}')
+                          if content_id.startswith('base-graphics/') and not any(name.endswith(('.obg', '.grf')) for name in names):
+                              raise RuntimeError(f'Base graphics package contains no .obg/.grf: {content_id}')
+
+                      target = target_specs.get(content_id)
+                      row = {
+                          'content_id': content_id,
+                          'name': target['name'] if target else filename,
+                          'version': target['version'] if target else None,
+                          'license': license_name,
+                          'md5': md5,
+                          'bytes': len(data),
+                          'type': 'base-graphics' if content_id.startswith('base-graphics/') else 'newgrf',
+                          'category': target.get('category') if target else 'dependency',
+                          'conflict_group': target.get('conflict_group') if target else None,
+                          'asset': 'addons/' + asset_name,
+                          'install_filename': asset_name,
+                          'upstream_filename': filename,
+                          'source': target.get('source') if target else None,
+                          'source_license': target.get('source_license') if target else None,
+                          'requested_by': [spec['content_id']],
+                          'enabled_by_default': False,
+                      }
+                      by_key[key] = row
+
+          missing = sorted(set(target_specs) - found_targets)
+          if missing:
+              raise RuntimeError(f'Pinned target packages missing from BaNaNaS: {missing}')
+
+          items = sorted(by_key.values(), key=lambda row: (row['type'], row['name'], row['content_id']))
+          manifest = {
+              'manifest_version': '2026-08-18-v1',
+              'enabled_by_default': False,
+              'notes': {
+                  'industry_conflict': 'FIRS Industries 5 and GIST are alternative industry sets; enable at most one per new game.',
+                  'newgrf_ui': 'Main menu -> NewGRF Settings',
+                  'base_graphics_ui': 'Game Options -> Base graphics set',
+              },
+              'total_bytes': sum(row['bytes'] for row in items),
+              'items': items,
+          }
+          Path('dist-addons/OPENTTD-BUNDLED-ADDONS.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          print(json.dumps(manifest, indent=2))
+          PY
+
+          python3 -m json.tool dist-addons/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          find dist-addons/addons -maxdepth 1 -type f -print -exec ls -lh '{}' \;
+
+      - name: Install Playgama Bridge v2 integration, AI and optional add-ons
         shell: bash
         run: |
           set -euo pipefail
@@ -155,9 +347,27 @@ jobs:
             --config port/playgama/playgama-bridge-config.json \
             --fixes port/playgama/openttd-playgama-fixes.js \
             --ai-bundle port/playgama/openttd-classic-ai.generated.js
-          cp port/playgama/openttd-classic-ai-manifest.json dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
 
-      - name: Validate native AI-enabled Playgama package
+          cp port/playgama/openttd-classic-ai-manifest.json dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
+          cp port/playgama/openttd-bundled-addons.js dist-playgama/openttd-bundled-addons.js
+          cp dist-addons/OPENTTD-BUNDLED-ADDONS.json dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          cp -a dist-addons/addons dist-playgama/addons
+          cp port/docs/PLAYGAMA_ADDONS.md dist-playgama/BUNDLED-ADDONS.md
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('dist-playgama/index.html')
+          html = p.read_text(encoding='utf-8')
+          marker = '<script src="openttd-playgama-fixes.js"></script>'
+          addon = '<script src="openttd-bundled-addons.js"></script>'
+          if addon not in html:
+              if marker not in html:
+                  raise SystemExit('Could not find Playgama fixes script insertion point')
+              html = html.replace(marker, marker + addon, 1)
+          p.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Validate AI and optional add-on Playgama package
         shell: bash
         run: |
           set -euo pipefail
@@ -166,8 +376,9 @@ jobs:
           grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
           grep -q 'openttd-classic-ai.js' dist-playgama/index.html
           grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
+          grep -q 'openttd-bundled-addons.js' dist-playgama/index.html
 
-          # Browser config and the native core must both allow competitors.
+          # Browser config and native core must both allow competitors.
           test "$(grep -ao 'max_no_competitors = 3' dist-playgama/openttd-runtime.js | wc -l)" -ge 3
           ! grep -aq 'max_no_competitors = 0' dist-playgama/openttd-runtime.js
           grep -q 'const COMPETITORS = 3' dist-playgama/openttd-playgama-fixes.js
@@ -178,6 +389,20 @@ jobs:
           grep -q 'compat_14.nut' dist-playgama/openttd-playgama-fixes.js
           grep -q 'compat_1.2.nut' dist-playgama/openttd-playgama-fixes.js
           grep -q 'installAICompatibility' dist-playgama/openttd-playgama-fixes.js
+
+          # Optional add-ons are present locally but remain opt-in.
+          grep -q 'newgrf/43411223' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'newgrf/f1250009' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'newgrf/9787eafe' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'newgrf/55440100' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'newgrf/474c0501' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'newgrf/4f475a01' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'base-graphics/6f676678' dist-playgama/OPENTTD-BUNDLED-ADDONS.json
+          grep -q 'enabled_by_default.*false' dist-playgama/OPENTTD-BUNDLED-ADDONS.json || true
+          ! grep -q '\[newgrf\]' dist-playgama/openttd-bundled-addons.js
+          grep -q "cache: 'force-cache'" dist-playgama/openttd-bundled-addons.js
+          grep -q 'INSTALL_CONCURRENCY = 2' dist-playgama/openttd-bundled-addons.js
+          grep -q 'FS.stat(target)' dist-playgama/openttd-bundled-addons.js
 
           # Previous Playgama fixes remain present.
           grep -q 'Browser.mainLoop.pause' dist-playgama/openttd-playgama-fixes.js
@@ -190,40 +415,77 @@ jobs:
           node --check dist-playgama/playgama-yandex-compat.js
           node --check dist-playgama/openttd-playgama-fixes.js
           node --check dist-playgama/openttd-classic-ai.js
+          node --check dist-playgama/openttd-bundled-addons.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
           python3 -m json.tool dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
+          python3 -m json.tool dist-playgama/OPENTTD-BUNDLED-ADDONS.json >/dev/null
 
           python3 - <<'PY'
           import json
+          from pathlib import Path
+
           with open('dist-playgama/playgama-bridge-config.json', encoding='utf-8') as f:
               cfg = json.load(f)
           assert cfg['advertisement']['interstitial']['disable'] is False
           assert cfg['advertisement']['rewarded']['disable'] is True
           assert cfg['advertisement']['banner']['disable'] is True
           assert cfg['device']['supportedOrientations'] == ['landscape']
+
           with open('dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json', encoding='utf-8') as f:
-              manifest = json.load(f)
-          assert any(row['content_id'] == 'ai/534d504c' for row in manifest)
-          assert len(manifest) >= 3
+              ai_manifest = json.load(f)
+          assert any(row['content_id'] == 'ai/534d504c' for row in ai_manifest)
+          assert len(ai_manifest) >= 3
+
+          with open('dist-playgama/OPENTTD-BUNDLED-ADDONS.json', encoding='utf-8') as f:
+              addons = json.load(f)
+          assert addons['enabled_by_default'] is False
+          ids = {row['content_id'] for row in addons['items']}
+          required = {
+              'newgrf/43411223', 'newgrf/f1250009', 'newgrf/9787eafe',
+              'newgrf/55440100', 'newgrf/474c0501', 'newgrf/4f475a01',
+              'base-graphics/6f676678',
+          }
+          assert required <= ids, (required - ids)
+          assert all(row['enabled_by_default'] is False for row in addons['items'])
+          for row in addons['items']:
+              asset = Path('dist-playgama') / row['asset']
+              assert asset.is_file(), asset
+              assert asset.stat().st_size == row['bytes'], (asset, asset.stat().st_size, row['bytes'])
+          industry = [row for row in addons['items'] if row.get('conflict_group') == 'industry-set']
+          assert {row['content_id'] for row in industry} == {'newgrf/f1250009', 'newgrf/55440100'}
+          PY
+
+          # Archive hygiene: Playgama package paths stay ASCII and space-free.
+          python3 - <<'PY'
+          from pathlib import Path
+          bad = []
+          for p in Path('dist-playgama').rglob('*'):
+              if not p.is_file():
+                  continue
+              rel = p.relative_to('dist-playgama').as_posix()
+              if ' ' in rel or any(ord(ch) > 127 for ch in rel):
+                  bad.append(rel)
+          if bad:
+              raise SystemExit(f'Invalid package paths: {bad}')
           PY
 
           unpacked_bytes="$(du -sb dist-playgama | cut -f1)"
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama v5 ZIP
+      - name: Create optimized Playgama v6 ZIP
         shell: bash
         run: |
           set -euo pipefail
-          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v5-ai-core-fixed.zip .)
-          unzip -t openttd-playgama-v5-ai-core-fixed.zip
-          ls -lh openttd-playgama-v5-ai-core-fixed.zip
-          sha256sum openttd-playgama-v5-ai-core-fixed.zip
+          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v6-addons-optimized.zip .)
+          unzip -t openttd-playgama-v6-addons-optimized.zip
+          ls -lh openttd-playgama-v6-addons-optimized.zip
+          sha256sum openttd-playgama-v6-addons-optimized.zip
 
-      - name: Upload Playgama v5 build
+      - name: Upload Playgama v6 build
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v5-ai-core-fixed
-          path: openttd-playgama-v5-ai-core-fixed.zip
+          name: openttd-playgama-v6-addons-optimized
+          path: openttd-playgama-v6-addons-optimized.zip
           if-no-files-found: error
           retention-days: 90
