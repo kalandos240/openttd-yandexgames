@@ -2,7 +2,7 @@
 """Extract one NewGRF from old/manual OpenTTD release archives.
 
 Some historic NewGRF projects published ZIP files that contain a directory,
-a nested TAR/ZIP, or metadata alongside the actual .grf.  This helper walks
+a nested TAR/ZIP, or metadata alongside the actual .grf. This helper walks
 those layouts without relying on the OpenTTD BaNaNaS TCP content protocol.
 
 Usage:
@@ -103,9 +103,21 @@ def find_grfs(root: Path) -> list[Path]:
 
 
 def unpack_nested(root: Path, depth: int) -> None:
-    if depth >= MAX_DEPTH:
+    """Walk nested archives once each, stopping as soon as a GRF is exposed."""
+    if depth >= MAX_DEPTH or find_grfs(root):
         return
-    archives = [p for p in root.rglob("*") if p.is_file() and is_archive(p)]
+
+    archives = sorted(
+        (p for p in root.iterdir() if p.is_file() and is_archive(p)),
+        key=lambda p: p.name.lower(),
+    )
+    # Also support archives inside one or more ordinary wrapper directories.
+    if not archives:
+        archives = sorted(
+            (p for p in root.rglob("*") if p.is_file() and is_archive(p)),
+            key=lambda p: (len(p.parts), p.as_posix().lower()),
+        )
+
     for index, archive in enumerate(archives):
         nested = root / f"__nested_{depth}_{index}_{archive.stem}"
         try:
@@ -114,8 +126,12 @@ def unpack_nested(root: Path, depth: int) -> None:
         except Exception as exc:  # Keep searching other nested payloads.
             log(f"Skipping unreadable nested archive {archive}: {exc}")
             continue
-    if archives:
-        unpack_nested(root, depth + 1)
+
+        if find_grfs(nested):
+            return
+        unpack_nested(nested, depth + 1)
+        if find_grfs(nested):
+            return
 
 
 def select_grf(grfs: list[Path], expected_md5: str | None) -> Path:
