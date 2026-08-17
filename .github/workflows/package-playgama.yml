@@ -1,4 +1,4 @@
-name: Package Playgama build
+name: Package Playgama v2 build
 
 on:
   workflow_dispatch:
@@ -15,55 +15,69 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout Playgama packaging files
         uses: actions/checkout@v4
 
-      - name: Download latest verified OpenTTD Yandex release artifact
+      - name: Download pinned verified OpenTTD runtime
         env:
           GH_TOKEN: ${{ github.token }}
+          PINNED_ARTIFACT_ID: '9289589121'
         run: |
           set -euo pipefail
-          artifact_id="$(curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" \
-            | jq -r '.artifacts[] | select(.name == "openttd-yandexgames-yandex-release" and .expired == false) | .id' \
-            | head -n 1)"
-          test -n "${artifact_id}"
           curl -fL --retry 3 \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-            -o /tmp/openttd-artifact.zip
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PINNED_ARTIFACT_ID}/zip" \
+            -o /tmp/openttd-playgama-v1-artifact.zip
           rm -rf base-artifact dist-playgama
           mkdir base-artifact dist-playgama
-          unzip -q /tmp/openttd-artifact.zip -d base-artifact
-          inner="$(find base-artifact -type f -iname '*Direct*.zip' -print -quit)"
-          if [ -z "${inner}" ]; then inner="$(find base-artifact -type f -name '*.zip' -print -quit)"; fi
+          unzip -q /tmp/openttd-playgama-v1-artifact.zip -d base-artifact
+          inner="$(find base-artifact -type f -name 'openttd-playgama.zip' -print -quit)"
           test -s "${inner}"
           unzip -q "${inner}" -d dist-playgama
           test -s dist-playgama/index.html
+          test -s dist-playgama/openttd-runtime.js
           test -s dist-playgama/yandex-bridge.js
+          test -s dist-playgama/openttd-shell-2.js
+          echo 'e730bceadfef3a51adf9b830586a10df81801e697dd6726570287a6609001ce4  dist-playgama/openttd-runtime.js' | sha256sum -c -
+          echo 'e85a89f0610fc178b75c8d3b8a23707d0c11f6bc27bbb4058724c4466ec2f6ff  dist-playgama/yandex-bridge.js' | sha256sum -c -
+          echo 'af77f33fc3e0aad897400af1e8ba4b3c81732dce71b201b2be74fbecd2f681be  dist-playgama/openttd-shell-2.js' | sha256sum -c -
 
-      - name: Install Playgama Bridge integration
+      - name: Install Playgama Bridge v2 integration
         run: |
           set -euo pipefail
           python3 playgama/package_playgama.py dist-playgama \
             --adapter playgama/playgama-yandex-compat.js \
             --config playgama/playgama-bridge-config.json
 
-      - name: Validate Playgama package
+      - name: Validate Playgama v2 package
         run: |
           set -euo pipefail
-          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-playgama/index.html
+          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
+          ! grep -q 'bridge.playgama.com/v1/' dist-playgama/index.html
           grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
-          if grep -Eq '<script[^>]+src="?/sdk\.js' dist-playgama/index.html; then exit 1; fi
+          grep -q "window.bridge.engine = 'javascript'" dist-playgama/playgama-yandex-compat.js
+          grep -q "Bridge v2 required" dist-playgama/playgama-yandex-compat.js
+          ! grep -q 'showRewardedVideo' dist-playgama/playgama-yandex-compat.js
           grep -q 'openttdConfigV1' dist-playgama/yandex-bridge.js
           grep -q 'openttdSaveV1' dist-playgama/yandex-bridge.js
           grep -q 'player.getData' dist-playgama/yandex-bridge.js
           grep -q 'player.setData' dist-playgama/yandex-bridge.js
+          grep -q 'showFullscreenAdv' dist-playgama/yandex-bridge.js
           node --check dist-playgama/playgama-yandex-compat.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
+          python3 - <<'PY'
+          import json
+          with open('dist-playgama/playgama-bridge-config.json', encoding='utf-8') as f:
+              cfg = json.load(f)
+          assert cfg['advertisement']['interstitial']['disable'] is False
+          assert cfg['advertisement']['rewarded']['disable'] is True
+          assert cfg['advertisement']['banner']['disable'] is True
+          assert cfg['device']['supportedOrientations'] == ['landscape']
+          PY
+          echo 'e730bceadfef3a51adf9b830586a10df81801e697dd6726570287a6609001ce4  dist-playgama/openttd-runtime.js' | sha256sum -c -
+          echo 'e85a89f0610fc178b75c8d3b8a23707d0c11f6bc27bbb4058724c4466ec2f6ff  dist-playgama/yandex-bridge.js' | sha256sum -c -
+          echo 'af77f33fc3e0aad897400af1e8ba4b3c81732dce71b201b2be74fbecd2f681be  dist-playgama/openttd-shell-2.js' | sha256sum -c -
           unpacked_bytes="$(du -sb dist-playgama | cut -f1)"
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
@@ -71,14 +85,14 @@ jobs:
       - name: Create Playgama ZIP
         run: |
           set -euo pipefail
-          (cd dist-playgama && zip -9 -X -r ../openttd-playgama.zip .)
-          unzip -t openttd-playgama.zip
-          ls -lh openttd-playgama.zip
+          (cd dist-playgama && zip -9 -X -r ../openttd-playgama-v2.zip .)
+          unzip -t openttd-playgama-v2.zip
+          ls -lh openttd-playgama-v2.zip
 
-      - name: Upload Playgama build
+      - name: Upload Playgama v2 build
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama
-          path: openttd-playgama.zip
+          name: openttd-playgama-v2
+          path: openttd-playgama-v2.zip
           if-no-files-found: error
           retention-days: 90
