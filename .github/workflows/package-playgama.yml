@@ -145,7 +145,7 @@ jobs:
           # Intentional OpenTTD-specific fixes.
           test "$(grep -ao 'max_no_competitors = 3' dist-playgama/openttd-runtime.js | wc -l)" -ge 3
           ! grep -aq 'max_no_competitors = 0' dist-playgama/openttd-runtime.js
-          grep -q 'max_no_competitors = 3' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'const COMPETITORS = 3' dist-playgama/openttd-playgama-fixes.js
           grep -q 'english.lng' dist-playgama/openttd-playgama-fixes.js
           grep -q 'russian.lng' dist-playgama/openttd-playgama-fixes.js
           grep -q 'Browser.mainLoop.pause' dist-playgama/openttd-playgama-fixes.js
