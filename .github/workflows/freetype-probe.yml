@@ -1,7 +1,7 @@
 name: Emscripten FreeType Probe
 
 on:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   probe:
