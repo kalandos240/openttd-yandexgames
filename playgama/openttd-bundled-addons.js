@@ -19,6 +19,7 @@
   const LICENSE_BUNDLE_URL = './PLAYGAMA-ALL-LICENSES.md';
   const LICENSE_TARGET_NAME = 'PLAYGAMA-LICENSES.md';
   const INSTALL_CONCURRENCY = 1;
+  const CLOUD_RESTORE_GATE_MS = 2200;
   const STARTUP_DEPENDENCY = 'playgama-bundled-content';
 
   let manifestPromise = null;
@@ -83,10 +84,22 @@
     return new Uint8Array(await new Response(stream).arrayBuffer());
   };
 
-  const decodeAsset = async (item, packed) => {
+  const isGzipPayload = (data) => data && data.byteLength >= 2 && data[0] === 0x1f && data[1] === 0x8b;
+
+  const decodeAsset = async (item, packed, installedBytes) => {
     const compression = item.compression || 'none';
     if (compression === 'none') return packed;
-    if (compression === 'gzip') return inflateGzip(packed);
+    if (compression === 'gzip') {
+      /* Some static hosts/CDNs treat .gz as Content-Encoding and transparently
+         decode the body before fetch() exposes it. Accept that transport form
+         when it already matches the verified installed size; otherwise inflate
+         the opaque gzip payload ourselves. */
+      if (!isGzipPayload(packed) && packed.byteLength === installedBytes) return packed;
+      if (!isGzipPayload(packed)) {
+        throw new Error(`Invalid gzip transport for ${item.content_id}: ${packed.byteLength} bytes`);
+      }
+      return inflateGzip(packed);
+    }
     throw new Error(`Unsupported compression ${compression} for ${item.content_id}`);
   };
 
@@ -113,11 +126,13 @@
     if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${item.content_id}`);
 
     const packed = new Uint8Array(await response.arrayBuffer());
-    if (Number.isFinite(packagedBytes) && packagedBytes > 0 && packed.byteLength !== packagedBytes) {
+    const transparentlyDecoded = (item.compression || 'none') === 'gzip' &&
+      !isGzipPayload(packed) && packed.byteLength === installedBytes;
+    if (!transparentlyDecoded && Number.isFinite(packagedBytes) && packagedBytes > 0 && packed.byteLength !== packagedBytes) {
       throw new Error(`Packaged size mismatch for ${item.content_id}: expected ${packagedBytes}, got ${packed.byteLength}`);
     }
 
-    const data = await decodeAsset(item, packed);
+    const data = await decodeAsset(item, packed, installedBytes);
     if (data.byteLength !== installedBytes) {
       throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
     }
@@ -128,6 +143,7 @@
       state: 'installed',
       packaged_bytes: packed.byteLength,
       installed_bytes: data.byteLength,
+      transport_decoded: transparentlyDecoded,
     };
   };
 
@@ -162,9 +178,23 @@
   };
 
   const persistWithoutBlockingStartup = () => {
+    const persist = () => {
+      try {
+        if (typeof window.openttd_syncfs === 'function') {
+          window.openttd_syncfs(() => console.info('[Playgama/OpenTTD] Bundled content cache persisted'));
+        }
+      } catch (error) {
+        console.warn('[Playgama/OpenTTD] Could not persist bundled content cache', error);
+      }
+    };
+
+    /* Large NewGRFs can make the first IDBFS flush expensive. Do not contend
+       with OpenTTD's first rendered frames; persist on idle (or shortly after). */
     try {
-      if (typeof window.openttd_syncfs === 'function') {
-        window.openttd_syncfs(() => console.info('[Playgama/OpenTTD] Bundled content cache persisted'));
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(persist, { timeout: 3000 });
+      } else {
+        setTimeout(persist, 500);
       }
     } catch (error) {
       console.warn('[Playgama/OpenTTD] Could not schedule bundled content persistence', error);
@@ -205,19 +235,31 @@
 
     const task = (async () => {
       let restoreError = null;
-      if (typeof previousRestore === 'function') {
+      let restoreTimedOut = false;
+
+      /* Cloud restore and local add-on installation are independent. Start them
+         together so network latency cannot unnecessarily extend first launch. */
+      const restoreTask = (async () => {
+        if (typeof previousRestore !== 'function') return;
         try {
           await previousRestore(FS, personalDir);
         } catch (error) {
           restoreError = error;
           console.warn('[Playgama/OpenTTD] Cloud/AI restore failed; continuing with local bundled content', error);
         }
-      }
+      })();
+      const restoreGate = Promise.race([
+        restoreTask,
+        new Promise((resolve) => setTimeout(() => { restoreTimedOut = true; resolve(); }, CLOUD_RESTORE_GATE_MS)),
+      ]);
 
       let licenseStatus = null;
       try {
-        licenseStatus = await installLicenseBundle(FS, personalDir);
-        await installBundledAddons(FS, personalDir);
+        const localContentTask = (async () => {
+          licenseStatus = await installLicenseBundle(FS, personalDir);
+          await installBundledAddons(FS, personalDir);
+        })();
+        await Promise.all([localContentTask, restoreGate]);
         persistWithoutBlockingStartup();
       } catch (error) {
         window.__openttdBundledAddonsFatalError = String(error);
@@ -228,6 +270,7 @@
       }
 
       if (restoreError) console.warn('[Playgama/OpenTTD] Game started with local content despite restore warning');
+      if (restoreTimedOut) console.info('[Playgama/OpenTTD] Cloud restore continues in background after startup gate');
     })();
 
     window.__openttdBundledContentReady = task;
