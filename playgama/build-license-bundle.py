@@ -7,8 +7,45 @@ import json
 from pathlib import Path
 
 
+PORT_SOURCE_POINTER = "https://api.github.com/repositories/1328069895"
+LEGACY_PORT_SOURCE_URL = "https://github.com/kalandos240/openttd-yandexgames"
+LEGAL_REPLACEMENTS = (
+    ("Yandex Games WebAssembly edition", "Playgama WebAssembly edition"),
+    ("Yandex Games port source, patches and reproducible build scripts:",
+     "Web/Playgama port source, patches and reproducible build scripts:"),
+    ("Yandex Games integration and WebAssembly build modifications",
+     "Playgama integration and WebAssembly build modifications"),
+    (LEGACY_PORT_SOURCE_URL, PORT_SOURCE_POINTER),
+)
+
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+
+
+def normalize_playgama_legal_text(text: str) -> str:
+    for old, new in LEGAL_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def normalize_legacy_legal_files(dist: Path) -> None:
+    """Remove legacy platform branding from Playgama-facing legal documents.
+
+    The port originates from a previously tested browser build, so NOTICE.txt and
+    SOURCE_CODE.txt can carry obsolete platform wording. Keep all licensing/source
+    obligations intact while making the distributed Playgama package platform-
+    neutral except for its active Playgama integration notice.
+    """
+    for name in ("NOTICE.txt", "SOURCE_CODE.txt"):
+        path = dist / name
+        if not path.is_file():
+            continue
+        text = normalize_playgama_legal_text(read_text(path))
+        lowered = text.lower()
+        if "yandex" in lowered or "яндекс" in lowered:
+            raise SystemExit(f"Legacy platform branding remains in {name}")
+        path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -20,6 +57,7 @@ def main() -> None:
     dist = args.dist.resolve()
     licenses = dist / "licenses"
     licenses.mkdir(parents=True, exist_ok=True)
+    normalize_legacy_legal_files(dist)
 
     if not args.repo_license.is_file():
         raise SystemExit(f"Repository LICENSE not found: {args.repo_license}")
@@ -133,6 +171,10 @@ def main() -> None:
         raise SystemExit(f"Combined license document is suspiciously small: {target.stat().st_size} bytes")
 
     text = read_text(target)
+    lowered = text.lower()
+    if "yandex" in lowered or "яндекс" in lowered:
+        raise SystemExit("Legacy platform branding remains in combined Playgama license document")
+
     required_names = [addon_rows[cid]["name"] for cid in required_addons]
     required_names += ["SimpleAI", "OpenTTD", "OpenGFX", "OpenSFX", "OpenMSX"]
     absent = [name for name in required_names if name not in text]
