@@ -12,6 +12,10 @@ on:
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/build-license-bundle.py'
       - 'docs/PLAYGAMA.md'
+      - 'docs/PLAYGAMA_ADDONS.md'
+      - 'assets/playgama/**'
+      - 'README.md'
+      - 'README.ru.md'
 
 permissions:
   actions: read
