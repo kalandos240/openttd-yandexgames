@@ -1,0 +1,233 @@
+name: Build Playgama v7 native NewGRF menu
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/v7-newgrf-main-menu
+    paths:
+      - '.github/workflows/build-playgama-v7-newgrf-menu.yml'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/package_playgama.py'
+      - 'playgama/openttd-playgama-fixes.js'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-playgama-v7-newgrf-menu.yml'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/package_playgama.py'
+      - 'playgama/openttd-playgama-fixes.js'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  LEGACY_BUILD_REF: fix/direct-file-launch
+  V6_ARTIFACT_ID: '9305176553'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout current Playgama integration
+        uses: actions/checkout@v4
+        with:
+          path: port
+
+      - name: Checkout tested OpenTTD browser build pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LEGACY_BUILD_REF }}
+          path: legacy
+
+      - name: Install native Playgama source patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp port/playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected exactly one AI hard-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          addition = "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
+          text = text.replace(anchor, anchor + addition, 1)
+
+          p.write_text(text, encoding='utf-8')
+          print('Configured native AI + direct NewGRF main-menu build.')
+          PY
+
+      - name: Rebuild OpenTTD 15.3 WebAssembly runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          # Native AI must remain enabled.
+          grep -Fq 'return !_networking || (_network_server && _settings_game.ai.ai_in_multiplayer);' openttd/src/ai/ai_core.cpp
+          ! grep -Fq 'downloadable AI modules / Online Content are intentionally disabled' openttd/src/ai/ai_core.cpp
+
+          # Main menu must expose local NewGRF Settings directly.
+          grep -Fq '#include "newgrf_config.h"' openttd/src/intro_gui.cpp
+          test "$(grep -Fc 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp)" -ge 1
+          grep -Fq 'STR_MAPGEN_NEWGRF_SETTINGS, STR_MAPGEN_NEWGRF_SETTINGS_TOOLTIP' openttd/src/intro_gui.cpp
+          ! grep -Fq 'ShowNetworkContentListWindow();' openttd/src/intro_gui.cpp
+
+      - name: Download verified v6 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V6_ARTIFACT_ID}/zip" \
+            -o /tmp/v6-artifact.zip
+
+          rm -rf /tmp/v6-artifact dist-v7 /tmp/v7-raw
+          mkdir -p /tmp/v6-artifact dist-v7 /tmp/v7-raw
+          unzip -q /tmp/v6-artifact.zip -d /tmp/v6-artifact
+          inner="$(find /tmp/v6-artifact -type f -name '*.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v7
+
+          test -s dist-v7/index.html
+          test -s dist-v7/openttd-classic-ai.js
+          test -s dist-v7/openttd-bundled-addons.js
+          test -s dist-v7/OPENTTD-BUNDLED-ADDONS.json
+          test -d dist-v7/addons
+
+      - name: Patch rebuilt runtime with existing Playgama config
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/v7-raw
+
+          python3 port/playgama/package_playgama.py /tmp/v7-raw \
+            --adapter port/playgama/playgama-yandex-compat.js \
+            --config port/playgama/playgama-bridge-config.json \
+            --fixes port/playgama/openttd-playgama-fixes.js \
+            --ai-bundle dist-v7/openttd-classic-ai.js
+
+          # Only the freshly compiled native runtime is replaced. The already
+          # verified v6 Bridge/add-on/AI integration remains byte-for-byte intact.
+          cp /tmp/v7-raw/openttd-runtime.js dist-v7/openttd-runtime.js
+
+          cat > dist-v7/PLAYGAMA-V7-CHANGES.txt <<'EOF'
+          OpenTTD Playgama v7
+          ===================
+          - Adds a native "NewGRF Settings" button directly to the main menu.
+          - The button opens the normal OpenTTD new-game NewGRF configuration list.
+          - Bundled NewGRFs remain opt-in and are never activated automatically.
+          - The original New Game -> NewGRF Settings path remains available.
+          - Native AI support from v5/v6 remains enabled.
+          - Playgama pause/audio/cloud/ad integration and the v6 add-on catalog are retained.
+          EOF
+
+      - name: Validate final v7 package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Existing Playgama integration remains present.
+          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-v7/index.html
+          grep -q 'playgama-yandex-compat.js' dist-v7/index.html
+          grep -q 'openttd-classic-ai.js' dist-v7/index.html
+          grep -q 'openttd-playgama-fixes.js' dist-v7/index.html
+          grep -q 'openttd-bundled-addons.js' dist-v7/index.html
+          grep -q 'Browser.mainLoop.pause' dist-v7/openttd-playgama-fixes.js
+          grep -q 'PAUSE_STATE_CHANGED' dist-v7/openttd-playgama-fixes.js
+          grep -q 'AUDIO_STATE_CHANGED' dist-v7/openttd-playgama-fixes.js
+
+          # Browser startup config must still allow AI competitors.
+          test "$(grep -ao 'max_no_competitors = 3' dist-v7/openttd-runtime.js | wc -l)" -ge 3
+          ! grep -aq 'max_no_competitors = 0' dist-v7/openttd-runtime.js
+
+          # All optional content remains local and opt-in.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('dist-v7')
+          manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          assert manifest['enabled_by_default'] is False
+          required = {
+              'newgrf/43411223', 'newgrf/f1250009', 'newgrf/9787eafe',
+              'newgrf/55440100', 'newgrf/474c0501', 'newgrf/4f475a01',
+              'base-graphics/6f676678',
+          }
+          rows = {row['content_id']: row for row in manifest['items']}
+          assert required <= rows.keys(), required - rows.keys()
+          assert all(row.get('enabled_by_default') is False for row in rows.values())
+          for row in rows.values():
+              asset = root / row['asset']
+              assert asset.is_file() and asset.stat().st_size > 0, asset
+
+          industry = {row['content_id'] for row in rows.values() if row.get('conflict_group') == 'industry-set'}
+          assert industry == {'newgrf/f1250009', 'newgrf/55440100'}
+          PY
+
+          node --check dist-v7/playgama-yandex-compat.js
+          node --check dist-v7/openttd-playgama-fixes.js
+          node --check dist-v7/openttd-classic-ai.js
+          node --check dist-v7/openttd-bundled-addons.js
+          python3 -m json.tool dist-v7/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v7/playgama-bridge-config.json >/dev/null
+
+          # Package hygiene and Playgama ceiling.
+          python3 - <<'PY'
+          from pathlib import Path
+          bad=[]
+          for p in Path('dist-v7').rglob('*'):
+              if not p.is_file():
+                  continue
+              rel=p.relative_to('dist-v7').as_posix()
+              if ' ' in rel or any(ord(ch) > 127 for ch in rel):
+                  bad.append(rel)
+          if bad:
+              raise SystemExit(f'Invalid package paths: {bad}')
+          PY
+
+          unpacked_bytes="$(du -sb dist-v7 | cut -f1)"
+          echo "Unpacked v7 bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create Playgama v7 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-v7 && zip -9 -X -r ../openttd-playgama-v7-newgrf-menu.zip .)
+          unzip -t openttd-playgama-v7-newgrf-menu.zip
+          sha256sum openttd-playgama-v7-newgrf-menu.zip | tee openttd-playgama-v7-newgrf-menu.sha256
+          ls -lh openttd-playgama-v7-newgrf-menu.zip
+
+      - name: Upload Playgama v7 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v7-newgrf-menu
+          path: |
+            openttd-playgama-v7-newgrf-menu.zip
+            openttd-playgama-v7-newgrf-menu.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
