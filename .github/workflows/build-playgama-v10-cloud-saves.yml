@@ -1,0 +1,243 @@
+name: Build Playgama v10 cloud saves
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-playgama-v10-cloud-saves.yml'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/build-license-bundle.py'
+      - 'docs/PLAYGAMA.md'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  V8_ARTIFACT_ID: '9306987648'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout current port sources
+        uses: actions/checkout@v4
+
+      - name: Download verified Playgama v8 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
+            -o /tmp/v8-artifact.zip
+
+          rm -rf /tmp/v8-artifact dist-v10
+          mkdir -p /tmp/v8-artifact dist-v10
+          unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
+          inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v10
+
+          test -s dist-v10/index.html
+          test -s dist-v10/openttd-runtime.js
+          test -s dist-v10/openttd-bundled-addons.js
+          test -s dist-v10/OPENTTD-BUNDLED-ADDONS.json
+          test -d dist-v10/addons
+          test -d dist-v10/licenses
+
+      - name: Upgrade package to v10
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py
+          python3 playgama/upgrade_playgama_v10.py dist-v10 \
+            --loader playgama/openttd-bundled-addons.js \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js
+
+          python3 playgama/build-license-bundle.py dist-v10 --repo-license LICENSE
+
+      - name: Validate add-on delivery and legal bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, hashlib, json
+          from pathlib import Path
+
+          root = Path('dist-v10')
+          manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          assert manifest['enabled_by_default'] is False
+          assert len(manifest['items']) == 7
+          assert manifest['manifest_version'] == '2026-08-18-v10'
+
+          for row in manifest['items']:
+              assert row['asset'].endswith('.bin'), row['asset']
+              packed = (root / row['asset']).read_bytes()
+              assert hashlib.sha256(packed).hexdigest() == row['packaged_sha256'], row['content_id']
+              data = gzip.decompress(packed) if row.get('compression') == 'gzip' else packed
+              assert len(data) == row['installed_bytes'], row['content_id']
+              assert hashlib.sha256(data).hexdigest() == row['sha256'], row['content_id']
+          print('All 7 bundled add-ons verified with neutral .bin delivery names.')
+          PY
+
+          for legal in NOTICE.txt SOURCE_CODE.txt PLAYGAMA-ALL-LICENSES.md; do
+            test -s "dist-v10/${legal}"
+            ! grep -Eqi 'yandex|яндекс' "dist-v10/${legal}"
+          done
+
+      - name: Unit-test chunked cloud saves
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          global.document = { hidden: false };
+          global.navigator = { language: 'en' };
+
+          const store = new Map();
+          const bridge = {
+            STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+            storage: {
+              isSupported: () => true,
+              isAvailable: () => true,
+              async get(keys) {
+                if (Array.isArray(keys)) return keys.map(k => store.has(k) ? store.get(k) : null);
+                return store.has(keys) ? store.get(keys) : null;
+              },
+              async set(keys, values) {
+                if (Array.isArray(keys)) {
+                  for (let i = 0; i < keys.length; i++) store.set(keys[i], values[i]);
+                } else {
+                  store.set(keys, values);
+                }
+              },
+            },
+          };
+          global.bridge = bridge;
+          global.playgamaBridgeReady = Promise.resolve(bridge);
+          eval(fs.readFileSync('dist-v10/openttd-playgama-cloud-saves.js', 'utf8'));
+
+          function makeFS() {
+            const files = new Map();
+            const dirs = new Set(['/', '/home', '/home/web_user', '/home/web_user/.openttd', '/home/web_user/.openttd/save']);
+            const mtimes = new Map();
+            const norm = p => p.replace(/\/$/, '') || '/';
+            const parents = p => {
+              const parts = norm(p).split('/').filter(Boolean);
+              let cur = '';
+              for (let i = 0; i < parts.length - 1; i++) { cur += '/' + parts[i]; dirs.add(cur); }
+            };
+            return {
+              _files: files, _mtimes: mtimes,
+              mkdir(p) { dirs.add(norm(p)); },
+              readdir(p) {
+                p = norm(p);
+                if (!dirs.has(p)) throw new Error('ENOENT ' + p);
+                const prefix = p === '/' ? '/' : p + '/';
+                const names = new Set(['.', '..']);
+                for (const d of dirs) if (d.startsWith(prefix)) {
+                  const rest = d.slice(prefix.length); if (rest && !rest.includes('/')) names.add(rest);
+                }
+                for (const f of files.keys()) if (f.startsWith(prefix)) {
+                  const rest = f.slice(prefix.length); if (rest && !rest.includes('/')) names.add(rest);
+                }
+                return [...names];
+              },
+              stat(p) {
+                p = norm(p);
+                if (files.has(p)) return { mode: 0x8000, size: files.get(p).length, mtime: mtimes.get(p) || Date.now() };
+                if (dirs.has(p)) return { mode: 0x4000, size: 0, mtime: Date.now() };
+                throw new Error('ENOENT ' + p);
+              },
+              isDir(mode) { return (mode & 0x4000) === 0x4000; },
+              isFile(mode) { return (mode & 0x8000) === 0x8000; },
+              readFile(p, opts) {
+                p = norm(p); if (!files.has(p)) throw new Error('ENOENT ' + p);
+                const value = files.get(p);
+                if (opts?.encoding === 'utf8') return Buffer.from(value).toString('utf8');
+                return new Uint8Array(value);
+              },
+              writeFile(p, data) {
+                p = norm(p); parents(p);
+                const bytes = Buffer.from(data);
+                files.set(p, new Uint8Array(bytes)); mtimes.set(p, Date.now());
+              },
+              utime(p, a, m) { mtimes.set(norm(p), Number(new Date(m))); },
+              syncfs(populate, cb) { cb?.(); },
+            };
+          }
+
+          (async () => {
+            const FS = makeFS();
+            const root = '/home/web_user/.openttd';
+            const original = Buffer.alloc(600000);
+            for (let i = 0; i < original.length; i++) original[i] = ((i * 31) + (i >> 3)) & 255;
+            FS.writeFile(root + '/save/test.sav', original);
+            FS.writeFile(root + '/openttd.cfg', '[misc]\nlanguage = english.lng\n');
+
+            await global.__openttdPlaygamaCloudDebug.forceBackup(FS, root);
+            const meta = store.get('openttdSaveMetaV2A');
+            if (!meta || meta.size !== 600000 || meta.chunks < 10) throw new Error('cloud metadata missing');
+
+            FS._files.delete(root + '/save/test.sav');
+            FS._mtimes.delete(root + '/save/test.sav');
+            await global.yandexRestoreOpenTTDCloud(FS, root);
+
+            const restored = Buffer.from(FS.readFile(root + '/save/test.sav'));
+            if (!restored.equals(original)) throw new Error('cloud round-trip mismatch');
+            console.log('600000-byte cloud save round-trip passed in', meta.chunks, 'chunks.');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+
+      - name: Validate final package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-v10/index.html
+          test "$(grep -o 'openttd-playgama-cloud-saves.js' dist-v10/index.html | wc -l)" -eq 1
+          grep -q "platform_internal" dist-v10/openttd-playgama-cloud-saves.js
+          grep -q "openttdSaveMetaV2A" dist-v10/openttd-playgama-cloud-saves.js
+          grep -q "64 \* 1024 \* 1024" dist-v10/openttd-playgama-cloud-saves.js
+          grep -q "STARTUP_DEPENDENCY = 'playgama-bundled-content'" dist-v10/openttd-bundled-addons.js
+
+          node --check dist-v10/openttd-playgama-cloud-saves.js
+          node --check dist-v10/openttd-bundled-addons.js
+          node --check dist-v10/playgama-yandex-compat.js
+          node --check dist-v10/openttd-playgama-fixes.js
+          python3 -m json.tool dist-v10/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v10/playgama-bridge-config.json >/dev/null
+
+          unpacked_bytes="$(du -sb dist-v10 | cut -f1)"
+          echo "Unpacked Playgama v10 bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create Playgama v10 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-v10 && zip -9 -X -r ../openttd-playgama-v10-cloud-saves.zip .)
+          unzip -t openttd-playgama-v10-cloud-saves.zip
+          sha256sum openttd-playgama-v10-cloud-saves.zip > openttd-playgama-v10-cloud-saves.zip.sha256
+          ls -lh openttd-playgama-v10-cloud-saves.zip
+          cat openttd-playgama-v10-cloud-saves.zip.sha256
+
+      - name: Upload Playgama v10 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v10-cloud-saves
+          path: |
+            openttd-playgama-v10-cloud-saves.zip
+            openttd-playgama-v10-cloud-saves.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
