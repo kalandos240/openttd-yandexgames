@@ -1,20 +1,21 @@
 <div align="center">
 
-<img src="assets/banner.jpg" alt="OpenTTD WebAssembly browser port" width="800">
+<img src="assets/banner.jpg" alt="OpenTTD WebAssembly — Yandex Games and Playgama" width="800">
 
-# OpenTTD · WebAssembly browser ports
+# OpenTTD · WebAssembly port for Yandex Games and Playgama
 
-**OpenTTD 15.3 packaged for browser game platforms, with dedicated Yandex Games and Playgama integration paths.**
+**OpenTTD 15.3 in the browser through WebAssembly, with separate and independent integrations for Yandex Games and Playgama.**
 
-[![Yandex package](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml/badge.svg)](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml)
+[![Yandex Games build](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml/badge.svg)](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/final-package.yml)
 [![Playgama v10](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/build-playgama-v10-cloud-saves.yml/badge.svg)](https://github.com/kalandos240/openttd-yandexgames/actions/workflows/build-playgama-v10-cloud-saves.yml)
 ![OpenTTD](https://img.shields.io/badge/OpenTTD-15.3-2f7d32?style=flat-square)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-Emscripten-654ff0?style=flat-square)
+![Yandex Games](https://img.shields.io/badge/Yandex%20Games-SDK-ffcc00?style=flat-square)
 ![Playgama](https://img.shields.io/badge/Playgama-Bridge%20v2-7c3aed?style=flat-square)
 
 **English** · [Русский](README.ru.md)
 
-*Unofficial community port and reproducible build/integration project.*
+*Unofficial community port and reproducible browser-build project.*
 
 </div>
 
@@ -22,36 +23,103 @@
 
 ## About
 
-This repository contains the integration layer, patches and automated build pipelines used to prepare **OpenTTD 15.3** for browser distribution.
+This repository was originally created to port **OpenTTD 15.3 to Yandex Games** and now also contains a separate **Playgama** integration.
 
-The OpenTTD source tree is not vendored here. CI fetches the official `OpenTTD/OpenTTD` release, applies platform-specific web patches, builds with Emscripten and assembles distributable ZIP packages.
+The full OpenTTD source tree is not vendored here. GitHub Actions fetches the official `OpenTTD/OpenTTD` release, applies platform-specific web patches, builds the game with Emscripten and assembles distributable ZIP packages.
+
+**Yandex Games and Playgama are separate build paths.** Playgama changes should not silently modify the Yandex package, and Yandex-specific changes should not be mixed into the Playgama distribution.
 
 > This is not an official OpenTTD release and is not affiliated with or endorsed by the OpenTTD project, Yandex or Playgama.
 
+## Supported platforms
+
+| Capability | Yandex Games | Playgama |
+|---|---|---|
+| OpenTTD 15.3 WebAssembly | ✅ | ✅ |
+| Emscripten + FreeType | ✅ | ✅ |
+| English and Russian | ✅ | ✅ |
+| Platform locale hand-off | ✅ | ✅ |
+| Browser-local persistence | ✅ | ✅ |
+| Platform integration | Yandex Games SDK | Playgama Bridge v2 |
+| Separate distributable ZIP | `openttd-yandexgames.zip` | `openttd-playgama-v10-cloud-saves.zip` |
+| Current cloud-save path | Yandex integration / local persistence | v10 chunked cloud saves |
+| Bundled optional NewGRF/OpenGFX2 | not part of the main Yandex package | ✅ |
+
+---
+
+# Yandex Games
+
+## Yandex Games port features
+
+The Yandex Games path remains a first-class part of this repository.
+
+- **OpenTTD 15.3 WebAssembly build** powered by Emscripten.
+- **Yandex Games SDK** loaded from `/sdk.js`.
+- `YaGames.init()` performed before platform-dependent startup work.
+- **Yandex Loading API** integration so the platform is notified when the OpenTTD runtime is ready.
+- Yandex Games locale detection for first-launch Russian/English language selection.
+- **FreeType-enabled build** for correct Cyrillic rendering.
+- Persistent OpenTTD browser data through the Emscripten filesystem/browser storage layer.
+- Free base sets **OpenGFX, OpenSFX and OpenMSX** included in the primary package.
+- `index.html` placed at the ZIP root for direct upload to the Yandex Games console.
+- Platform-specific patches applied during CI instead of maintaining a permanently diverged OpenTTD source fork.
+
+See **[docs/YANDEX_GAMES.md](docs/YANDEX_GAMES.md)** for the full integration flow.
+
+## Build for Yandex Games
+
+Primary workflow:
+
+**Final OpenTTD Package** → `.github/workflows/final-package.yml`
+
+1. Open the **Actions** tab.
+2. Select **Final OpenTTD Package**.
+3. Run the workflow manually.
+4. Download the `openttd-yandexgames-final` artifact after a successful build.
+
+The resulting package is:
+
+```text
+openttd-yandexgames.zip
+```
+
+The archive contains `index.html` at its root and is intended for **Yandex Games** publication.
+
+---
+
+# Playgama
+
 ## Current Playgama build — v10
 
-The current Playgama path uses **Playgama Bridge JS Core v2** and includes:
+Playgama is maintained as a separate platform layer on top of the same OpenTTD WebAssembly base.
 
-- desktop / landscape browser packaging;
-- English and Russian localization with FreeType/Cyrillic support;
-- local OpenTTD persistence through Emscripten IDBFS / IndexedDB;
-- **Playgama-native chunked cloud saves** through `platform_internal` storage;
-- 64 KiB save chunks, alternating A/B cloud generations and metadata-last commits;
-- size and CRC32 verification before a cloud save is restored;
-- migration from the previous `openttdSaveV1` snapshot format;
-- local-save fallback when platform cloud storage is unavailable;
-- bundled **SimpleAI** and required AI libraries;
-- optional bundled NewGRFs and OpenGFX2 content, disabled by default;
-- a native in-game licenses viewer with the full legal bundle;
-- interstitial advertising only at safe pauses; rewarded and banner ads disabled.
+The current build includes:
 
-The active cloud-save implementation no longer uses the old ~120 KB player-data restriction. A **64 MiB per-save browser safety guard** remains to prevent pathological browser memory use.
+- **Playgama Bridge JS Core v2**;
+- desktop / landscape packaging;
+- English and Russian localization;
+- local persistence through IDBFS / IndexedDB;
+- cloud saves through `platform_internal`;
+- 64 KiB `.sav` text chunks;
+- alternating A/B cloud generations;
+- size and CRC32 verification before restore;
+- migration from legacy `openttdSaveV1` data;
+- local fallback when cloud storage is unavailable;
+- bundled SimpleAI and required AI libraries;
+- optional local NewGRF/OpenGFX2 packages;
+- complete license bundle and native licenses viewer;
+- interstitial ads requested only at safe pauses.
 
-See **[docs/PLAYGAMA.md](docs/PLAYGAMA.md)** and **[docs/PLAYGAMA_ADDONS.md](docs/PLAYGAMA_ADDONS.md)**.
+The active v10 cloud-save implementation no longer uses the previous ~120 KB `.sav` restriction. A 64 MiB per-save client safety guard remains.
 
-## Bundled optional content
+Details:
 
-The Playgama package currently ships these optional local packages for player choice:
+- **[docs/PLAYGAMA.md](docs/PLAYGAMA.md)**
+- **[docs/PLAYGAMA_ADDONS.md](docs/PLAYGAMA_ADDONS.md)**
+
+## Playgama optional content
+
+The Playgama package ships these optional local packages:
 
 - Iron Horse 4
 - FIRS Industries 5
@@ -61,54 +129,46 @@ The Playgama package currently ships these optional local packages for player ch
 - OpenGFX2 Settings
 - OpenGFX2 Classic
 
-NewGRFs are **not activated automatically**. FIRS and GIST are alternative industry sets and should not be enabled together in the same new game.
+NewGRFs are not enabled automatically. FIRS and GIST are alternative industry sets and should not be enabled together in the same new game.
 
-## Playgama publishing artwork
-
-Ready-to-upload cover assets are stored in the repository:
-
-| Format | File |
-|---|---|
-| Square 1:1 — 800×800 | [`assets/playgama/cover-square-800x800.jpg`](assets/playgama/cover-square-800x800.jpg) |
-| Portrait 9:16 — 1080×1920 | [`assets/playgama/cover-portrait-1080x1920.jpg`](assets/playgama/cover-portrait-1080x1920.jpg) |
-| Landscape 16:9 — 1920×1080 | [`assets/playgama/cover-landscape-1920x1080.jpg`](assets/playgama/cover-landscape-1920x1080.jpg) |
-
-## Build
-
-### Playgama v10
+## Build Playgama v10
 
 1. Open **Actions**.
 2. Select **Build Playgama v10 cloud saves**.
 3. Run the workflow.
-4. Download the `openttd-playgama-v10-cloud-saves` artifact.
+4. Download `openttd-playgama-v10-cloud-saves`.
 
-The workflow starts from the verified Playgama v8 package, applies the current add-on delivery fixes, installs the v10 cloud-save layer, rebuilds the legal bundle, runs save/add-on validation and creates the final ZIP.
+## Playgama publishing artwork
 
-### Yandex Games
+| Format | File |
+|---|---|
+| 800×800 | [`assets/playgama/cover-square-800x800.jpg`](assets/playgama/cover-square-800x800.jpg) |
+| 1080×1920 | [`assets/playgama/cover-portrait-1080x1920.jpg`](assets/playgama/cover-portrait-1080x1920.jpg) |
+| 1920×1080 | [`assets/playgama/cover-landscape-1920x1080.jpg`](assets/playgama/cover-landscape-1920x1080.jpg) |
 
-The existing Yandex-specific build pipeline remains available through **Final OpenTTD Package**. Its source and integration documentation are kept separately so Playgama changes do not silently alter the Yandex release path.
+---
 
 ## Documentation
 
 | Document | Purpose |
 |---|---|
 | [Build guide](docs/BUILDING.md) | General build environment and troubleshooting |
-| [Playgama integration](docs/PLAYGAMA.md) | Bridge v2, lifecycle, ads, cloud saves and publication fields |
-| [Playgama add-ons](docs/PLAYGAMA_ADDONS.md) | Bundled NewGRF/OpenGFX2 content and licensing notes |
-| [Yandex Games integration](docs/YANDEX_GAMES.md) | Yandex SDK startup, locale flow and package layout |
-| [Third-party notices](THIRD_PARTY_NOTICES.md) | OpenTTD and bundled third-party project notice overview |
-| [Contributing](CONTRIBUTING.md) | Scope for issues and pull requests |
+| [Yandex Games integration](docs/YANDEX_GAMES.md) | SDK startup, locale flow, Loading API and ZIP layout |
+| [Playgama integration](docs/PLAYGAMA.md) | Bridge v2, lifecycle, ads and cloud saves |
+| [Playgama add-ons](docs/PLAYGAMA_ADDONS.md) | NewGRF/OpenGFX2 versions and licensing |
+| [Third-party notices](THIRD_PARTY_NOTICES.md) | OpenTTD and bundled third-party projects |
+| [Contributing](CONTRIBUTING.md) | Issues and pull requests |
 
 ## Repository structure
 
 ```text
 .
-├── .github/workflows/      # Reproducible browser package pipelines
-├── assets/                 # Repository and publishing artwork
-│   └── playgama/           # Exact Playgama cover sizes
-├── ci/                     # Core browser/Yandex build scripts
-├── docs/                   # Build and platform documentation
-├── playgama/               # Bridge v2, add-ons, cloud saves and packaging helpers
+├── .github/workflows/      # Yandex + Playgama build pipelines
+├── assets/                 # Banner and publishing artwork
+│   └── playgama/           # Playgama cover assets
+├── ci/                     # Core WebAssembly/Yandex build scripts
+├── docs/                   # Documentation for both platforms
+├── playgama/               # Playgama Bridge, saves, add-ons and packaging
 ├── LICENSE
 ├── THIRD_PARTY_NOTICES.md
 ├── README.md
@@ -120,15 +180,15 @@ The existing Yandex-specific build pipeline remains available through **Final Op
 OpenTTD is an open-source transport simulation game maintained by the OpenTTD project.
 
 - Upstream source: [`OpenTTD/OpenTTD`](https://github.com/OpenTTD/OpenTTD)
-- Version targeted by this port: **15.3**
+- Target version: **15.3**
 - OpenTTD license: **GNU GPL v2**
 
-Bundled base sets, AI packages and optional NewGRFs retain their own upstream licenses and notices. The generated Playgama package includes the complete license bundle and source-code notices required by the distributed components.
+OpenGFX, OpenSFX, OpenMSX, AI packages and optional NewGRF/OpenGFX2 content retain their respective upstream licenses and notices. Platform packaging does not change the license of upstream OpenTTD.
 
 ---
 
 <div align="center">
 
-**OpenTTD → WebAssembly → Yandex Games / Playgama**
+**OpenTTD → WebAssembly → Yandex Games + Playgama**
 
 </div>
