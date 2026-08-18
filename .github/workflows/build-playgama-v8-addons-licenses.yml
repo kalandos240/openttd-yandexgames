@@ -1,0 +1,332 @@
+name: Build Playgama v8 add-ons and licenses
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/v8-addons-licenses
+    paths:
+      - '.github/workflows/build-playgama-v8-addons-licenses.yml'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/build-license-bundle.py'
+      - 'playgama/package_playgama.py'
+      - 'playgama/openttd-playgama-fixes.js'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-playgama-v8-addons-licenses.yml'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/build-license-bundle.py'
+      - 'playgama/package_playgama.py'
+      - 'playgama/openttd-playgama-fixes.js'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  LEGACY_BUILD_REF: fix/direct-file-launch
+  V7_ARTIFACT_ID: '9306289584'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout current Playgama integration
+        uses: actions/checkout@v4
+        with:
+          path: port
+
+      - name: Checkout tested OpenTTD browser build pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LEGACY_BUILD_REF }}
+          path: legacy
+
+      - name: Install native Playgama source patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp port/playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py port/playgama/build-license-bundle.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected exactly one AI hard-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          addition = "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
+          text = text.replace(anchor, anchor + addition, 1)
+          p.write_text(text, encoding='utf-8')
+          print('Configured native AI + NewGRF + licenses main-menu build.')
+          PY
+
+      - name: Rebuild OpenTTD 15.3 WebAssembly runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          grep -Fq 'return !_networking || (_network_server && _settings_game.ai.ai_in_multiplayer);' openttd/src/ai/ai_core.cpp
+          ! grep -Fq 'downloadable AI modules / Online Content are intentionally disabled' openttd/src/ai/ai_core.cpp
+
+          grep -Fq '#include "newgrf_config.h"' openttd/src/intro_gui.cpp
+          grep -Fq '#include "textfile_gui.h"' openttd/src/intro_gui.cpp
+          grep -Fq 'if (_all_grfs.empty()) ScanNewGRFFiles(nullptr);' openttd/src/intro_gui.cpp
+          grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
+          grep -Fq 'ShowPlaygamaLicenses();' openttd/src/intro_gui.cpp
+          grep -Fq 'PLAYGAMA-LICENSES.md' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_PLAYGAMA_LICENSES' openttd/src/lang/english.txt
+          grep -Fq 'STR_PLAYGAMA_LICENSES' openttd/src/lang/russian.txt
+          ! grep -Fq 'ShowNetworkContentListWindow();' openttd/src/intro_gui.cpp
+
+      - name: Download verified v7 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V7_ARTIFACT_ID}/zip" \
+            -o /tmp/v7-artifact.zip
+
+          rm -rf /tmp/v7-artifact dist-v8 /tmp/v8-raw
+          mkdir -p /tmp/v7-artifact dist-v8 /tmp/v8-raw
+          unzip -q /tmp/v7-artifact.zip -d /tmp/v7-artifact
+          inner="$(find /tmp/v7-artifact -type f -name 'openttd-playgama-v7-newgrf-menu.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v8
+
+          test -s dist-v8/index.html
+          test -s dist-v8/openttd-classic-ai.js
+          test -s dist-v8/openttd-bundled-addons.js
+          test -s dist-v8/OPENTTD-BUNDLED-ADDONS.json
+          test -d dist-v8/addons
+          test -d dist-v8/licenses
+
+      - name: Install rebuilt runtime and fixed bundled-content loader
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/v8-raw
+
+          python3 port/playgama/package_playgama.py /tmp/v8-raw \
+            --adapter port/playgama/playgama-yandex-compat.js \
+            --config port/playgama/playgama-bridge-config.json \
+            --fixes port/playgama/openttd-playgama-fixes.js \
+            --ai-bundle dist-v8/openttd-classic-ai.js
+
+          cp /tmp/v8-raw/openttd-runtime.js dist-v8/openttd-runtime.js
+          cp port/playgama/openttd-bundled-addons.js dist-v8/openttd-bundled-addons.js
+
+      - name: Complete license files and build in-game license document
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-v8/licenses/addons
+
+          curl -fL --retry 5 --retry-all-errors \
+            'https://raw.githubusercontent.com/UweDomaratius/GermanIndustries/v0.21.10/license.pt' \
+            -o dist-v8/licenses/addons/GIST-GPL-2.0.txt
+          curl -fL --retry 5 --retry-all-errors \
+            'https://raw.githubusercontent.com/DonaldDuck313/OpenTTD-NewGRFs/ae1a35b127cf089bce697afee1bc7cb6a0608b2a/LICENSE' \
+            -o dist-v8/licenses/addons/EarlyVehicle-GPL-2.0.txt
+
+          grep -q 'GNU GENERAL PUBLIC LICENSE' dist-v8/licenses/addons/GIST-GPL-2.0.txt
+          grep -q 'GNU GENERAL PUBLIC LICENSE' dist-v8/licenses/addons/EarlyVehicle-GPL-2.0.txt
+
+          python3 port/playgama/build-license-bundle.py dist-v8 --repo-license port/LICENSE
+          test -s dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'Iron Horse 4' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'FIRS Industries 5' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'Road Hog' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'GIST - German Industries Set' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'Early Vehicle Set' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'OpenGFX2 Settings' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'OpenGFX2 Classic' dist-v8/PLAYGAMA-ALL-LICENSES.md
+          grep -q 'SimpleAI' dist-v8/PLAYGAMA-ALL-LICENSES.md
+
+      - name: Verify every add-on payload against manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, hashlib, json, tarfile, tempfile
+          from pathlib import Path
+
+          root = Path('dist-v8')
+          manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          assert manifest['enabled_by_default'] is False
+          assert len(manifest['items']) == 7
+
+          for row in manifest['items']:
+              packed = (root / row['asset']).read_bytes()
+              assert hashlib.sha256(packed).hexdigest() == row['packaged_sha256'], row['content_id']
+              if row.get('compression') == 'gzip':
+                  data = gzip.decompress(packed)
+              else:
+                  data = packed
+              assert len(data) == row['installed_bytes'], row['content_id']
+              assert hashlib.sha256(data).hexdigest() == row['sha256'], row['content_id']
+              assert hashlib.md5(data).hexdigest() == row['md5'], row['content_id']
+
+              if row['type'] == 'base-graphics':
+                  with tempfile.NamedTemporaryFile(suffix='.tar') as tmp:
+                      tmp.write(data); tmp.flush()
+                      with tarfile.open(tmp.name, 'r') as tf:
+                          names = [n.lower() for n in tf.getnames()]
+                      assert any(n.endswith('.obg') for n in names)
+                      assert any(n.endswith('.grf') for n in names)
+              else:
+                  assert data[:1] or data, row['content_id']
+          print('All 7 bundled add-on payloads verified byte-for-byte.')
+          PY
+
+      - name: Unit-test startup dependency race fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          global.document = { baseURI: 'https://game.example/' };
+
+          const deps = new Set();
+          global.Module = {
+            addRunDependency(name) { deps.add(name); },
+            removeRunDependency(name) { deps.delete(name); },
+          };
+
+          const enc = new TextEncoder();
+          const manifest = {
+            manifest_version: 'test', enabled_by_default: false,
+            items: [{ content_id: 'newgrf/test', type: 'newgrf', asset: 'addons/test.grf', install_filename: 'test.grf', bytes: 4, installed_bytes: 4, packaged_bytes: 4, compression: 'none' }],
+          };
+          const license = enc.encode('# licenses\n' + 'x'.repeat(2048));
+          const addon = new Uint8Array([1,2,3,4]);
+
+          global.fetch = async (url) => {
+            url = String(url);
+            if (url.endsWith('OPENTTD-BUNDLED-ADDONS.json')) return { ok: true, json: async () => manifest };
+            if (url.endsWith('PLAYGAMA-ALL-LICENSES.md')) return { ok: true, arrayBuffer: async () => license.buffer };
+            if (url.endsWith('addons/test.grf')) {
+              await new Promise(r => setTimeout(r, 80));
+              return { ok: true, arrayBuffer: async () => addon.buffer };
+            }
+            throw new Error('unexpected URL ' + url);
+          };
+
+          const files = new Map();
+          const FS = {
+            mkdir() {},
+            stat(path) { if (!files.has(path)) throw new Error('ENOENT'); return { size: files.get(path).length }; },
+            writeFile(path, data) { files.set(path, new Uint8Array(data)); },
+          };
+          global.openttd_syncfs = cb => { if (cb) cb(); };
+          global.yandexRestoreOpenTTDCloud = async () => {};
+
+          eval(fs.readFileSync('dist-v8/openttd-bundled-addons.js', 'utf8'));
+          const promise = global.yandexRestoreOpenTTDCloud(FS, '/home/web_user/.openttd');
+          if (!deps.has('playgama-bundled-content')) throw new Error('startup dependency was not acquired synchronously');
+
+          setTimeout(() => {
+            if (!deps.has('playgama-bundled-content')) throw new Error('dependency released before delayed add-on completed');
+          }, 20);
+
+          promise.then(() => {
+            if (deps.size !== 0) throw new Error('startup dependency was not released');
+            if (!files.has('/home/web_user/.openttd/newgrf/test.grf')) throw new Error('NewGRF not installed');
+            if (!files.has('/home/web_user/.openttd/PLAYGAMA-LICENSES.md')) throw new Error('license bundle not installed');
+            console.log('Startup race unit test passed.');
+          }).catch(err => { console.error(err); process.exitCode = 1; });
+          NODE
+
+      - name: Validate final v8 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-v8/index.html
+          grep -q 'openttd-bundled-addons.js' dist-v8/index.html
+          grep -q 'Browser.mainLoop.pause' dist-v8/openttd-playgama-fixes.js
+          grep -q 'PAUSE_STATE_CHANGED' dist-v8/openttd-playgama-fixes.js
+          grep -q 'AUDIO_STATE_CHANGED' dist-v8/openttd-playgama-fixes.js
+
+          grep -q "STARTUP_DEPENDENCY = 'playgama-bundled-content'" dist-v8/openttd-bundled-addons.js
+          grep -q 'module.addRunDependency(STARTUP_DEPENDENCY)' dist-v8/openttd-bundled-addons.js
+          grep -q 'module.removeRunDependency(STARTUP_DEPENDENCY)' dist-v8/openttd-bundled-addons.js
+          grep -q 'PLAYGAMA-ALL-LICENSES.md' dist-v8/openttd-bundled-addons.js
+          grep -q 'PLAYGAMA-LICENSES.md' dist-v8/openttd-bundled-addons.js
+
+          test "$(grep -ao 'max_no_competitors = 3' dist-v8/openttd-runtime.js | wc -l)" -ge 3
+          ! grep -aq 'max_no_competitors = 0' dist-v8/openttd-runtime.js
+
+          node --check dist-v8/playgama-yandex-compat.js
+          node --check dist-v8/openttd-playgama-fixes.js
+          node --check dist-v8/openttd-classic-ai.js
+          node --check dist-v8/openttd-bundled-addons.js
+          python3 -m json.tool dist-v8/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v8/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
+          python3 -m json.tool dist-v8/playgama-bridge-config.json >/dev/null
+
+          cat > dist-v8/PLAYGAMA-V8-CHANGES.txt <<'EOF'
+          OpenTTD Playgama v8
+          ===================
+          - Fixes the bundled NewGRF startup race: main() is blocked until all local add-ons are present in IDBFS.
+          - NewGRF Settings performs a defensive rescan if the initial local catalogue is empty.
+          - Adds a native Licenses / Лицензии button to the main menu.
+          - The licenses window contains OpenTTD, port, base-set, AI/library and every bundled add-on license/notice.
+          - All NewGRFs remain disabled by default and are enabled only by the player for a new game.
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          bad=[]
+          for p in Path('dist-v8').rglob('*'):
+              if not p.is_file(): continue
+              rel=p.relative_to('dist-v8').as_posix()
+              if ' ' in rel or any(ord(ch) > 127 for ch in rel): bad.append(rel)
+          if bad: raise SystemExit(f'Invalid package paths: {bad}')
+          PY
+
+          unpacked_bytes="$(du -sb dist-v8 | cut -f1)"
+          echo "Unpacked v8 bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create Playgama v8 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-v8 && zip -9 -X -r ../openttd-playgama-v8-addons-licenses.zip .)
+          unzip -t openttd-playgama-v8-addons-licenses.zip
+          sha256sum openttd-playgama-v8-addons-licenses.zip | tee openttd-playgama-v8-addons-licenses.sha256
+          ls -lh openttd-playgama-v8-addons-licenses.zip
+
+      - name: Upload Playgama v8 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v8-addons-licenses
+          path: |
+            openttd-playgama-v8-addons-licenses.zip
+            openttd-playgama-v8-addons-licenses.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

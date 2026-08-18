@@ -1,15 +1,14 @@
 /* Optional bundled OpenTTD add-ons for the Playgama build.
  *
  * This file does NOT activate any NewGRF or base graphics set. It only makes
- * approved packages available in OpenTTD's normal local content directories
- * before main() starts. Players opt in through OpenTTD's own NewGRF Settings /
- * Game Options UI.
+ * approved packages available in OpenTTD's normal local content directories.
+ * Players opt in through OpenTTD's own NewGRF Settings / Game Options UI.
  *
- * Large payloads are stored as gzip-compressed files under ./addons. They are
- * decompressed only once into the persistent OpenTTD IDBFS area. Subsequent
- * launches compare the installed byte size and skip both download/decompression
- * when the local copy is already present. Installation is serial on purpose to
- * keep peak browser memory low on large NewGRFs.
+ * IMPORTANT: the installer owns an Emscripten run dependency while the local
+ * catalogue is being restored/installed. OpenTTD must not reach main() and its
+ * initial NewGRF scan before the files exist in IDBFS. This fixes the v7 race
+ * where the runtime's 2.5 s cloud-restore timeout allowed the game to start
+ * while large NewGRFs were still being decompressed in the background.
  */
 (() => {
   'use strict';
@@ -17,14 +16,43 @@
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
+  const LICENSE_BUNDLE_URL = './PLAYGAMA-ALL-LICENSES.md';
+  const LICENSE_TARGET_NAME = 'PLAYGAMA-LICENSES.md';
   const INSTALL_CONCURRENCY = 1;
+  const STARTUP_DEPENDENCY = 'playgama-bundled-content';
+
   let manifestPromise = null;
+  let startupDependencyHeld = false;
+  let startupDependencyReleased = false;
 
   const ensureDir = (FS, path) => {
     let current = '';
     for (const part of String(path).split('/').filter(Boolean)) {
       current += '/' + part;
       try { FS.mkdir(current); } catch (_) {}
+    }
+  };
+
+  const holdStartupDependency = () => {
+    if (startupDependencyHeld || startupDependencyReleased) return startupDependencyHeld;
+    const module = window.Module;
+    if (module && typeof module.addRunDependency === 'function') {
+      module.addRunDependency(STARTUP_DEPENDENCY);
+      startupDependencyHeld = true;
+      console.info('[Playgama/OpenTTD] Holding startup until bundled content is ready');
+      return true;
+    }
+    console.warn('[Playgama/OpenTTD] Could not acquire bundled-content startup dependency');
+    return false;
+  };
+
+  const releaseStartupDependency = () => {
+    if (!startupDependencyHeld || startupDependencyReleased) return;
+    startupDependencyReleased = true;
+    const module = window.Module;
+    if (module && typeof module.removeRunDependency === 'function') {
+      module.removeRunDependency(STARTUP_DEPENDENCY);
+      console.info('[Playgama/OpenTTD] Bundled content ready; startup released');
     }
   };
 
@@ -121,13 +149,25 @@
     return results;
   };
 
+  const installLicenseBundle = async (FS, personalDir) => {
+    ensureDir(FS, personalDir);
+    const response = await fetch(new URL(LICENSE_BUNDLE_URL, document.baseURI).toString(), { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`HTTP ${response.status} while loading license bundle`);
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.byteLength < 1024) throw new Error('Bundled license document is unexpectedly small');
+    const target = personalDir + '/' + LICENSE_TARGET_NAME;
+    FS.writeFile(target, data);
+    window.__openttdLicenseBundlePath = target;
+    return { state: 'installed', bytes: data.byteLength, path: target };
+  };
+
   const persistWithoutBlockingStartup = () => {
     try {
       if (typeof window.openttd_syncfs === 'function') {
-        window.openttd_syncfs(() => console.info('[Playgama/OpenTTD] Bundled addon cache persisted'));
+        window.openttd_syncfs(() => console.info('[Playgama/OpenTTD] Bundled content cache persisted'));
       }
     } catch (error) {
-      console.warn('[Playgama/OpenTTD] Could not schedule bundled addon persistence', error);
+      console.warn('[Playgama/OpenTTD] Could not schedule bundled content persistence', error);
     }
   };
 
@@ -148,26 +188,49 @@
     };
 
     if (failed.length) {
-      console.warn('[Playgama/OpenTTD] Some optional bundled add-ons could not be installed', failed);
-    } else {
-      console.info(`[Playgama/OpenTTD] Optional add-ons ready: ${installed} installed, ${cached} cached`);
+      throw new Error(`Failed to install ${failed.length} bundled add-on(s): ${failed.map((row) => row.id).join(', ')}`);
     }
 
-    if (installed > 0) persistWithoutBlockingStartup();
+    console.info(`[Playgama/OpenTTD] Optional add-ons ready before main(): ${installed} installed, ${cached} cached`);
     return results;
   };
 
-  /* Loaded after openttd-playgama-fixes.js, so this wraps the already-installed
-     AI/config/cloud restore hook. Optional content is installed after cloud
-     restore so older cloud state cannot overwrite the local bundled catalog. */
+  /* Loaded before the generated runtime. The wrapper is called from the
+     runtime's preRun flow after IDBFS populate. Acquiring our own run dependency
+     synchronously here makes the runtime's separate 2.5 s cloud timeout harmless:
+     main() remains blocked until every bundled local package has been installed. */
   const previousRestore = window.yandexRestoreOpenTTDCloud;
-  window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
-    if (typeof previousRestore === 'function') await previousRestore(FS, personalDir);
-    try {
-      await installBundledAddons(FS, personalDir);
-    } catch (error) {
-      /* Add-on failure must never make the base game unbootable. */
-      console.warn('[Playgama/OpenTTD] Optional addon installation failed; continuing with base game', error);
-    }
+  window.yandexRestoreOpenTTDCloud = function(FS, personalDir) {
+    holdStartupDependency();
+
+    const task = (async () => {
+      let restoreError = null;
+      if (typeof previousRestore === 'function') {
+        try {
+          await previousRestore(FS, personalDir);
+        } catch (error) {
+          restoreError = error;
+          console.warn('[Playgama/OpenTTD] Cloud/AI restore failed; continuing with local bundled content', error);
+        }
+      }
+
+      let licenseStatus = null;
+      try {
+        licenseStatus = await installLicenseBundle(FS, personalDir);
+        await installBundledAddons(FS, personalDir);
+        persistWithoutBlockingStartup();
+      } catch (error) {
+        window.__openttdBundledAddonsFatalError = String(error);
+        console.error('[Playgama/OpenTTD] Bundled content installation failed', error);
+        throw error;
+      } finally {
+        window.__openttdBundledLicenseStatus = licenseStatus;
+      }
+
+      if (restoreError) console.warn('[Playgama/OpenTTD] Game started with local content despite restore warning');
+    })();
+
+    window.__openttdBundledContentReady = task;
+    return task.finally(releaseStartupDependency);
   };
 })();
