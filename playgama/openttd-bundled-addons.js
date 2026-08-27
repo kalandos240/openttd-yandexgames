@@ -4,11 +4,10 @@
  * approved packages available in OpenTTD's normal local content directories.
  * Players opt in through OpenTTD's own NewGRF Settings / Game Options UI.
  *
- * IMPORTANT: the installer owns an Emscripten run dependency while the local
- * catalogue is being restored/installed. OpenTTD must not reach main() and its
- * initial NewGRF scan before the files exist in IDBFS. This fixes the v7 race
- * where the runtime's 2.5 s cloud-restore timeout allowed the game to start
- * while large NewGRFs were still being decompressed in the background.
+ * IMPORTANT: bundled add-ons are optional and must never block OpenTTD startup.
+ * They are restored/installed in the background after IDBFS is available. The
+ * Playgama main-menu patch performs a defensive NewGRF rescan when the user opens
+ * NewGRF Settings, so first launch stays fast even on slow storage/CDN paths.
  */
 (() => {
   'use strict';
@@ -20,40 +19,13 @@
   const LICENSE_TARGET_NAME = 'PLAYGAMA-LICENSES.md';
   const INSTALL_CONCURRENCY = 1;
   const CLOUD_RESTORE_GATE_MS = 2200;
-  const STARTUP_DEPENDENCY = 'playgama-bundled-content';
-
   let manifestPromise = null;
-  let startupDependencyHeld = false;
-  let startupDependencyReleased = false;
 
   const ensureDir = (FS, path) => {
     let current = '';
     for (const part of String(path).split('/').filter(Boolean)) {
       current += '/' + part;
       try { FS.mkdir(current); } catch (_) {}
-    }
-  };
-
-  const holdStartupDependency = () => {
-    if (startupDependencyHeld || startupDependencyReleased) return startupDependencyHeld;
-    const module = window.Module;
-    if (module && typeof module.addRunDependency === 'function') {
-      module.addRunDependency(STARTUP_DEPENDENCY);
-      startupDependencyHeld = true;
-      console.info('[Playgama/OpenTTD] Holding startup until bundled content is ready');
-      return true;
-    }
-    console.warn('[Playgama/OpenTTD] Could not acquire bundled-content startup dependency');
-    return false;
-  };
-
-  const releaseStartupDependency = () => {
-    if (!startupDependencyHeld || startupDependencyReleased) return;
-    startupDependencyReleased = true;
-    const module = window.Module;
-    if (module && typeof module.removeRunDependency === 'function') {
-      module.removeRunDependency(STARTUP_DEPENDENCY);
-      console.info('[Playgama/OpenTTD] Bundled content ready; startup released');
     }
   };
 
@@ -221,59 +193,44 @@
       throw new Error(`Failed to install ${failed.length} bundled add-on(s): ${failed.map((row) => row.id).join(', ')}`);
     }
 
-    console.info(`[Playgama/OpenTTD] Optional add-ons ready before main(): ${installed} installed, ${cached} cached`);
+    console.info(`[Playgama/OpenTTD] Optional add-ons ready: ${installed} installed, ${cached} cached`);
     return results;
   };
 
   /* Loaded before the generated runtime. The wrapper is called from the
-     runtime's preRun flow after IDBFS populate. Acquiring our own run dependency
-     synchronously here makes the runtime's separate 2.5 s cloud timeout harmless:
-     main() remains blocked until every bundled local package has been installed. */
+     runtime's preRun flow after IDBFS populate. Optional local content is kicked
+     off in the background and is deliberately excluded from the startup promise.
+     This guarantees that a slow/blocked asset request cannot leave the game on
+     the initial "Loading ..." screen. */
   const previousRestore = window.yandexRestoreOpenTTDCloud;
   window.yandexRestoreOpenTTDCloud = function(FS, personalDir) {
-    holdStartupDependency();
+    const restoreTask = (async () => {
+      if (typeof previousRestore !== 'function') return;
+      try {
+        await previousRestore(FS, personalDir);
+      } catch (error) {
+        console.warn('[Playgama/OpenTTD] Cloud/AI restore failed; continuing with local saves', error);
+      }
+    })();
 
-    const task = (async () => {
-      let restoreError = null;
-      let restoreTimedOut = false;
-
-      /* Cloud restore and local add-on installation are independent. Start them
-         together so network latency cannot unnecessarily extend first launch. */
-      const restoreTask = (async () => {
-        if (typeof previousRestore !== 'function') return;
-        try {
-          await previousRestore(FS, personalDir);
-        } catch (error) {
-          restoreError = error;
-          console.warn('[Playgama/OpenTTD] Cloud/AI restore failed; continuing with local bundled content', error);
-        }
-      })();
-      const restoreGate = Promise.race([
-        restoreTask,
-        new Promise((resolve) => setTimeout(() => { restoreTimedOut = true; resolve(); }, CLOUD_RESTORE_GATE_MS)),
-      ]);
-
+    const localContentTask = (async () => {
       let licenseStatus = null;
       try {
-        const localContentTask = (async () => {
-          licenseStatus = await installLicenseBundle(FS, personalDir);
-          await installBundledAddons(FS, personalDir);
-        })();
-        await Promise.all([localContentTask, restoreGate]);
+        licenseStatus = await installLicenseBundle(FS, personalDir);
+        await installBundledAddons(FS, personalDir);
         persistWithoutBlockingStartup();
       } catch (error) {
-        window.__openttdBundledAddonsFatalError = String(error);
-        console.error('[Playgama/OpenTTD] Bundled content installation failed', error);
-        throw error;
+        window.__openttdBundledAddonsError = String(error);
+        console.warn('[Playgama/OpenTTD] Optional bundled content is unavailable; game startup is unaffected', error);
       } finally {
         window.__openttdBundledLicenseStatus = licenseStatus;
       }
-
-      if (restoreError) console.warn('[Playgama/OpenTTD] Game started with local content despite restore warning');
-      if (restoreTimedOut) console.info('[Playgama/OpenTTD] Cloud restore continues in background after startup gate');
     })();
 
-    window.__openttdBundledContentReady = task;
-    return task.finally(releaseStartupDependency);
+    window.__openttdBundledContentReady = localContentTask;
+    return Promise.race([
+      restoreTask,
+      new Promise((resolve) => setTimeout(resolve, CLOUD_RESTORE_GATE_MS)),
+    ]);
   };
 })();
