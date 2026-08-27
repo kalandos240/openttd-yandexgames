@@ -19,6 +19,38 @@
     height: Math.max(64, Math.round(window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 720)),
   });
 
+  const hasUserActivation = () => navigator.userActivation?.hasBeenActive ?? true;
+
+  /* Firefox/Chromium correctly reject media playback and AudioContext.resume()
+     before the first user gesture. Historical Emscripten/SDL code still tries
+     those calls during startup, creating noisy console warnings. Suppress only
+     the premature calls; after a real gesture, calls pass through unchanged.
+     The existing OpenTTD/adapter gesture handlers then start the audio normally. */
+  const mediaProto = window.HTMLMediaElement?.prototype;
+  if (mediaProto && !mediaProto.__openttdUserActivationGuard) {
+    const nativePlay = mediaProto.play;
+    if (typeof nativePlay === 'function') {
+      mediaProto.play = function(...args) {
+        if (!hasUserActivation()) return Promise.resolve();
+        return nativePlay.apply(this, args);
+      };
+    }
+    Object.defineProperty(mediaProto, '__openttdUserActivationGuard', { value: true, configurable: true });
+  }
+
+  const audioContextCtor = window.AudioContext || window.webkitAudioContext;
+  const audioContextProto = audioContextCtor?.prototype;
+  if (audioContextProto && !audioContextProto.__openttdUserActivationGuard) {
+    const nativeResume = audioContextProto.resume;
+    if (typeof nativeResume === 'function') {
+      audioContextProto.resume = function(...args) {
+        if (!hasUserActivation()) return Promise.resolve();
+        return nativeResume.apply(this, args);
+      };
+    }
+    Object.defineProperty(audioContextProto, '__openttdUserActivationGuard', { value: true, configurable: true });
+  }
+
   const normalizeBrowserConfig = (FS, personalDir) => {
     if (!FS || !personalDir) return;
     const path = String(personalDir).replace(/\/$/, '') + '/openttd.cfg';
