@@ -11,9 +11,14 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-polish.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
+      - 'playgama/openttd-global-ranking.js'
       - 'playgama/openttd-bundled-addons.js'
       - 'playgama/openttd-playgama-cloud-saves.js'
       - 'playgama/playgama-yandex-compat.js'
@@ -28,9 +33,19 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-polish.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
+      - 'playgama/openttd-global-ranking.js'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
+      - 'playgama/build-license-bundle.py'
       - 'yandex/package_yandex_from_playgama.py'
       - 'yandex/openttd-global-ranking.js'
 
@@ -187,10 +202,17 @@ jobs:
 
           test -s dist-v12/openttd-full-viewport.js
           test -s dist-v12/openttd-ranking-core.js
+          test -s dist-v12/openttd-global-ranking.js
           grep -Fq 'Module.setCanvasSize(width, height)' dist-v12/openttd-full-viewport.js
           grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-ranking-core.js
           grep -Fq 'openttd.localRanking.v2' dist-v12/openttd-ranking-core.js
           grep -Fq 'window.OpenTTDGlobalRanking?.submitScore?.' dist-v12/openttd-ranking-core.js
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" dist-v12/openttd-global-ranking.js
+          ! grep -Fq 'company_rating' dist-v12/openttd-global-ranking.js
+          grep -Fq 'playgamaBridgeReady' dist-v12/openttd-global-ranking.js
+          grep -Fq 'leaderboards.getEntries' dist-v12/openttd-global-ranking.js
+          grep -Fq 'leaderboards.setScore' dist-v12/openttd-global-ranking.js
+          grep -Fq 'FETCH_FAILURE_BACKOFF_MS' dist-v12/openttd-global-ranking.js
 
           ! grep -q 'addRunDependency' dist-v12/openttd-bundled-addons.js
           ! grep -q 'removeRunDependency' dist-v12/openttd-bundled-addons.js
@@ -209,6 +231,7 @@ jobs:
           node --check dist-v12/openttd-playgama-fixes.js
           node --check dist-v12/openttd-full-viewport.js
           node --check dist-v12/openttd-ranking-core.js
+          node --check dist-v12/openttd-global-ranking.js
           python3 -m json.tool dist-v12/OPENTTD-BUNDLED-ADDONS.json >/dev/null
           python3 -m json.tool dist-v12/playgama-bridge-config.json >/dev/null
 
@@ -300,7 +323,8 @@ jobs:
 
           test -s dist-yandex/openttd-ranking-core.js
           test -s dist-yandex/openttd-global-ranking.js
-          grep -Fq "LEADERBOARD_NAME = 'company_rating'" dist-yandex/openttd-global-ranking.js
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" dist-yandex/openttd-global-ranking.js
+          ! grep -Fq 'company_rating' dist-yandex/openttd-global-ranking.js
           grep -Fq 'Number.MAX_SAFE_INTEGER' dist-yandex/openttd-global-ranking.js
           grep -Fq 'isAvailableMethod' dist-yandex/openttd-global-ranking.js
           grep -Fq 'leaderboards.setScore' dist-yandex/openttd-global-ranking.js
