@@ -194,7 +194,7 @@ def write_platform_notice(dist: Path) -> None:
         '- Native pause calls wait until Emscripten reports Module.calledRun.\n'
         '- The game canvas fills the complete platform viewport.\n'
         '- The page uses standards-mode HTML with a valid <!DOCTYPE html>.\n'
-        '- A platform-neutral local/global ranking UI is backed by company_rating.\n',
+        '- A platform-neutral local/global ranking UI is backed by companyrating.\n',
         encoding='utf-8',
     )
 
