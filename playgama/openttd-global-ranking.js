@@ -7,7 +7,7 @@
   'use strict';
   if (window.OpenTTDGlobalRanking) return;
 
-  const LEADERBOARD_NAME = 'company_rating';
+  const LEADERBOARD_NAME = 'companyrating';
   const MAX_SCORE = Number.MAX_SAFE_INTEGER;
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
@@ -44,19 +44,12 @@
   };
 
   const refreshAuthorized = (bridge) => {
-    /* Some Bridge platforms expose an in-game leaderboard but no account auth
-       flow. Treat those as immediately usable so the native UI does not show a
-       meaningless sign-in button. Platforms that support auth remain gated. */
     authorized = bridge?.player?.isAuthorizationSupported === false || !!bridge?.player?.isAuthorized;
     return authorized;
   };
 
   const snapshotText = () => {
-    const lines = [
-      'version\t1',
-      `status\t${status}`,
-      `authorized\t${authorized ? 1 : 0}`,
-    ];
+    const lines = ['version\t1', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
     for (const row of entries) {
       lines.push(`entry\t${Math.max(1, Math.trunc(row.rank || 1))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
     }
@@ -77,7 +70,6 @@
       return false;
     }
   };
-
   const publishSoon = () => {
     if (!writeSnapshot()) setTimeout(writeSnapshot, 100);
   };
@@ -85,7 +77,6 @@
   const requestEntries = async () => {
     status = 'loading';
     publishSoon();
-
     const bridge = await getBridge();
     refreshAuthorized(bridge);
     const type = bridge?.leaderboards?.type || 'not_available';
@@ -100,9 +91,6 @@
       const result = await bridge.leaderboards.getEntries(LEADERBOARD_NAME);
       const rows = Array.isArray(result) ? result : [];
       const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
-      /* Bridge preserves the native platform rank. Yandex exposes zero-based
-         ranks while some other providers expose one-based ranks, so detect the
-         base from the returned top list instead of shifting every platform. */
       const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
       entries = rows.slice(0, 10).map((entry, index) => {
         const rawRank = Number(entry?.rank);
@@ -182,7 +170,6 @@
     refreshAuthorized(bridge);
     if (!authorized && bridge?.player?.isAuthorizationSupported && typeof bridge?.player?.authorize === 'function') {
       try {
-        /* Called only from the native "Sign in to participate" button. */
         await bridge.player.authorize({});
       } catch (error) {
         console.warn('[OpenTTD ranking] Authorization was not completed', error);
