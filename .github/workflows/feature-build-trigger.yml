@@ -4,13 +4,18 @@ on:
   push:
     branches:
       - main
+      - fix/yandex-ui-runtime-errors
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/feature-build-trigger.yml'
       - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-polish.py'
       - 'playgama/openttd-global-ranking.js'
+      - 'yandex/openttd-global-ranking.js'
 
 permissions:
   actions: write
