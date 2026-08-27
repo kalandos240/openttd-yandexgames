@@ -12,6 +12,7 @@ BRIDGE_URL = "https://bridge.playgama.com/v1/stable/playgama-bridge.js"
 BRIDGE_SCRIPT = f'<script src="{BRIDGE_URL}"></script>'
 CLOUD_SCRIPT = '<script src="openttd-playgama-cloud-saves.js"></script>'
 FIXES_SCRIPT = '<script src="openttd-playgama-fixes.js"></script>'
+VIEWPORT_SCRIPT = '<script src="openttd-full-viewport.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
 
 
@@ -75,7 +76,8 @@ def patch_runtime_fixes(dist: Path) -> None:
     full_bleed = r'''
   /* Use the complete platform viewport. OpenTTD/SDL handles arbitrary browser
      aspect ratios; forcing a centred 16:9 CSS surface created visible side bars
-     on wide Yandex/Playgama viewports. */
+     on wide Yandex/Playgama viewports. openttd-full-viewport.js also resizes the
+     backing SDL canvas, so this CSS does not stretch or distort a 16:9 surface. */
   const style = document.createElement('style');
   style.id = 'openttd-playgama-scale-fix';
   style.textContent = `
@@ -123,6 +125,13 @@ def patch_runtime_fixes(dist: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def install_viewport_helper(dist: Path) -> None:
+    source = Path(__file__).resolve().with_name("openttd-full-viewport.js")
+    if not source.is_file():
+        raise SystemExit(f"Full-viewport helper is missing: {source}")
+    shutil.copy2(source, dist / "openttd-full-viewport.js")
+
+
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     html = normalize_doctype(path.read_text(encoding="utf-8"))
@@ -141,14 +150,17 @@ def patch_index(dist: Path) -> None:
         raise SystemExit("Legacy/invalid Playgama Bridge v2 reference remains")
 
     html = html.replace(CLOUD_SCRIPT, "")
+    html = html.replace(VIEWPORT_SCRIPT, "")
     if FIXES_SCRIPT in html:
-        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + CLOUD_SCRIPT, 1)
+        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + VIEWPORT_SCRIPT + CLOUD_SCRIPT, 1)
     elif ADDONS_SCRIPT in html:
-        html = html.replace(ADDONS_SCRIPT, CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
+        html = html.replace(ADDONS_SCRIPT, VIEWPORT_SCRIPT + CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
     else:
         raise SystemExit("Could not find Playgama runtime script insertion point")
     if html.count(CLOUD_SCRIPT) != 1:
         raise SystemExit("Cloud save script insertion is not unique")
+    if html.count(VIEWPORT_SCRIPT) != 1:
+        raise SystemExit("Full-viewport helper insertion is not unique")
     if not html.startswith("<!DOCTYPE html>"):
         raise SystemExit("index.html did not enter standards mode")
     path.write_text(html, encoding="utf-8")
@@ -172,6 +184,7 @@ def main() -> None:
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
+    install_viewport_helper(dist)
     patch_runtime_fixes(dist)
     patch_index(dist)
 
@@ -181,6 +194,7 @@ def main() -> None:
         "- Uses the documented Playgama Bridge JS Core stable v1 CDN.\n"
         "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
         "- Uses the entire browser viewport instead of forcing a 16:9 letterbox.\n"
+        "- Resizes the SDL backing surface to viewport CSS pixels, avoiding stretched graphics.\n"
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
         "- Native pause calls wait until the Emscripten runtime has started.\n"
         "- AudioContext resume is only attempted after user activation.\n"
