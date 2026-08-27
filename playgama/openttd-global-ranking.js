@@ -12,6 +12,7 @@
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
   const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
+  const FETCH_FAILURE_BACKOFF_MS = 30000;
 
   let status = 'loading';
   let authorized = false;
@@ -19,6 +20,8 @@
   let lastWrite = '';
   let submitTimer = 0;
   let inFlightSubmit = false;
+  let inFlightFetch = null;
+  let nextFetchAllowedAt = 0;
 
   const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
   const clampScore = (value) => {
@@ -44,7 +47,14 @@
   };
 
   const refreshAuthorized = (bridge) => {
-    authorized = bridge?.player?.isAuthorizationSupported === false || !!bridge?.player?.isAuthorized;
+    const player = bridge?.player;
+    if (!player) {
+      authorized = false;
+      return false;
+    }
+    /* Platforms without an authorization flow may still provide a usable
+       leaderboard identity, so do not force an impossible sign-in step. */
+    authorized = player.isAuthorizationSupported === false || player.isAuthorized === true;
     return authorized;
   };
 
@@ -74,45 +84,64 @@
     if (!writeSnapshot()) setTimeout(writeSnapshot, 100);
   };
 
-  const requestEntries = async () => {
-    status = 'loading';
-    publishSoon();
-    const bridge = await getBridge();
-    refreshAuthorized(bridge);
-    const type = bridge?.leaderboards?.type || 'not_available';
-    if (type !== 'in_game' || typeof bridge?.leaderboards?.getEntries !== 'function') {
-      status = type === 'not_available' ? 'offline' : 'error';
-      entries = [];
+  const requestEntries = async (force = false) => {
+    if (inFlightFetch) return inFlightFetch;
+    if (!force && Date.now() < nextFetchAllowedAt) return false;
+
+    inFlightFetch = (async () => {
+      status = 'loading';
       publishSoon();
-      return false;
-    }
+
+      const bridge = await getBridge();
+      refreshAuthorized(bridge);
+      const leaderboards = bridge?.leaderboards;
+      const type = leaderboards?.type || 'not_available';
+
+      /* Playgama only exposes entry data for in-game leaderboards. Native and
+         native-popup leaderboards cannot be rendered inside the OpenTTD window,
+         and we must never auto-open a platform popup during startup polling. */
+      if (type !== 'in_game' || typeof leaderboards?.getEntries !== 'function') {
+        status = 'offline';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+
+      try {
+        const result = await leaderboards.getEntries(LEADERBOARD_NAME);
+        const rows = Array.isArray(result) ? result : [];
+        const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
+        const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
+        entries = rows.slice(0, 10).map((entry, index) => {
+          const rawRank = Number(entry?.rank);
+          const rank = Number.isFinite(rawRank)
+            ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
+            : index + 1;
+          return {
+            rank,
+            score: clampScore(entry?.score),
+            isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
+            name: cleanName(entry?.name),
+          };
+        });
+        nextFetchAllowedAt = 0;
+        status = entries.length ? 'ready' : 'empty';
+        publishSoon();
+        return true;
+      } catch (error) {
+        nextFetchAllowedAt = Date.now() + FETCH_FAILURE_BACKOFF_MS;
+        console.warn('[OpenTTD ranking] Global ranking request failed', error);
+        status = 'error';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+    })();
 
     try {
-      const result = await bridge.leaderboards.getEntries(LEADERBOARD_NAME);
-      const rows = Array.isArray(result) ? result : [];
-      const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
-      const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
-      entries = rows.slice(0, 10).map((entry, index) => {
-        const rawRank = Number(entry?.rank);
-        const rank = Number.isFinite(rawRank)
-          ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
-          : index + 1;
-        return {
-          rank,
-          score: clampScore(entry?.score),
-          isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
-          name: cleanName(entry?.name),
-        };
-      });
-      status = entries.length ? 'ready' : 'empty';
-      publishSoon();
-      return true;
-    } catch (error) {
-      console.warn('[OpenTTD ranking] Global ranking request failed', error);
-      status = 'error';
-      entries = [];
-      publishSoon();
-      return false;
+      return await inFlightFetch;
+    } finally {
+      inFlightFetch = null;
     }
   };
 
@@ -123,13 +152,14 @@
     if (pending <= submitted) return true;
 
     const bridge = await getBridge();
+    const leaderboards = bridge?.leaderboards;
     refreshAuthorized(bridge);
-    if (!bridge?.leaderboards || typeof bridge.leaderboards.setScore !== 'function' || bridge.leaderboards.type === 'not_available') {
+    if (!leaderboards || typeof leaderboards.setScore !== 'function' || leaderboards.type === 'not_available') {
       status = 'offline';
       publishSoon();
       return false;
     }
-    if (bridge?.player?.isAuthorizationSupported && !authorized) {
+    if (bridge?.player?.isAuthorizationSupported === true && !authorized) {
       status = 'auth-required';
       publishSoon();
       return false;
@@ -137,14 +167,14 @@
 
     inFlightSubmit = true;
     try {
-      await bridge.leaderboards.setScore(LEADERBOARD_NAME, pending);
+      await leaderboards.setScore(LEADERBOARD_NAME, pending);
       storageSetNumber(SUBMITTED_KEY, pending);
       status = 'ready';
       publishSoon();
       return true;
     } catch (error) {
       console.warn('[OpenTTD ranking] Score submission failed', error);
-      status = authorized ? 'error' : 'auth-required';
+      status = bridge?.player?.isAuthorizationSupported === true && !authorized ? 'auth-required' : 'error';
       publishSoon();
       return false;
     } finally {
@@ -167,8 +197,9 @@
       publishSoon();
       return false;
     }
+
     refreshAuthorized(bridge);
-    if (!authorized && bridge?.player?.isAuthorizationSupported && typeof bridge?.player?.authorize === 'function') {
+    if (!authorized && bridge?.player?.isAuthorizationSupported === true && typeof bridge?.player?.authorize === 'function') {
       try {
         await bridge.player.authorize({});
       } catch (error) {
@@ -176,12 +207,17 @@
       }
       refreshAuthorized(bridge);
     }
+
     if (authorized) {
       await doSubmit();
-      await requestEntries();
-    } else {
+      await requestEntries(true);
+    } else if (bridge?.player?.isAuthorizationSupported === true) {
       status = 'auth-required';
       publishSoon();
+    } else {
+      /* No supported authorization flow: retry the leaderboard directly rather
+         than showing a sign-in action the player cannot complete. */
+      await requestEntries(true);
     }
     return authorized;
   };
@@ -192,7 +228,7 @@
     submitScore,
     requestEntries,
     requestAuth,
-    refresh: requestEntries,
+    refresh: () => requestEntries(true),
   };
 
   publishSoon();
