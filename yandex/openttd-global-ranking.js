@@ -10,7 +10,6 @@
 
   /* Exact developer-console identifier; deliberately contains no separators. */
   const LEADERBOARD_NAME = 'companyrating';
-  /* Legacy CI grep only; never passed to the SDK: LEADERBOARD_NAME = 'company_rating' */
   const MAX_SCORE = Number.MAX_SAFE_INTEGER; // 2^53 - 1; exact JS integer range.
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
