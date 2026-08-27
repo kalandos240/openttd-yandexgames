@@ -10,7 +10,9 @@ on:
     paths:
       - '.github/workflows/dual-platform-ranking-probe.yml'
       - 'ci/test-dual-platform-ranking.js'
+      - 'ci/test-playgama-startup.js'
       - 'playgama/openttd-global-ranking.js'
+      - 'playgama/playgama-yandex-compat.js'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/playgama-bridge-config.json'
       - 'yandex/openttd-global-ranking.js'
@@ -21,7 +23,9 @@ on:
     paths:
       - '.github/workflows/dual-platform-ranking-probe.yml'
       - 'ci/test-dual-platform-ranking.js'
+      - 'ci/test-playgama-startup.js'
       - 'playgama/openttd-global-ranking.js'
+      - 'playgama/playgama-yandex-compat.js'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/playgama-bridge-config.json'
       - 'yandex/openttd-global-ranking.js'
@@ -47,9 +51,16 @@ jobs:
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" yandex/openttd-global-ranking.js
           ! grep -Fq 'company_rating' playgama/openttd-global-ranking.js
           ! grep -Fq 'company_rating' yandex/openttd-global-ranking.js
+          grep -Fq 'starting OpenTTD with offline platform fallback' playgama/playgama-yandex-compat.js
+          grep -Fq 'navigator.userActivation?.hasBeenActive' playgama/playgama-yandex-compat.js
           node --check playgama/openttd-global-ranking.js
+          node --check playgama/playgama-yandex-compat.js
           node --check yandex/openttd-global-ranking.js
           node --check ci/test-dual-platform-ranking.js
+          node --check ci/test-playgama-startup.js
 
       - name: Exercise both leaderboard providers
         run: node ci/test-dual-platform-ranking.js
+
+      - name: Exercise Playgama offline startup fallback
+        run: node ci/test-playgama-startup.js
