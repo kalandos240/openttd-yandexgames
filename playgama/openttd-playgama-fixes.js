@@ -199,6 +199,17 @@ AIGroup.CreateGroup <- function(vehicle_type)
       config += (config && !config.endsWith('\n') ? '\n' : '') + '[difficulty]\nmax_no_competitors = ' + COMPETITORS + '\n';
     }
 
+    /* Browser editions always start playable. A persisted desktop/profile
+       setting must not leave every newly generated game behind a red PAUSED
+       indicator; platform ad/visibility pause remains handled separately. */
+    if (/^pause_on_newgame\s*=.*$/m.test(config)) {
+      config = config.replace(/^pause_on_newgame\s*=.*$/m, 'pause_on_newgame = false');
+    } else if (/^\[gui\]\s*$/m.test(config)) {
+      config = config.replace(/^\[gui\]\s*$/m, '[gui]\npause_on_newgame = false');
+    } else {
+      config += (config && !config.endsWith('\n') ? '\n' : '') + '[gui]\npause_on_newgame = false\n';
+    }
+
     try { FS.writeFile(path, config); } catch (error) {
       console.warn('[Playgama/OpenTTD] Could not apply platform language/AI config', error);
     }
@@ -323,6 +334,7 @@ AIGroup.CreateGroup <- function(vehicle_type)
      restart music the player explicitly stopped. */
   const retryMusic = () => {
     if (shouldHardPause() || !platformAudioEnabled || document.hidden) return;
+    if (!(navigator.userActivation?.hasBeenActive ?? true)) return;
     try {
       const audio = currentMusic();
       if (audio && audio.paused && !audio.ended && !audio.error) {
