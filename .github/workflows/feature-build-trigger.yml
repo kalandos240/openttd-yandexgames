@@ -9,6 +9,7 @@ on:
       - '.github/workflows/feature-build-trigger.yml'
       - 'playgama/patch-browser-ranking-core.py'
       - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/openttd-global-ranking.js'
 
 permissions:

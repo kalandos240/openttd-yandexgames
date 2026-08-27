@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Apply the native browser ranking and tutorial patches as one build step.
+"""Apply native browser ranking and tutorial patches as one build step.
 
-The production workflow already invokes this filename. Keeping the ranking
-implementation in a sibling core file lets the combined build reuse the
-separately compile-tested tutorial patch without duplicating either patch.
+The production workflow already invokes this filename. Keeping the feature
+implementation in sibling files lets the combined build reuse focused probes
+without duplicating the source transformations.
 """
 from pathlib import Path
 import runpy
@@ -24,4 +24,5 @@ def locate(name: str) -> Path:
 
 runpy.run_path(str(locate("patch-browser-ranking-core.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-tutorial-toolbar.py")), run_name="__main__")
 print("Native ranking + tutorial patches applied together.")
