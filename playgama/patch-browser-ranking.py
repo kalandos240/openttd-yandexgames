@@ -43,4 +43,5 @@ runpy.run_path(str(locate("patch-browser-tutorial-polish.py")), run_name="__main
 runpy.run_path(str(locate("patch-browser-tutorial-quality.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-layout-normalize.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-ux.py")), run_name="__main__")
-print("Native ranking + objective-driven 20-step tutorial + final high-scale UX pass applied together.")
+runpy.run_path(str(locate("patch-browser-tutorial-dynamic-targets.py")), run_name="__main__")
+print("Native ranking + objective-driven 20-step tutorial + pulsing dynamic action guidance applied together.")
