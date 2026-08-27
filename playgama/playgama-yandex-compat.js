@@ -14,6 +14,9 @@
   let gameReadySent = false;
   let gameplayStarted = false;
   let platformAudioEnabled = true;
+  const BRIDGE_URL = 'https://bridge.playgama.com/v2/stable/playgama-bridge.js';
+  const BRIDGE_LOAD_TIMEOUT_MS = 12000;
+  let bridgeScriptPromise = null;
 
   const safeCall = (callback, ...args) => {
     try { callback?.(...args); } catch (error) { console.warn('[Playgama] callback failed:', error); }
@@ -78,15 +81,38 @@
 
   wrapAudioContext();
 
+  const loadBridgeScript = () => {
+    if (window.bridge && typeof window.bridge.initialize === 'function') return Promise.resolve(window.bridge);
+    if (bridgeScriptPromise) return bridgeScriptPromise;
+
+    bridgeScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = BRIDGE_URL;
+      script.async = true;
+      script.crossOrigin = 'anonymous';
+      const timer = setTimeout(() => {
+        script.remove();
+        reject(new Error('Playgama Bridge load timed out'));
+      }, BRIDGE_LOAD_TIMEOUT_MS);
+      script.onload = () => {
+        clearTimeout(timer);
+        if (window.bridge && typeof window.bridge.initialize === 'function') resolve(window.bridge);
+        else reject(new Error('Playgama Bridge loaded without window.bridge'));
+      };
+      script.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error('Could not load Playgama Bridge'));
+      };
+      document.head.appendChild(script);
+    });
+    return bridgeScriptPromise;
+  };
+
   const initializeBridge = async () => {
-    if (!window.bridge || typeof window.bridge.initialize !== 'function') {
-      throw new Error('Playgama Bridge script is unavailable');
-    }
-
-    window.bridge.engine = 'javascript';
-    await window.bridge.initialize({ configFilePath: './playgama-bridge-config.json' });
-    const bridge = window.bridge;
-
+    const loadedBridge = await loadBridgeScript();
+    loadedBridge.engine = 'javascript';
+    await loadedBridge.initialize({ configFilePath: './playgama-bridge-config.json' });
+    const bridge = loadedBridge;
     if (!String(bridge.version || '').startsWith('2.')) {
       throw new Error(`Playgama Bridge v2 required, loaded ${bridge.version || 'unknown'}`);
     }
