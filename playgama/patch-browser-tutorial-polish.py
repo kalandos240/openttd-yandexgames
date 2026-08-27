@@ -7,6 +7,7 @@ the practice level beyond the first route into the remaining core management
 mechanics.
 """
 from pathlib import Path
+import re
 
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
@@ -16,6 +17,18 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
     if text.count(old) != 1:
         raise SystemExit(f"Could not find unique {label} in {path}: {text.count(old)}")
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def normalize_progress_total(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    pattern = re.compile(r"^(STR_BROWSER_TUTORIAL_LEVEL_(?:0[1-9]|1[0-5])\s+:\d+)/16(\s+—)", re.M)
+    text, count = pattern.subn(r"\1/20\2", text)
+    if count not in (0, 15):
+        raise SystemExit(f"Unexpected tutorial progress-label count in {path}: {count}")
+    for step in range(1, 16):
+        if f"STR_BROWSER_TUTORIAL_LEVEL_{step:02d}" not in text:
+            raise SystemExit(f"Tutorial step {step:02d} is missing in {path}")
+    path.write_text(text, encoding="utf-8")
 
 
 def append_before_marker(path: Path, marker: str, block: str, guard: str) -> None:
@@ -30,6 +43,9 @@ def append_before_marker(path: Path, marker: str, block: str, guard: str) -> Non
 
 english = Path("openttd/src/lang/english.txt")
 russian = Path("openttd/src/lang/russian.txt")
+
+normalize_progress_total(english)
+normalize_progress_total(russian)
 
 replace_once(
     english,
