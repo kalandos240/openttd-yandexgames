@@ -10,6 +10,7 @@ from pathlib import Path
 CLOUD_SCRIPT = '<script src="openttd-playgama-cloud-saves.js"></script>'
 FIXES_SCRIPT = '<script src="openttd-playgama-fixes.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
+PLAYGAMA_BRIDGE_BLOCKING_SCRIPT = '<script src="https://bridge.playgama.com/v2/stable/playgama-bridge.js"></script>'
 
 
 def normalize_addon_assets(dist: Path) -> None:
@@ -47,6 +48,15 @@ def normalize_addon_assets(dist: Path) -> None:
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     html = path.read_text(encoding="utf-8")
+
+    # A parser-blocking remote SDK script can freeze the page on the untouched
+    # OpenTTD "Loading ..." screen when a portal, moderator proxy, CSP, DNS, or
+    # CDN path delays that request. The compatibility layer now loads Bridge v2
+    # asynchronously, so the game runtime is never held hostage by the SDK CDN.
+    html = html.replace(PLAYGAMA_BRIDGE_BLOCKING_SCRIPT, "")
+    if PLAYGAMA_BRIDGE_BLOCKING_SCRIPT in html:
+        raise SystemExit("Parser-blocking Playgama Bridge script is still present")
+
     html = html.replace(CLOUD_SCRIPT, "")
     if FIXES_SCRIPT in html:
         html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + CLOUD_SCRIPT, 1)
@@ -81,6 +91,8 @@ def main() -> None:
         "OpenTTD Playgama v10\n"
         "====================\n"
         "- Uses Playgama Bridge v2 platform_internal storage for cloud saves.\n"
+        "- Loads Playgama Bridge asynchronously so a remote SDK request cannot block OpenTTD startup.\n"
+        "- Installs optional bundled add-ons in the background instead of blocking main().\n"
         "- Splits .sav data into 64 KiB text chunks and alternates A/B generations.\n"
         "- Commits metadata last and verifies restored saves with size + CRC32.\n"
         "- Migrates the legacy openttdSaveV1 snapshot when no v2 cloud slot exists.\n"
