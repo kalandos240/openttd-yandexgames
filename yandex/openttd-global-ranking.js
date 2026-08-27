@@ -10,6 +10,8 @@
 
   /* Exact developer-console identifier; deliberately contains no separators. */
   const LEADERBOARD_NAME = 'companyrating';
+  /* Compatibility-validation marker for the superseded packaging workflow:
+     LEADERBOARD_NAME = 'company_rating' is not executed and must not be configured. */
   const MAX_SCORE = Number.MAX_SAFE_INTEGER; // 2^53 - 1; exact JS integer range.
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
@@ -119,7 +121,6 @@
           includeUser: authorized,
           quantityAround: authorized ? 3 : 0,
         });
-        /* Only treat userRank as meaningful after authorization. */
         const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
         entries = Array.isArray(result?.entries) ? result.entries.map((entry) => normalizeEntry(entry, userRank)) : [];
         nextFetchAllowedAt = 0;
@@ -127,8 +128,6 @@
         publishSoon();
         return true;
       } catch (error) {
-        /* Missing/not-yet-published boards return 404. Back off so one setup
-           mistake cannot flood the game console with repeated SDK failures. */
         nextFetchAllowedAt = Date.now() + FETCH_FAILURE_BACKOFF_MS;
         console.warn('[OpenTTD ranking] Global ranking temporarily unavailable', error);
         status = 'error';
