@@ -8,6 +8,8 @@ the final Playgama + Yandex packaging workflow.
 """
 from pathlib import Path
 import runpy
+import shutil
+import subprocess
 
 
 def locate(name: str) -> Path:
@@ -23,9 +25,20 @@ def locate(name: str) -> Path:
     raise SystemExit(f"Could not locate combined browser patch dependency: {name}")
 
 
+def prepare_cyrillic_font_backend() -> None:
+    """Make OpenTTD's bundled Cyrillic-capable TTF fonts usable in WebAssembly."""
+    embuilder = shutil.which("embuilder")
+    if embuilder is None:
+        raise SystemExit("Emscripten embuilder is required for the browser OpenTTD build")
+    subprocess.run([embuilder, "build", "freetype"], check=True)
+    print("Prepared Emscripten FreeType for OpenTTD Latin/Cyrillic default fonts.")
+
+
+prepare_cyrillic_font_backend()
 runpy.run_path(str(locate("patch-browser-ranking-core.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-toolbar.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-level.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-polish.py")), run_name="__main__")
-print("Native ranking + 20-step interactive tutorial patches applied together.")
+runpy.run_path(str(locate("patch-browser-tutorial-quality.py")), run_name="__main__")
+print("Native ranking + readable objective-driven 20-step tutorial patches applied together.")
