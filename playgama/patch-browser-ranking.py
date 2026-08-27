@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Apply native browser ranking and tutorial patches as one build step.
 
-The production workflow already invokes this filename. Keeping the feature
-implementation in sibling files lets the combined build reuse focused probes
-without duplicating the source transformations.
+The production workflow already invokes and watches this filename. Keeping the
+feature implementation in sibling files lets the combined build reuse focused
+probes without duplicating source transformations, while changes here trigger
+the final Playgama + Yandex packaging workflow.
 """
 from pathlib import Path
 import runpy
