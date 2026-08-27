@@ -1,4 +1,4 @@
-name: OpenTTD native tutorial compile probe
+name: OpenTTD interactive tutorial compile probe
 
 on:
   workflow_dispatch:
@@ -7,7 +7,11 @@ on:
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/tutorial-compile-probe.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
       - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
 
 permissions:
@@ -30,15 +34,19 @@ jobs:
           ref: fix/direct-file-launch
           path: legacy
 
-      - name: Install native menu and tutorial patches
+      - name: Install native menu ranking and tutorial patches
         shell: bash
         run: |
           set -euo pipefail
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
-          cp playgama/patch-browser-tutorial.py legacy/ci/patch-browser-tutorial.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
           python3 -m py_compile \
+            playgama/patch-browser-ranking-core.py \
+            playgama/patch-browser-tutorial.py \
+            playgama/patch-browser-tutorial-toolbar.py \
+            playgama/patch-browser-tutorial-level.py \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
-            legacy/ci/patch-browser-tutorial.py
+            legacy/ci/patch-browser-ranking.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -54,13 +62,13 @@ jobs:
               raise SystemExit(f'Expected one source patch anchor, got {text.count(anchor)}')
           addition = (
               "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
-              "    'python3 ci/patch-browser-tutorial.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
           )
           text = text.replace(anchor, anchor + addition, 1)
           p.write_text(text, encoding='utf-8')
           PY
 
-      - name: Compile OpenTTD 15.3 with tutorial
+      - name: Compile OpenTTD 15.3 with interactive tutorial
         working-directory: legacy
         shell: bash
         run: |
@@ -70,9 +78,18 @@ jobs:
 
           grep -Fq 'WID_SGI_TUTORIAL' openttd/src/widgets/intro_widget.h
           grep -Fq 'struct BrowserTutorialWindow final : Window' openttd/src/intro_gui.cpp
-          grep -Fq 'ShowBrowserTutorial();' openttd/src/intro_gui.cpp
-          grep -Fq 'STR_BROWSER_TUTORIAL_STEP_8' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_STEP_8' openttd/src/lang/russian.txt
+          grep -Fq 'struct BrowserTutorialCoachWindow final : Window' openttd/src/intro_gui.cpp
+          grep -Fq 'struct BrowserButtonGuideWindow final : Window' openttd/src/intro_gui.cpp
+          grep -Fq 'StartBrowserTutorialLevel()' openttd/src/intro_gui.cpp
+          grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
+          grep -Fq 'SetWidgetHighlight(current.widget, TC_YELLOW)' openttd/src/intro_gui.cpp
+          grep -Fq 'SPR_ARROW_LEFT' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
+          grep -Fq 'ShowBrowserButtonGuide();' openttd/src/toolbar_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_16' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_16' openttd/src/lang/russian.txt
+          grep -Fq 'Справочник кнопок' openttd/src/lang/russian.txt
 
       - name: Validate rebuilt runtime
         working-directory: legacy
@@ -84,4 +101,4 @@ jobs:
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
           test -s /tmp/tutorial-runtime/openttd-runtime.js
           node --check /tmp/tutorial-runtime/openttd-runtime.js
-          echo 'Native tutorial compile probe passed.'
+          echo 'Interactive tutorial compile probe passed.'
