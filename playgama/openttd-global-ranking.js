@@ -44,7 +44,10 @@
   };
 
   const refreshAuthorized = (bridge) => {
-    authorized = !!bridge?.player?.isAuthorized;
+    /* Some Bridge platforms expose an in-game leaderboard but no account auth
+       flow. Treat those as immediately usable so the native UI does not show a
+       meaningless sign-in button. Platforms that support auth remain gated. */
+    authorized = bridge?.player?.isAuthorizationSupported === false || !!bridge?.player?.isAuthorized;
     return authorized;
   };
 
@@ -186,7 +189,6 @@
       }
       refreshAuthorized(bridge);
     }
-    if (!bridge?.player?.isAuthorizationSupported) authorized = true;
     if (authorized) {
       await doSubmit();
       await requestEntries();
