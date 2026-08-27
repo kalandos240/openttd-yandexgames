@@ -1,0 +1,344 @@
+name: Build OpenTTD v11 polished Playgama + Yandex
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - fix/yandex-ui-runtime-errors
+    paths:
+      - '.github/workflows/build-v11-polished.yml'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
+      - 'playgama/build-license-bundle.py'
+      - 'yandex/package_yandex_from_playgama.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-v11-polished.yml'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
+      - 'playgama/build-license-bundle.py'
+      - 'yandex/package_yandex_from_playgama.py'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  V8_ARTIFACT_ID: '9306987648'
+  LEGACY_BUILD_REF: fix/direct-file-launch
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout current port sources
+        uses: actions/checkout@v4
+
+      - name: Checkout tested OpenTTD browser build pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LEGACY_BUILD_REF }}
+          path: legacy
+
+      - name: Install native main-menu and NewGRF localization patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected exactly one AI hard-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          addition = "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
+          text = text.replace(anchor, anchor + addition, 1)
+          p.write_text(text, encoding='utf-8')
+          print('Configured native NewGRF/localization source patch.')
+          PY
+
+      - name: Rebuild OpenTTD 15.3 WebAssembly runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
+          grep -Fq 'GetBundledGRFRussianDescription' openttd/src/newgrf_gui.cpp
+          grep -Fq 'GetCurrentLanguageIsoCode().starts_with("ru")' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0x43411223' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0xF1250009' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0x9787EAFE' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0x55440100' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0x474C0501' openttd/src/newgrf_gui.cpp
+          grep -Fq 'case 0x4F475A01' openttd/src/newgrf_gui.cpp
+          grep -Fq 'Комплексный набор поездов' openttd/src/newgrf_gui.cpp
+
+      - name: Download verified Playgama v8 content package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
+            -o /tmp/v8-artifact.zip
+
+          rm -rf /tmp/v8-artifact dist-v11 /tmp/rebuilt-runtime
+          mkdir -p /tmp/v8-artifact dist-v11 /tmp/rebuilt-runtime
+          unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
+          inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v11
+
+          test -s dist-v11/index.html
+          test -s dist-v11/openttd-runtime.js
+          test -s dist-v11/OPENTTD-BUNDLED-ADDONS.json
+          test -d dist-v11/addons
+          test -d dist-v11/licenses
+
+      - name: Apply launch-safe full-viewport refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            playgama/upgrade_playgama_v10.py \
+            playgama/build-license-bundle.py \
+            yandex/package_yandex_from_playgama.py
+
+          python3 playgama/upgrade_playgama_v10.py dist-v11 \
+            --loader playgama/openttd-bundled-addons.js \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js \
+            --adapter playgama/playgama-yandex-compat.js
+          cp playgama/playgama-bridge-config.json dist-v11/playgama-bridge-config.json
+          python3 playgama/build-license-bundle.py dist-v11 --repo-license LICENSE
+
+      - name: Install rebuilt localized OpenTTD runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
+          test -s /tmp/rebuilt-runtime/openttd-runtime.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/rebuilt-runtime/openttd-runtime.js')
+          data = p.read_bytes()
+          old = b'max_no_competitors = 0'
+          new = b'max_no_competitors = 3'
+          count = data.count(old)
+          if count != 3:
+              raise SystemExit(f'Expected 3 disabled competitor defaults in rebuilt runtime, got {count}')
+          data = data.replace(old, new)
+          if old in data or data.count(new) < 3:
+              raise SystemExit('Could not enable browser competitors in rebuilt runtime')
+          p.write_bytes(data)
+          PY
+
+          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v11/openttd-runtime.js
+
+      - name: Validate polished Playgama package
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-v11/index.html
+          ! grep -q 'bridge.playgama.com/v2/' dist-v11/index.html
+          test "$(head -c 15 dist-v11/index.html)" = '<!DOCTYPE html>'
+
+          ! grep -q 'addRunDependency' dist-v11/openttd-bundled-addons.js
+          ! grep -q 'removeRunDependency' dist-v11/openttd-bundled-addons.js
+          grep -q 'RESTORE_STARTUP_GATE_MS = 1500' dist-v11/openttd-bundled-addons.js
+          grep -q 'FETCH_TIMEOUT_MS = 8000' dist-v11/openttd-bundled-addons.js
+
+          grep -Fq 'width: 100vw !important' dist-v11/openttd-playgama-fixes.js
+          grep -Fq 'height: 100vh !important' dist-v11/openttd-playgama-fixes.js
+          grep -Fq 'aspect-ratio: auto !important' dist-v11/openttd-playgama-fixes.js
+          ! grep -Fq 'aspect-ratio: 16 / 9' dist-v11/openttd-playgama-fixes.js
+          grep -Fq 'Module.calledRun === true' dist-v11/openttd-playgama-fixes.js
+          grep -Fq 'navigator.userActivation?.hasBeenActive' dist-v11/openttd-playgama-fixes.js
+
+          node --check dist-v11/openttd-playgama-cloud-saves.js
+          node --check dist-v11/openttd-bundled-addons.js
+          node --check dist-v11/playgama-yandex-compat.js
+          node --check dist-v11/openttd-playgama-fixes.js
+          python3 -m json.tool dist-v11/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v11/playgama-bridge-config.json >/dev/null
+
+      - name: Verify optional add-on payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip, hashlib, json
+          from pathlib import Path
+
+          root = Path('dist-v11')
+          manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          assert manifest['enabled_by_default'] is False
+          assert manifest['manifest_version'] == '2026-08-27-v11-ui-polish'
+          assert len(manifest['items']) == 7
+          for row in manifest['items']:
+              assert row['asset'].endswith('.bin'), row['asset']
+              packed = (root / row['asset']).read_bytes()
+              assert hashlib.sha256(packed).hexdigest() == row['packaged_sha256'], row['content_id']
+              data = gzip.decompress(packed) if row.get('compression') == 'gzip' else packed
+              assert len(data) == row['installed_bytes'], row['content_id']
+              assert hashlib.sha256(data).hexdigest() == row['sha256'], row['content_id']
+          print('All optional add-ons verified.')
+          PY
+
+      - name: Create Playgama ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked_bytes="$(du -sb dist-v11 | cut -f1)"
+          echo "Unpacked Playgama bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+          (cd dist-v11 && zip -9 -X -r ../openttd-playgama-v11-polished.zip .)
+          unzip -t openttd-playgama-v11-polished.zip
+          sha256sum openttd-playgama-v11-polished.zip > openttd-playgama-v11-polished.zip.sha256
+
+      - name: Convert exact polished base to Yandex Games
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-yandex
+          cp -a dist-v11 dist-yandex
+          python3 yandex/package_yandex_from_playgama.py dist-yandex
+
+          ! grep -Eqi 'playgama|bridge\.playgama\.com' dist-yandex/index.html
+          ! grep -Eqi 'playgama' dist-yandex/openttd-yandex-fixes.js
+          test ! -e dist-yandex/playgama-yandex-compat.js
+          test ! -e dist-yandex/playgama-bridge-config.json
+          test ! -e dist-yandex/openttd-playgama-cloud-saves.js
+          test ! -e dist-yandex/openttd-playgama-fixes.js
+
+          test "$(head -c 15 dist-yandex/index.html)" = '<!DOCTYPE html>'
+          grep -Fq "script.src = '/sdk.js'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'YaGames.init()' dist-yandex/yandex-bootstrap.js
+          ! grep -Eq "location\.(host|hostname|origin)|document\.domain|location\.protocol === 'file:'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'Module.calledRun !== true' dist-yandex/yandex-bridge.js
+          grep -Fq 'navigator.userActivation?.hasBeenActive' dist-yandex/yandex-bridge.js
+          grep -Fq 'width: 100vw !important' dist-yandex/openttd-yandex-fixes.js
+          grep -Fq 'height: 100vh !important' dist-yandex/openttd-yandex-fixes.js
+          ! grep -Fq 'aspect-ratio: 16 / 9' dist-yandex/openttd-yandex-fixes.js
+          ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
+
+          node --check dist-yandex/yandex-bootstrap.js
+          node --check dist-yandex/yandex-bridge.js
+          node --check dist-yandex/openttd-yandex-fixes.js
+          node --check dist-yandex/openttd-bundled-addons.js
+
+      - name: Unit-test Yandex SDK bootstrap order
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          global.navigator = { language: 'ru-RU', userActivation: { hasBeenActive: false } };
+          global.location = { protocol: 'https:', hostname: 'any-moderation-host.example' };
+          let appended = null;
+          global.document = {
+            createElement(tag) {
+              if (tag !== 'script') throw new Error('unexpected tag ' + tag);
+              return {};
+            },
+            head: {
+              appendChild(script) {
+                appended = script;
+                global.YaGames = {
+                  async init() {
+                    return { environment: { i18n: { lang: 'ru' } } };
+                  },
+                };
+                queueMicrotask(() => script.onload());
+              },
+            },
+          };
+
+          eval(fs.readFileSync('dist-yandex/yandex-bootstrap.js', 'utf8'));
+          (async () => {
+            const sdk = await global.yandexGamesSDKReady;
+            if (!appended || appended.src !== '/sdk.js' || appended.async !== true) {
+              throw new Error('Yandex /sdk.js loader was not appended correctly');
+            }
+            if (!sdk || global.ysdk !== sdk) throw new Error('YaGames.init result was not published');
+            if (global.yandexGameLanguage !== 'ru') throw new Error('Yandex locale was not applied');
+            console.log('Yandex dynamic SDK bootstrap passed on arbitrary host.');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+
+      - name: Unit-test early Yandex pause polling is harmless
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const text = fs.readFileSync('dist-yandex/yandex-bridge.js', 'utf8');
+          if (!text.includes("Module.calledRun !== true")) throw new Error('missing calledRun guard');
+          if (!text.includes("typeof Module._em_openttd_set_platform_pause !== 'function'")) throw new Error('missing export guard');
+          if (text.includes("typeof Module !== 'undefined' && typeof Module._em_openttd_set_platform_pause === 'function'")) {
+            throw new Error('old unsafe pause bridge remains');
+          }
+          console.log('Early pause polling is guarded before lazy wasm export invocation.');
+          NODE
+
+      - name: Create Yandex Games ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
+          echo "Unpacked Yandex bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 100000000
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-v11-polished.zip .)
+          unzip -t openttd-yandexgames-v11-polished.zip
+          sha256sum openttd-yandexgames-v11-polished.zip > openttd-yandexgames-v11-polished.zip.sha256
+
+      - name: Upload Playgama artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v11-polished
+          path: |
+            openttd-playgama-v11-polished.zip
+            openttd-playgama-v11-polished.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload Yandex Games artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-v11-polished
+          path: |
+            openttd-yandexgames-v11-polished.zip
+            openttd-yandexgames-v11-polished.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
