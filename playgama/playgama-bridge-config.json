@@ -4,7 +4,7 @@
   "showFullLoadingLogo": false,
   "leaderboards": [
     {
-      "id": "company_rating",
+      "id": "companyrating",
       "isMain": true
     }
   ],
