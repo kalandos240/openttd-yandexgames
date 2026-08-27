@@ -82,9 +82,14 @@ def main() -> None:
     if not (dist / "OPENTTD-BUNDLED-ADDONS.json").is_file():
         raise SystemExit("OPENTTD-BUNDLED-ADDONS.json is missing")
 
+    compat = Path(__file__).resolve().parent / "playgama-yandex-compat.js"
+    if not compat.is_file():
+        raise SystemExit("playgama-yandex-compat.js is missing next to the v10 upgrader")
+
     normalize_addon_assets(dist)
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
+    shutil.copy2(compat, dist / "playgama-yandex-compat.js")
     patch_index(dist)
 
     (dist / "PLAYGAMA-V10-CHANGES.txt").write_text(
