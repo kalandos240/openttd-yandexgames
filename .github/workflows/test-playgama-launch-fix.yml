@@ -1,0 +1,93 @@
+name: Test Playgama launch fix
+
+on:
+  push:
+    branches:
+      - fix/playgama-launch-url-independent
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  V8_ARTIFACT_ID: '9306987648'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout launch-fix branch
+        uses: actions/checkout@v4
+
+      - name: Download verified Playgama v8 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
+            -o /tmp/v8-artifact.zip
+          rm -rf /tmp/v8-artifact dist-v10
+          mkdir -p /tmp/v8-artifact dist-v10
+          unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
+          inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v10
+
+      - name: Apply current v10 launch fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py
+          node --check playgama/playgama-yandex-compat.js
+          node --check playgama/openttd-bundled-addons.js
+          python3 playgama/upgrade_playgama_v10.py dist-v10 \
+            --loader playgama/openttd-bundled-addons.js \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js
+          python3 playgama/build-license-bundle.py dist-v10 --repo-license LICENSE
+
+      - name: Validate launch cannot be blocked by SDK or add-ons
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-v10/index.html
+          test -s dist-v10/openttd-runtime.js
+          test -s dist-v10/playgama-yandex-compat.js
+          test -s dist-v10/openttd-bundled-addons.js
+          ! grep -q '<script src="https://bridge.playgama.com/v2/stable/playgama-bridge.js"></script>' dist-v10/index.html
+          grep -q 'BRIDGE_URL' dist-v10/playgama-yandex-compat.js
+          grep -q 'script.async = true' dist-v10/playgama-yandex-compat.js
+          ! grep -q 'addRunDependency' dist-v10/openttd-bundled-addons.js
+          ! grep -q 'removeRunDependency' dist-v10/openttd-bundled-addons.js
+          grep -q 'Optional bundled content is unavailable; game startup is unaffected' dist-v10/openttd-bundled-addons.js
+          node --check dist-v10/playgama-yandex-compat.js
+          node --check dist-v10/openttd-bundled-addons.js
+          node --check dist-v10/openttd-playgama-cloud-saves.js
+          python3 -m json.tool dist-v10/playgama-bridge-config.json >/dev/null
+          python3 -m json.tool dist-v10/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          unpacked_bytes="$(du -sb dist-v10 | cut -f1)"
+          echo "Unpacked bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create launch-fix package
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-v10 && zip -9 -X -r ../openttd-playgama-v10-launch-fixed.zip .)
+          unzip -t openttd-playgama-v10-launch-fixed.zip
+          sha256sum openttd-playgama-v10-launch-fixed.zip > openttd-playgama-v10-launch-fixed.zip.sha256
+
+      - name: Upload launch-fix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v10-launch-fixed
+          path: |
+            openttd-playgama-v10-launch-fixed.zip
+            openttd-playgama-v10-launch-fixed.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
