@@ -58,7 +58,7 @@ jobs:
           if (!snapshot.includes('Exact Company')) throw new Error('local company missing');
           NODE
 
-      - name: Test Playgama provider never auto-authorizes
+      - name: Test Playgama provider auth and rank normalization
         shell: bash
         run: |
           set -euo pipefail
@@ -70,7 +70,11 @@ jobs:
             getItem: key => store.has(key) ? store.get(key) : null,
             setItem: (key, value) => store.set(key, String(value)),
           };
-          global.FS = { mkdirTree() {}, writeFile() {} };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('global-ranking')) snapshot = String(data); },
+          };
           let authorizeCalls = 0;
           let setScoreCalls = 0;
           const bridge = {
@@ -80,7 +84,11 @@ jobs:
             },
             leaderboards: {
               type: 'in_game',
-              getEntries: async () => [{ id: 'one', name: 'One', score: 10, rank: 1 }],
+              /* Yandex-backed Bridge entries retain zero-based platform ranks. */
+              getEntries: async () => [
+                { id: 'one', name: 'One', score: 10, rank: 0 },
+                { id: 'two', name: 'Two', score: 9, rank: 1 },
+              ],
               setScore: async () => { setScoreCalls++; },
             },
           };
@@ -90,6 +98,9 @@ jobs:
           (async () => {
             await new Promise(resolve => setTimeout(resolve, 20));
             if (authorizeCalls !== 0) throw new Error('authorization opened without user action');
+            if (!snapshot.includes('entry\t1\t10\t0\tOne') || !snapshot.includes('entry\t2\t9\t0\tTwo')) {
+              throw new Error(`zero-based Bridge ranks were not normalized: ${snapshot}`);
+            }
             OpenTTDGlobalRanking.submitScore(Number.MAX_SAFE_INTEGER);
             await new Promise(resolve => setTimeout(resolve, 1600));
             if (authorizeCalls !== 0) throw new Error('score submission auto-authorized');
