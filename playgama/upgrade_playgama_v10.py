@@ -16,6 +16,7 @@ VIEWPORT_SCRIPT = '<script src="openttd-full-viewport.js"></script>'
 RANKING_SCRIPT = '<script src="openttd-ranking-core.js"></script>'
 GLOBAL_RANKING_SCRIPT = '<script src="openttd-global-ranking.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
+LEADERBOARD_NAME = "companyrating"
 
 
 def normalize_addon_assets(dist: Path) -> None:
@@ -136,6 +137,44 @@ def install_shared_helpers(dist: Path) -> None:
         shutil.copy2(source, dist / filename)
 
 
+def validate_global_ranking_provider(dist: Path) -> None:
+    """Fail packaging if the Playgama leaderboard bridge silently regresses."""
+    path = dist / "openttd-global-ranking.js"
+    if not path.is_file():
+        raise SystemExit("Playgama global ranking provider is missing from package")
+    text = path.read_text(encoding="utf-8")
+
+    required = (
+        f"LEADERBOARD_NAME = '{LEADERBOARD_NAME}'",
+        "Number.MAX_SAFE_INTEGER",
+        "playgamaBridgeReady",
+        "leaderboards.getEntries",
+        "leaderboards.setScore",
+        "player.authorize",
+        "isAuthorizationSupported",
+        "FETCH_FAILURE_BACKOFF_MS",
+        "window.OpenTTDGlobalRanking",
+    )
+    for marker in required:
+        if marker not in text:
+            raise SystemExit(f"Playgama global ranking provider is missing required marker: {marker}")
+
+    forbidden = (
+        "LEADERBOARD_NAME = 'company_rating'",
+        "leaderboards.showNativePopup(",
+    )
+    for marker in forbidden:
+        if marker in text:
+            raise SystemExit(f"Unsafe/stale Playgama ranking marker remains: {marker}")
+
+    # Startup polling must remain passive: authorization is only available via
+    # the explicit requestAuth() entry point invoked by the native ranking UI.
+    request_auth_pos = text.find("const requestAuth = async () =>")
+    authorize_pos = text.find("bridge.player.authorize({})")
+    if request_auth_pos < 0 or authorize_pos < request_auth_pos:
+        raise SystemExit("Playgama authorization is not confined to explicit requestAuth()")
+
+
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     html = normalize_doctype(path.read_text(encoding="utf-8"))
@@ -193,6 +232,7 @@ def main() -> None:
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
     install_shared_helpers(dist)
+    validate_global_ranking_provider(dist)
     patch_runtime_fixes(dist)
     patch_index(dist)
 
@@ -206,13 +246,14 @@ def main() -> None:
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
         "- Native pause calls wait until the Emscripten runtime has started.\n"
         "- AudioContext resume is only attempted after user activation.\n"
-        "- Includes platform-neutral local and global ranking providers using exact 53-bit scores.\n"
+        f"- Includes local and global ranking; Playgama leaderboard id is {LEADERBOARD_NAME}.\n"
+        "- Global leaderboard polling never opens authorization or native popups automatically.\n"
         "- Keeps local IDBFS/IndexedDB persistence as a fallback.\n"
         "- Uses neutral .bin delivery names for gzip-compressed bundled add-ons.\n",
         encoding="utf-8",
     )
 
-    print("Browser ranking-ready base applied:", dist)
+    print("Browser ranking-ready Playgama base applied:", dist)
 
 
 if __name__ == "__main__":
