@@ -1,4 +1,4 @@
-name: Build Playgama v10 launch-safe
+name: Build OpenTTD launch-safe Playgama + Yandex
 
 on:
   workflow_dispatch:
@@ -14,6 +14,7 @@ on:
       - 'playgama/playgama-bridge-config.json'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/build-license-bundle.py'
+      - 'yandex/package_yandex_from_playgama.py'
   pull_request:
     branches:
       - main
@@ -24,6 +25,7 @@ on:
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/playgama-bridge-config.json'
       - 'playgama/upgrade_playgama_v10.py'
+      - 'yandex/package_yandex_from_playgama.py'
 
 permissions:
   actions: read
@@ -70,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py
+          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py yandex/package_yandex_from_playgama.py
           python3 playgama/upgrade_playgama_v10.py dist-v10 \
             --loader playgama/openttd-bundled-addons.js \
             --cloud-saves playgama/openttd-playgama-cloud-saves.js \
@@ -78,7 +80,7 @@ jobs:
           cp playgama/playgama-bridge-config.json dist-v10/playgama-bridge-config.json
           python3 playgama/build-license-bundle.py dist-v10 --repo-license LICENSE
 
-      - name: Validate startup cannot depend on optional content
+      - name: Validate Playgama startup cannot depend on optional content
         shell: bash
         run: |
           set -euo pipefail
@@ -132,6 +134,88 @@ jobs:
           unzip -t openttd-playgama-v10-launch-safe.zip
           sha256sum openttd-playgama-v10-launch-safe.zip > openttd-playgama-v10-launch-safe.zip.sha256
 
+      - name: Convert exact Playgama base to Yandex Games
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-yandex
+          cp -a dist-v10 dist-yandex
+          python3 yandex/package_yandex_from_playgama.py dist-yandex
+
+          # Active Yandex package must contain no Playgama SDK/runtime layer.
+          ! grep -Eqi 'playgama|bridge\.playgama\.com' dist-yandex/index.html
+          ! grep -Eqi 'playgama' dist-yandex/openttd-yandex-fixes.js
+          test ! -e dist-yandex/playgama-yandex-compat.js
+          test ! -e dist-yandex/playgama-bridge-config.json
+          test ! -e dist-yandex/openttd-playgama-cloud-saves.js
+          test ! -e dist-yandex/openttd-playgama-fixes.js
+
+          # Yandex SDK follows the official dynamic /sdk.js pattern. There is no
+          # host/domain/protocol allow-list, so package operation is not tied to
+          # one moderation URL. SDK failure cannot hold the Emscripten startup.
+          grep -Fq "script.src = '/sdk.js'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'YaGames.init()' dist-yandex/yandex-bootstrap.js
+          ! grep -Eq "location\.(host|hostname|origin)|document\.domain|location\.protocol === 'file:'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'yandexGamesSDKReady' dist-yandex/openttd-runtime.js
+          grep -Fq 'setTimeout((()=>A(null)),3e3)' dist-yandex/openttd-runtime.js
+          ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
+
+          node --check dist-yandex/yandex-bootstrap.js
+          node --check dist-yandex/yandex-bridge.js
+          node --check dist-yandex/openttd-yandex-fixes.js
+          node --check dist-yandex/openttd-bundled-addons.js
+
+      - name: Unit-test Yandex SDK bootstrap order
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          global.navigator = { language: 'ru-RU' };
+          global.location = { protocol: 'https:', hostname: 'any-moderation-host.example' };
+          let appended = null;
+          global.document = {
+            createElement(tag) {
+              if (tag !== 'script') throw new Error('unexpected tag ' + tag);
+              return {};
+            },
+            head: {
+              appendChild(script) {
+                appended = script;
+                global.YaGames = {
+                  async init() {
+                    return { environment: { i18n: { lang: 'ru' } } };
+                  },
+                };
+                queueMicrotask(() => script.onload());
+              },
+            },
+          };
+
+          eval(fs.readFileSync('dist-yandex/yandex-bootstrap.js', 'utf8'));
+          (async () => {
+            const sdk = await global.yandexGamesSDKReady;
+            if (!appended || appended.src !== '/sdk.js' || appended.async !== true) {
+              throw new Error('Yandex /sdk.js loader was not appended correctly');
+            }
+            if (!sdk || global.ysdk !== sdk) throw new Error('YaGames.init result was not published');
+            if (global.yandexGameLanguage !== 'ru') throw new Error('Yandex locale was not applied');
+            console.log('Yandex dynamic SDK bootstrap passed on arbitrary host.');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+
+      - name: Create Yandex Games ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
+          echo "Unpacked Yandex bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 100000000
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-launch-safe.zip .)
+          unzip -t openttd-yandexgames-launch-safe.zip
+          sha256sum openttd-yandexgames-launch-safe.zip > openttd-yandexgames-launch-safe.zip.sha256
+
       - name: Upload Playgama artifact
         uses: actions/upload-artifact@v4
         with:
@@ -139,5 +223,15 @@ jobs:
           path: |
             openttd-playgama-v10-launch-safe.zip
             openttd-playgama-v10-launch-safe.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload Yandex Games artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-launch-safe
+          path: |
+            openttd-yandexgames-launch-safe.zip
+            openttd-yandexgames-launch-safe.zip.sha256
           if-no-files-found: error
           retention-days: 90
