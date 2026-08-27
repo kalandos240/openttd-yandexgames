@@ -25,4 +25,5 @@ def locate(name: str) -> Path:
 runpy.run_path(str(locate("patch-browser-ranking-core.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-toolbar.py")), run_name="__main__")
-print("Native ranking + tutorial patches applied together.")
+runpy.run_path(str(locate("patch-browser-tutorial-level.py")), run_name="__main__")
+print("Native ranking + interactive tutorial patches applied together.")
