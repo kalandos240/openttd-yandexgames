@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Convert the pinned, tested OpenTTD browser build into a Playgama v2 package."""
+"""Convert the pinned, tested OpenTTD browser build into a Playgama package."""
 from pathlib import Path
 import argparse
 import re
 import shutil
 
-BRIDGE_URL = "https://bridge.playgama.com/v2/stable/playgama-bridge.js"
+BRIDGE_URL = "https://bridge.playgama.com/v1/stable/playgama-bridge.js"
 BRIDGE = f'<script src="{BRIDGE_URL}"></script>'
 ADAPTER = '<script src="playgama-yandex-compat.js"></script>'
 AI_BUNDLE = '<script src="openttd-classic-ai.js"></script>'
@@ -14,12 +14,12 @@ FIXES = '<script src="openttd-playgama-fixes.js"></script>'
 NOTICE = f"""Playgama integration
 ====================
 
-Active SDK: Playgama Bridge JS Core v2 stable
+Active SDK: Playgama Bridge JS Core stable
 {BRIDGE_URL}
 
 This package is based on the pinned, previously tested OpenTTD 15.3 browser
 runtime. The Playgama layer maps language, cloud saves, LoadingAPI/GameplayAPI,
-interstitial advertising, pause/resume and platform mute events to Bridge v2.
+interstitial advertising, pause/resume and platform mute events to Playgama Bridge.
 
 Playgama-specific QA/runtime fixes in this package:
 - the platform language is applied on every launch, so a stale saved locale cannot
@@ -46,8 +46,12 @@ pauses by the existing game integration.
 
 
 def patch_html(html: str) -> str:
+    # Normalize every previously used Playgama Bridge CDN form to the current
+    # documented stable v1 endpoint. Older packages accidentally referenced a
+    # non-documented /v2/stable path which can prevent the compatibility SDK
+    # from ever becoming ready in the platform iframe.
     html = re.sub(
-        r'<script\s+src=["\']https://bridge\.playgama\.com/v1/(?:stable|latest)/playgama-bridge\.js["\']\s*></script>',
+        r'<script\s+src=["\']https://bridge\.playgama\.com/(?:v1/(?:stable|latest)|v2/(?:stable|latest)|latest)/playgama-bridge\.js["\']\s*></script>',
         BRIDGE,
         html,
         flags=re.I,
@@ -107,10 +111,10 @@ def main() -> None:
         raise SystemExit('openttd-runtime.js must be in package root')
 
     html = patch_html(index.read_text(encoding='utf-8'))
-    if 'bridge.playgama.com/v1/' in html:
-        raise SystemExit('Legacy Playgama Bridge v1 reference remains')
+    if 'bridge.playgama.com/v2/' in html:
+        raise SystemExit('Invalid Playgama Bridge v2 reference remains')
     if BRIDGE not in html or ADAPTER not in html:
-        raise SystemExit('Playgama Bridge v2 bootstrap missing')
+        raise SystemExit('Playgama Bridge bootstrap missing')
     if AI_BUNDLE not in html or FIXES not in html:
         raise SystemExit('OpenTTD Playgama AI/fix scripts were not inserted')
     index.write_text(html, encoding='utf-8')
@@ -137,7 +141,7 @@ def main() -> None:
     if total >= 300_000_000:
         raise SystemExit(f'Playgama package exceeds 300 MB unpacked: {total}')
 
-    print(f'Playgama Bridge v2 package ready: {dist}')
+    print(f'Playgama package ready: {dist}')
     print(f'Unpacked bytes: {total}')
 
 
