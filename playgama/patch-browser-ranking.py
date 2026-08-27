@@ -128,7 +128,7 @@ static std::string FormatBrowserRankingScore(uint64_t score)
 }
 
 /** Strict decimal parser kept deliberately tiny because OpenTTD safeguards
- * reject the locale-sensitive std::stoul/std::stoull family. */
+ * reject locale-sensitive string-to-integer conversion helpers. */
 static bool ParseBrowserRankingUnsigned(std::string_view text, uint64_t &value)
 {
 	if (text.empty()) return false;
@@ -438,9 +438,9 @@ for check in checks:
     if check not in text:
         raise SystemExit(f'Missing browser ranking patch marker: {check!r}')
 
-for forbidden in ('std::to_string', 'std::stoul', 'std::stoull'):
-    if forbidden in text:
-        raise SystemExit(f'OpenTTD safeguard-forbidden conversion remains: {forbidden}')
+forbidden_call = re.compile(r'\bstd::(?:to_string|stoul|stoull)\s*\(')
+if forbidden_call.search(text):
+    raise SystemExit('OpenTTD safeguard-forbidden numeric conversion call remains')
 
 path.write_text(text, encoding='utf-8')
 print('Native local/global ranking UI and 53-bit clean-score tracking patched.')
