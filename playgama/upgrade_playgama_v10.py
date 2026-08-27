@@ -43,13 +43,89 @@ def normalize_addon_assets(dist: Path) -> None:
         else:
             raise SystemExit(f"Unexpected bundled asset extension: {asset}")
 
-    manifest["manifest_version"] = "2026-08-27-v10-launch-fix"
+    manifest["manifest_version"] = "2026-08-27-v11-ui-polish"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def normalize_doctype(html: str) -> str:
+    """Force standards mode even for historical minified <!doctypehtml> shells."""
+    normalized, count = re.subn(
+        r"^\s*<!doctype\s*html\s*>",
+        "<!DOCTYPE html>",
+        html,
+        count=1,
+        flags=re.I,
+    )
+    if count == 0:
+        normalized = "<!DOCTYPE html>" + html.lstrip()
+    return normalized
+
+
+def patch_runtime_fixes(dist: Path) -> None:
+    """Remove the forced 16:9 letterbox and avoid pre-runtime native/audio calls."""
+    path = dist / "openttd-playgama-fixes.js"
+    if not path.is_file():
+        raise SystemExit("openttd-playgama-fixes.js is missing")
+    text = path.read_text(encoding="utf-8")
+
+    scale_pattern = re.compile(
+        r"\n  /\* Keep the native 16:9 OpenTTD surface intact.*?\n  document\.head\.appendChild\(style\);\n",
+        re.S,
+    )
+    full_bleed = r'''
+  /* Use the complete platform viewport. OpenTTD/SDL handles arbitrary browser
+     aspect ratios; forcing a centred 16:9 CSS surface created visible side bars
+     on wide Yandex/Playgama viewports. */
+  const style = document.createElement('style');
+  style.id = 'openttd-playgama-scale-fix';
+  style.textContent = `
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #000; }
+    body { position: relative; }
+    div.background { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important; background-size: cover !important; background-position: center !important; }
+    canvas.emscripten {
+      position: fixed !important;
+      inset: 0 !important;
+      left: 0 !important;
+      top: 0 !important;
+      transform: none !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: none !important;
+      max-height: none !important;
+      aspect-ratio: auto !important;
+    }
+  `;
+  document.head.appendChild(style);
+'''
+    text, scale_count = scale_pattern.subn("\n" + full_bleed.lstrip("\n"), text, count=1)
+    if scale_count != 1:
+        raise SystemExit(f"Could not replace 16:9 viewport fix (matches={scale_count})")
+
+    old_pause = "if (Module?._em_openttd_set_platform_pause) Module._em_openttd_set_platform_pause(paused ? 1 : 0);"
+    new_pause = (
+        "if (typeof Module !== 'undefined' && Module.calledRun === true && "
+        "typeof Module._em_openttd_set_platform_pause === 'function') "
+        "Module._em_openttd_set_platform_pause(paused ? 1 : 0);"
+    )
+    if text.count(old_pause) != 1:
+        raise SystemExit("Unexpected native pause call count in Playgama fixes")
+    text = text.replace(old_pause, new_pause, 1)
+
+    old_resume = "if (ctx?.state === 'suspended') ctx.resume().catch(() => {});"
+    new_resume = (
+        "if (ctx?.state === 'suspended' && (navigator.userActivation?.hasBeenActive ?? true)) "
+        "ctx.resume().catch(() => {});"
+    )
+    if text.count(old_resume) != 1:
+        raise SystemExit("Unexpected AudioContext resume call count in Playgama fixes")
+    text = text.replace(old_resume, new_resume, 1)
+
+    path.write_text(text, encoding="utf-8")
 
 
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
-    html = path.read_text(encoding="utf-8")
+    html = normalize_doctype(path.read_text(encoding="utf-8"))
 
     # Old v8/v10 artifacts can contain the accidental /v2/stable reference.
     # Normalize all historical CDN forms to the documented stable JS Core URL.
@@ -73,6 +149,8 @@ def patch_index(dist: Path) -> None:
         raise SystemExit("Could not find Playgama runtime script insertion point")
     if html.count(CLOUD_SCRIPT) != 1:
         raise SystemExit("Cloud save script insertion is not unique")
+    if not html.startswith("<!DOCTYPE html>"):
+        raise SystemExit("index.html did not enter standards mode")
     path.write_text(html, encoding="utf-8")
 
 
@@ -94,23 +172,26 @@ def main() -> None:
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
+    patch_runtime_fixes(dist)
     patch_index(dist)
 
     (dist / "PLAYGAMA-V10-CHANGES.txt").write_text(
-        "OpenTTD Playgama v10 launch-safe refresh\n"
-        "========================================\n"
+        "OpenTTD Playgama v11 launch-safe UI refresh\n"
+        "============================================\n"
         "- Uses the documented Playgama Bridge JS Core stable v1 CDN.\n"
         "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
+        "- Uses the entire browser viewport instead of forcing a 16:9 letterbox.\n"
+        "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
+        "- Native pause calls wait until the Emscripten runtime has started.\n"
+        "- AudioContext resume is only attempted after user activation.\n"
         "- Uses Playgama Bridge platform_internal storage for cloud saves when available.\n"
         "- Splits .sav data into 64 KiB text chunks and alternates A/B generations.\n"
-        "- Commits metadata last and verifies restored saves with size + CRC32.\n"
-        "- Migrates the legacy openttdSaveV1 snapshot when no v2 cloud slot exists.\n"
         "- Keeps local IDBFS/IndexedDB persistence as a fallback.\n"
         "- Uses neutral .bin delivery names for gzip-compressed bundled add-ons.\n",
         encoding="utf-8",
     )
 
-    print("Playgama v10 launch-safe package upgrade applied:", dist)
+    print("Playgama v11 launch-safe UI refresh applied:", dist)
 
 
 if __name__ == "__main__":
