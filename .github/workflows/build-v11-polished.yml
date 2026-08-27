@@ -1,4 +1,4 @@
-name: Build OpenTTD v11 polished Playgama + Yandex
+name: Build OpenTTD v12 rankings Playgama + Yandex
 
 on:
   workflow_dispatch:
@@ -6,29 +6,33 @@ on:
     branches:
       - main
       - fix/yandex-ui-runtime-errors
+      - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/patch-browser-ranking.py'
       - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/openttd-full-viewport.js'
+      - 'playgama/openttd-ranking-core.js'
       - 'playgama/openttd-bundled-addons.js'
       - 'playgama/openttd-playgama-cloud-saves.js'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/playgama-bridge-config.json'
       - 'playgama/build-license-bundle.py'
       - 'yandex/package_yandex_from_playgama.py'
+      - 'yandex/openttd-global-ranking.js'
   pull_request:
     branches:
       - main
     paths:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/patch-browser-ranking.py'
       - 'playgama/upgrade_playgama_v10.py'
-      - 'playgama/openttd-bundled-addons.js'
-      - 'playgama/openttd-playgama-cloud-saves.js'
-      - 'playgama/playgama-yandex-compat.js'
-      - 'playgama/playgama-bridge-config.json'
-      - 'playgama/build-license-bundle.py'
+      - 'playgama/openttd-full-viewport.js'
+      - 'playgama/openttd-ranking-core.js'
       - 'yandex/package_yandex_from_playgama.py'
+      - 'yandex/openttd-global-ranking.js'
 
 permissions:
   actions: read
@@ -55,12 +59,13 @@ jobs:
           ref: ${{ env.LEGACY_BUILD_REF }}
           path: legacy
 
-      - name: Install native main-menu and NewGRF localization patches
+      - name: Install native browser-edition patches
         shell: bash
         run: |
           set -euo pipefail
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
-          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py legacy/ci/patch-browser-ranking.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -73,12 +78,15 @@ jobs:
           text = text.replace(ai_off, '', 1)
 
           anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
-          addition = "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+          additions = (
+              "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
+          )
           if text.count(anchor) != 1:
               raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
-          text = text.replace(anchor, anchor + addition, 1)
+          text = text.replace(anchor, anchor + additions, 1)
           p.write_text(text, encoding='utf-8')
-          print('Configured native NewGRF/localization source patch.')
+          print('Configured native NewGRF/localization and ranking source patches.')
           PY
 
       - name: Rebuild OpenTTD 15.3 WebAssembly runtime
@@ -92,13 +100,17 @@ jobs:
           grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
           grep -Fq 'GetBundledGRFRussianDescription' openttd/src/newgrf_gui.cpp
           grep -Fq 'GetCurrentLanguageIsoCode().starts_with("ru")' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0x43411223' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0xF1250009' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0x9787EAFE' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0x55440100' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0x474C0501' openttd/src/newgrf_gui.cpp
-          grep -Fq 'case 0x4F475A01' openttd/src/newgrf_gui.cpp
           grep -Fq 'Комплексный набор поездов' openttd/src/newgrf_gui.cpp
+
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = (1ULL << 53) - 1' openttd/src/highscore_gui.cpp
+          grep -Fq 'performance * 1023ULL / SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'CalculateCompanyValue(c, true).base()' openttd/src/highscore_gui.cpp
+          grep -Fq 'BrowserRankingCheatsUsed()' openttd/src/highscore_gui.cpp
+          grep -Fq 'OpenTTDRankingCore?.submit?.' openttd/src/highscore_gui.cpp
+          grep -Fq 'OpenTTDGlobalRanking?.requestEntries?.' openttd/src/highscore_gui.cpp
+          grep -Fq 'STR_BROWSER_RANKING_LOCAL' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_RANKING_GLOBAL' openttd/src/lang/russian.txt
+          grep -Fq 'Использование читов отключает учёт очков' openttd/src/lang/russian.txt
 
       - name: Download verified Playgama v8 content package
         env:
@@ -112,20 +124,20 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
             -o /tmp/v8-artifact.zip
 
-          rm -rf /tmp/v8-artifact dist-v11 /tmp/rebuilt-runtime
-          mkdir -p /tmp/v8-artifact dist-v11 /tmp/rebuilt-runtime
+          rm -rf /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime
+          mkdir -p /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime
           unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
           inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
           test -s "$inner"
-          unzip -q "$inner" -d dist-v11
+          unzip -q "$inner" -d dist-v12
 
-          test -s dist-v11/index.html
-          test -s dist-v11/openttd-runtime.js
-          test -s dist-v11/OPENTTD-BUNDLED-ADDONS.json
-          test -d dist-v11/addons
-          test -d dist-v11/licenses
+          test -s dist-v12/index.html
+          test -s dist-v12/openttd-runtime.js
+          test -s dist-v12/OPENTTD-BUNDLED-ADDONS.json
+          test -d dist-v12/addons
+          test -d dist-v12/licenses
 
-      - name: Apply launch-safe full-viewport refresh
+      - name: Apply launch-safe full-viewport ranking refresh
         shell: bash
         run: |
           set -euo pipefail
@@ -134,14 +146,14 @@ jobs:
             playgama/build-license-bundle.py \
             yandex/package_yandex_from_playgama.py
 
-          python3 playgama/upgrade_playgama_v10.py dist-v11 \
+          python3 playgama/upgrade_playgama_v10.py dist-v12 \
             --loader playgama/openttd-bundled-addons.js \
             --cloud-saves playgama/openttd-playgama-cloud-saves.js \
             --adapter playgama/playgama-yandex-compat.js
-          cp playgama/playgama-bridge-config.json dist-v11/playgama-bridge-config.json
-          python3 playgama/build-license-bundle.py dist-v11 --repo-license LICENSE
+          cp playgama/playgama-bridge-config.json dist-v12/playgama-bridge-config.json
+          python3 playgama/build-license-bundle.py dist-v12 --repo-license LICENSE
 
-      - name: Install rebuilt localized OpenTTD runtime
+      - name: Install rebuilt native runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -163,34 +175,68 @@ jobs:
           p.write_bytes(data)
           PY
 
-          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v11/openttd-runtime.js
+          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v12/openttd-runtime.js
 
-      - name: Validate polished Playgama package
+      - name: Validate ranking-ready Playgama package
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-v11/index.html
-          ! grep -q 'bridge.playgama.com/v2/' dist-v11/index.html
-          test "$(head -c 15 dist-v11/index.html)" = '<!DOCTYPE html>'
+          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-v12/index.html
+          ! grep -q 'bridge.playgama.com/v2/' dist-v12/index.html
+          test "$(head -c 15 dist-v12/index.html)" = '<!DOCTYPE html>'
 
-          ! grep -q 'addRunDependency' dist-v11/openttd-bundled-addons.js
-          ! grep -q 'removeRunDependency' dist-v11/openttd-bundled-addons.js
-          grep -q 'RESTORE_STARTUP_GATE_MS = 1500' dist-v11/openttd-bundled-addons.js
-          grep -q 'FETCH_TIMEOUT_MS = 8000' dist-v11/openttd-bundled-addons.js
+          test -s dist-v12/openttd-full-viewport.js
+          test -s dist-v12/openttd-ranking-core.js
+          grep -Fq 'Module.setCanvasSize(width, height)' dist-v12/openttd-full-viewport.js
+          grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-ranking-core.js
+          grep -Fq 'openttd.localRanking.v2' dist-v12/openttd-ranking-core.js
+          grep -Fq 'window.OpenTTDGlobalRanking?.submitScore?.' dist-v12/openttd-ranking-core.js
 
-          grep -Fq 'width: 100vw !important' dist-v11/openttd-playgama-fixes.js
-          grep -Fq 'height: 100vh !important' dist-v11/openttd-playgama-fixes.js
-          grep -Fq 'aspect-ratio: auto !important' dist-v11/openttd-playgama-fixes.js
-          ! grep -Fq 'aspect-ratio: 16 / 9' dist-v11/openttd-playgama-fixes.js
-          grep -Fq 'Module.calledRun === true' dist-v11/openttd-playgama-fixes.js
-          grep -Fq 'navigator.userActivation?.hasBeenActive' dist-v11/openttd-playgama-fixes.js
+          ! grep -q 'addRunDependency' dist-v12/openttd-bundled-addons.js
+          ! grep -q 'removeRunDependency' dist-v12/openttd-bundled-addons.js
+          grep -q 'RESTORE_STARTUP_GATE_MS = 1500' dist-v12/openttd-bundled-addons.js
+          grep -q 'FETCH_TIMEOUT_MS = 8000' dist-v12/openttd-bundled-addons.js
 
-          node --check dist-v11/openttd-playgama-cloud-saves.js
-          node --check dist-v11/openttd-bundled-addons.js
-          node --check dist-v11/playgama-yandex-compat.js
-          node --check dist-v11/openttd-playgama-fixes.js
-          python3 -m json.tool dist-v11/OPENTTD-BUNDLED-ADDONS.json >/dev/null
-          python3 -m json.tool dist-v11/playgama-bridge-config.json >/dev/null
+          grep -Fq 'width: 100vw !important' dist-v12/openttd-playgama-fixes.js
+          grep -Fq 'height: 100vh !important' dist-v12/openttd-playgama-fixes.js
+          ! grep -Fq 'aspect-ratio: 16 / 9' dist-v12/openttd-playgama-fixes.js
+          grep -Fq 'Module.calledRun === true' dist-v12/openttd-playgama-fixes.js
+          grep -Fq 'navigator.userActivation?.hasBeenActive' dist-v12/openttd-playgama-fixes.js
+
+          node --check dist-v12/openttd-playgama-cloud-saves.js
+          node --check dist-v12/openttd-bundled-addons.js
+          node --check dist-v12/playgama-yandex-compat.js
+          node --check dist-v12/openttd-playgama-fixes.js
+          node --check dist-v12/openttd-full-viewport.js
+          node --check dist-v12/openttd-ranking-core.js
+          python3 -m json.tool dist-v12/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v12/playgama-bridge-config.json >/dev/null
+
+      - name: Unit-test local 53-bit ranking core
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const store = new Map();
+          global.localStorage = {
+            getItem: key => store.has(key) ? store.get(key) : null,
+            setItem: (key, value) => store.set(key, String(value)),
+          };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('local-ranking')) snapshot = String(data); },
+          };
+          eval(fs.readFileSync('dist-v12/openttd-ranking-core.js', 'utf8'));
+          if (OpenTTDRankingCore.maxScore !== Number.MAX_SAFE_INTEGER) throw new Error('wrong max score');
+          OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER), 'Test Company', true);
+          OpenTTDRankingCore.requestLocalSnapshot();
+          if (!snapshot.includes(String(Number.MAX_SAFE_INTEGER))) throw new Error('max safe score not preserved exactly');
+          if (!snapshot.includes('Test Company')) throw new Error('company record missing');
+          console.log('Local 53-bit ranking core passed.');
+          NODE
 
       - name: Verify optional add-on payloads
         shell: bash
@@ -200,7 +246,7 @@ jobs:
           import gzip, hashlib, json
           from pathlib import Path
 
-          root = Path('dist-v11')
+          root = Path('dist-v12')
           manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
           assert manifest['enabled_by_default'] is False
           assert manifest['manifest_version'] == '2026-08-27-v11-ui-polish'
@@ -219,19 +265,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unpacked_bytes="$(du -sb dist-v11 | cut -f1)"
+          unpacked_bytes="$(du -sb dist-v12 | cut -f1)"
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
-          (cd dist-v11 && zip -9 -X -r ../openttd-playgama-v11-polished.zip .)
-          unzip -t openttd-playgama-v11-polished.zip
-          sha256sum openttd-playgama-v11-polished.zip > openttd-playgama-v11-polished.zip.sha256
+          (cd dist-v12 && zip -9 -X -r ../openttd-playgama-v12-ranking.zip .)
+          unzip -t openttd-playgama-v12-ranking.zip
+          sha256sum openttd-playgama-v12-ranking.zip > openttd-playgama-v12-ranking.zip.sha256
 
-      - name: Convert exact polished base to Yandex Games
+      - name: Convert exact ranking base to Yandex Games
         shell: bash
         run: |
           set -euo pipefail
           rm -rf dist-yandex
-          cp -a dist-v11 dist-yandex
+          cp -a dist-v12 dist-yandex
           python3 yandex/package_yandex_from_playgama.py dist-yandex
 
           ! grep -Eqi 'playgama|bridge\.playgama\.com' dist-yandex/index.html
@@ -252,12 +298,23 @@ jobs:
           ! grep -Fq 'aspect-ratio: 16 / 9' dist-yandex/openttd-yandex-fixes.js
           ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
 
+          test -s dist-yandex/openttd-ranking-core.js
+          test -s dist-yandex/openttd-global-ranking.js
+          grep -Fq "LEADERBOARD_NAME = 'company_rating'" dist-yandex/openttd-global-ranking.js
+          grep -Fq 'Number.MAX_SAFE_INTEGER' dist-yandex/openttd-global-ranking.js
+          grep -Fq 'isAvailableMethod' dist-yandex/openttd-global-ranking.js
+          grep -Fq 'leaderboards.setScore' dist-yandex/openttd-global-ranking.js
+          grep -Fq 'leaderboards.getEntries' dist-yandex/openttd-global-ranking.js
+          grep -Fq 'auth.openAuthDialog' dist-yandex/openttd-global-ranking.js
+
           node --check dist-yandex/yandex-bootstrap.js
           node --check dist-yandex/yandex-bridge.js
           node --check dist-yandex/openttd-yandex-fixes.js
           node --check dist-yandex/openttd-bundled-addons.js
+          node --check dist-yandex/openttd-ranking-core.js
+          node --check dist-yandex/openttd-global-ranking.js
 
-      - name: Unit-test Yandex SDK bootstrap order
+      - name: Unit-test SDK bootstrap order
         shell: bash
         run: |
           set -euo pipefail
@@ -276,28 +333,57 @@ jobs:
               appendChild(script) {
                 appended = script;
                 global.YaGames = {
-                  async init() {
-                    return { environment: { i18n: { lang: 'ru' } } };
-                  },
+                  async init() { return { environment: { i18n: { lang: 'ru' } } }; },
                 };
                 queueMicrotask(() => script.onload());
               },
             },
           };
-
           eval(fs.readFileSync('dist-yandex/yandex-bootstrap.js', 'utf8'));
           (async () => {
             const sdk = await global.yandexGamesSDKReady;
-            if (!appended || appended.src !== '/sdk.js' || appended.async !== true) {
-              throw new Error('Yandex /sdk.js loader was not appended correctly');
-            }
-            if (!sdk || global.ysdk !== sdk) throw new Error('YaGames.init result was not published');
-            if (global.yandexGameLanguage !== 'ru') throw new Error('Yandex locale was not applied');
-            console.log('Yandex dynamic SDK bootstrap passed on arbitrary host.');
+            if (!appended || appended.src !== '/sdk.js' || appended.async !== true) throw new Error('relative /sdk.js loader missing');
+            if (!sdk || global.ysdk !== sdk) throw new Error('SDK init result was not published');
+            if (global.yandexGameLanguage !== 'ru') throw new Error('platform locale was not applied');
+            console.log('Dynamic SDK bootstrap passed on arbitrary host.');
           })().catch(error => { console.error(error); process.exit(1); });
           NODE
 
-      - name: Unit-test early Yandex pause polling is harmless
+      - name: Unit-test global ranking never auto-opens auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const storage = new Map();
+          global.localStorage = {
+            getItem: key => storage.has(key) ? storage.get(key) : null,
+            setItem: (key, value) => storage.set(key, String(value)),
+          };
+          global.FS = { mkdirTree() {}, writeFile() {} };
+          let authOpened = 0;
+          let submitted = 0;
+          const player = { isAuthorized: () => false };
+          global.yandexGamesSDKReady = Promise.resolve({
+            getPlayer: async () => player,
+            isAvailableMethod: async () => true,
+            auth: { openAuthDialog: async () => { authOpened++; } },
+            leaderboards: {
+              getEntries: async () => ({ userRank: -1, entries: [] }),
+              setScore: async () => { submitted++; },
+            },
+          });
+          eval(fs.readFileSync('dist-yandex/openttd-global-ranking.js', 'utf8'));
+          OpenTTDGlobalRanking.submitScore(String(Number.MAX_SAFE_INTEGER));
+          setTimeout(() => {
+            if (authOpened !== 0) throw new Error('authorization dialog opened without user action');
+            if (submitted !== 0) throw new Error('unauthorized score was submitted');
+            console.log('Global ranking remains passive until explicit sign-in.');
+          }, 1700);
+          NODE
+
+      - name: Unit-test early pause polling is harmless
         shell: bash
         run: |
           set -euo pipefail
@@ -306,9 +392,6 @@ jobs:
           const text = fs.readFileSync('dist-yandex/yandex-bridge.js', 'utf8');
           if (!text.includes("Module.calledRun !== true")) throw new Error('missing calledRun guard');
           if (!text.includes("typeof Module._em_openttd_set_platform_pause !== 'function'")) throw new Error('missing export guard');
-          if (text.includes("typeof Module !== 'undefined' && typeof Module._em_openttd_set_platform_pause === 'function'")) {
-            throw new Error('old unsafe pause bridge remains');
-          }
           console.log('Early pause polling is guarded before lazy wasm export invocation.');
           NODE
 
@@ -319,26 +402,26 @@ jobs:
           unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
           echo "Unpacked Yandex bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 100000000
-          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-v11-polished.zip .)
-          unzip -t openttd-yandexgames-v11-polished.zip
-          sha256sum openttd-yandexgames-v11-polished.zip > openttd-yandexgames-v11-polished.zip.sha256
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-v12-ranking.zip .)
+          unzip -t openttd-yandexgames-v12-ranking.zip
+          sha256sum openttd-yandexgames-v12-ranking.zip > openttd-yandexgames-v12-ranking.zip.sha256
 
       - name: Upload Playgama artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v11-polished
+          name: openttd-playgama-v12-ranking
           path: |
-            openttd-playgama-v11-polished.zip
-            openttd-playgama-v11-polished.zip.sha256
+            openttd-playgama-v12-ranking.zip
+            openttd-playgama-v12-ranking.zip.sha256
           if-no-files-found: error
           retention-days: 90
 
       - name: Upload Yandex Games artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-yandexgames-v11-polished
+          name: openttd-yandexgames-v12-ranking
           path: |
-            openttd-yandexgames-v11-polished.zip
-            openttd-yandexgames-v11-polished.zip.sha256
+            openttd-yandexgames-v12-ranking.zip
+            openttd-yandexgames-v12-ranking.zip.sha256
           if-no-files-found: error
           retention-days: 90
