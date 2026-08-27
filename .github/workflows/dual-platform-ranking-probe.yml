@@ -45,8 +45,8 @@ jobs:
           grep -Fq '"id": "companyrating"' playgama/playgama-bridge-config.json
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" playgama/openttd-global-ranking.js
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" yandex/openttd-global-ranking.js
-          ! grep -Fq "const LEADERBOARD_NAME = 'company_rating'" playgama/openttd-global-ranking.js
-          ! grep -Fq "const LEADERBOARD_NAME = 'company_rating'" yandex/openttd-global-ranking.js
+          ! grep -Fq 'company_rating' playgama/openttd-global-ranking.js
+          ! grep -Fq 'company_rating' yandex/openttd-global-ranking.js
           node --check playgama/openttd-global-ranking.js
           node --check yandex/openttd-global-ranking.js
           node --check ci/test-dual-platform-ranking.js
