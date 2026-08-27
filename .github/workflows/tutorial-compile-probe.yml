@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - fix/yandex-ui-runtime-errors
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/tutorial-compile-probe.yml'
@@ -12,6 +13,7 @@ on:
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-polish.py'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
 
 permissions:
@@ -45,6 +47,7 @@ jobs:
             playgama/patch-browser-tutorial.py \
             playgama/patch-browser-tutorial-toolbar.py \
             playgama/patch-browser-tutorial-level.py \
+            playgama/patch-browser-tutorial-polish.py \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py
 
@@ -85,10 +88,15 @@ jobs:
           grep -Fq 'SetWidgetHighlight(current.widget, TC_YELLOW)' openttd/src/intro_gui.cpp
           grep -Fq 'SPR_ARROW_LEFT' openttd/src/intro_gui.cpp
           grep -Fq 'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_MAPGEN_NEWGRF_SETTINGS_TOOLTIP' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_PLAYGAMA_LICENSES_TOOLTIP' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20' openttd/src/intro_gui.cpp
           grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
           grep -Fq 'ShowBrowserButtonGuide();' openttd/src/toolbar_gui.cpp
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_16' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_16' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/20' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20                                  :20/20' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/20' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20                                  :20/20' openttd/src/lang/russian.txt
           grep -Fq 'Справочник кнопок' openttd/src/lang/russian.txt
 
       - name: Validate rebuilt runtime
@@ -101,4 +109,4 @@ jobs:
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
           test -s /tmp/tutorial-runtime/openttd-runtime.js
           node --check /tmp/tutorial-runtime/openttd-runtime.js
-          echo 'Interactive tutorial compile probe passed.'
+          echo 'Interactive 20-step tutorial compile probe passed.'
