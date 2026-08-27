@@ -97,12 +97,22 @@
       const result = await bridge.leaderboards.getEntries(LEADERBOARD_NAME);
       const rows = Array.isArray(result) ? result : [];
       const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
-      entries = rows.slice(0, 10).map((entry, index) => ({
-        rank: Number.isFinite(Number(entry?.rank)) ? Math.max(1, Math.trunc(Number(entry.rank))) : index + 1,
-        score: clampScore(entry?.score),
-        isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
-        name: cleanName(entry?.name),
-      }));
+      /* Bridge preserves the native platform rank. Yandex exposes zero-based
+         ranks while some other providers expose one-based ranks, so detect the
+         base from the returned top list instead of shifting every platform. */
+      const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
+      entries = rows.slice(0, 10).map((entry, index) => {
+        const rawRank = Number(entry?.rank);
+        const rank = Number.isFinite(rawRank)
+          ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
+          : index + 1;
+        return {
+          rank,
+          score: clampScore(entry?.score),
+          isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
+          name: cleanName(entry?.name),
+        };
+      });
       status = entries.length ? 'ready' : 'empty';
       publishSoon();
       return true;
