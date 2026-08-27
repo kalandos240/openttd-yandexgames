@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 from pathlib import Path
 
+BRIDGE_URL = "https://bridge.playgama.com/v1/stable/playgama-bridge.js"
+BRIDGE_SCRIPT = f'<script src="{BRIDGE_URL}"></script>'
 CLOUD_SCRIPT = '<script src="openttd-playgama-cloud-saves.js"></script>'
 FIXES_SCRIPT = '<script src="openttd-playgama-fixes.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
@@ -40,13 +43,27 @@ def normalize_addon_assets(dist: Path) -> None:
         else:
             raise SystemExit(f"Unexpected bundled asset extension: {asset}")
 
-    manifest["manifest_version"] = "2026-08-18-v10"
+    manifest["manifest_version"] = "2026-08-27-v10-launch-fix"
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     html = path.read_text(encoding="utf-8")
+
+    # Old v8/v10 artifacts can contain the accidental /v2/stable reference.
+    # Normalize all historical CDN forms to the documented stable JS Core URL.
+    html = re.sub(
+        r'<script\s+src=["\']https://bridge\.playgama\.com/(?:v1/(?:stable|latest)|v2/(?:stable|latest)|latest)/playgama-bridge\.js["\']\s*></script>',
+        BRIDGE_SCRIPT,
+        html,
+        flags=re.I,
+    )
+    if BRIDGE_URL not in html:
+        raise SystemExit("Could not normalize Playgama Bridge bootstrap")
+    if "bridge.playgama.com/v2/" in html:
+        raise SystemExit("Legacy/invalid Playgama Bridge v2 reference remains")
+
     html = html.replace(CLOUD_SCRIPT, "")
     if FIXES_SCRIPT in html:
         html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + CLOUD_SCRIPT, 1)
@@ -64,6 +81,7 @@ def main() -> None:
     ap.add_argument("dist", type=Path)
     ap.add_argument("--loader", type=Path, required=True)
     ap.add_argument("--cloud-saves", type=Path, required=True)
+    ap.add_argument("--adapter", type=Path, required=True)
     args = ap.parse_args()
 
     dist = args.dist.resolve()
@@ -75,12 +93,15 @@ def main() -> None:
     normalize_addon_assets(dist)
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
+    shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
     patch_index(dist)
 
     (dist / "PLAYGAMA-V10-CHANGES.txt").write_text(
-        "OpenTTD Playgama v10\n"
-        "====================\n"
-        "- Uses Playgama Bridge v2 platform_internal storage for cloud saves.\n"
+        "OpenTTD Playgama v10 launch-safe refresh\n"
+        "========================================\n"
+        "- Uses the documented Playgama Bridge JS Core stable v1 CDN.\n"
+        "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
+        "- Uses Playgama Bridge platform_internal storage for cloud saves when available.\n"
         "- Splits .sav data into 64 KiB text chunks and alternates A/B generations.\n"
         "- Commits metadata last and verifies restored saves with size + CRC32.\n"
         "- Migrates the legacy openttdSaveV1 snapshot when no v2 cloud slot exists.\n"
@@ -89,7 +110,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print("Playgama v10 package upgrade applied:", dist)
+    print("Playgama v10 launch-safe package upgrade applied:", dist)
 
 
 if __name__ == "__main__":

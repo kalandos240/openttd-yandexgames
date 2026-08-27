@@ -1,21 +1,31 @@
-name: Build Playgama v10 cloud saves
+name: Build OpenTTD launch-safe Playgama + Yandex
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+      - fix/playgama-launch-moderation
     paths:
       - '.github/workflows/build-playgama-v10-cloud-saves.yml'
       - 'playgama/openttd-bundled-addons.js'
       - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/build-license-bundle.py'
-      - 'docs/PLAYGAMA.md'
-      - 'docs/PLAYGAMA_ADDONS.md'
-      - 'assets/playgama/**'
-      - 'README.md'
-      - 'README.ru.md'
+      - 'yandex/package_yandex_from_playgama.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-playgama-v10-cloud-saves.yml'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'yandex/package_yandex_from_playgama.py'
 
 permissions:
   actions: read
@@ -33,7 +43,7 @@ jobs:
       - name: Checkout current port sources
         uses: actions/checkout@v4
 
-      - name: Download verified Playgama v8 package
+      - name: Download verified Playgama v8 runtime package
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -54,23 +64,43 @@ jobs:
 
           test -s dist-v10/index.html
           test -s dist-v10/openttd-runtime.js
-          test -s dist-v10/openttd-bundled-addons.js
           test -s dist-v10/OPENTTD-BUNDLED-ADDONS.json
           test -d dist-v10/addons
           test -d dist-v10/licenses
 
-      - name: Upgrade package to v10
+      - name: Apply launch-safe Playgama refresh
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py
+          python3 -m py_compile playgama/upgrade_playgama_v10.py playgama/build-license-bundle.py yandex/package_yandex_from_playgama.py
           python3 playgama/upgrade_playgama_v10.py dist-v10 \
             --loader playgama/openttd-bundled-addons.js \
-            --cloud-saves playgama/openttd-playgama-cloud-saves.js
-
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js \
+            --adapter playgama/playgama-yandex-compat.js
+          cp playgama/playgama-bridge-config.json dist-v10/playgama-bridge-config.json
           python3 playgama/build-license-bundle.py dist-v10 --repo-license LICENSE
 
-      - name: Validate add-on delivery and legal bundle
+      - name: Validate Playgama startup cannot depend on optional content
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-v10/index.html
+          ! grep -q 'bridge.playgama.com/v2/' dist-v10/index.html
+          ! grep -q 'addRunDependency' dist-v10/openttd-bundled-addons.js
+          ! grep -q 'removeRunDependency' dist-v10/openttd-bundled-addons.js
+          grep -q 'RESTORE_STARTUP_GATE_MS = 1500' dist-v10/openttd-bundled-addons.js
+          grep -q 'FETCH_TIMEOUT_MS = 8000' dist-v10/openttd-bundled-addons.js
+          grep -q 'playgamaBridgeReady' dist-v10/playgama-yandex-compat.js
+          ! grep -q "startsWith('2.')" dist-v10/playgama-yandex-compat.js
+
+          node --check dist-v10/openttd-playgama-cloud-saves.js
+          node --check dist-v10/openttd-bundled-addons.js
+          node --check dist-v10/playgama-yandex-compat.js
+          node --check dist-v10/openttd-playgama-fixes.js
+          python3 -m json.tool dist-v10/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+          python3 -m json.tool dist-v10/playgama-bridge-config.json >/dev/null
+
+      - name: Verify optional add-on payloads
         shell: bash
         run: |
           set -euo pipefail
@@ -81,9 +111,8 @@ jobs:
           root = Path('dist-v10')
           manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
           assert manifest['enabled_by_default'] is False
+          assert manifest['manifest_version'] == '2026-08-27-v10-launch-fix'
           assert len(manifest['items']) == 7
-          assert manifest['manifest_version'] == '2026-08-18-v10'
-
           for row in manifest['items']:
               assert row['asset'].endswith('.bin'), row['asset']
               packed = (root / row['asset']).read_bytes()
@@ -91,157 +120,118 @@ jobs:
               data = gzip.decompress(packed) if row.get('compression') == 'gzip' else packed
               assert len(data) == row['installed_bytes'], row['content_id']
               assert hashlib.sha256(data).hexdigest() == row['sha256'], row['content_id']
-          print('All 7 bundled add-ons verified with neutral .bin delivery names.')
+          print('All optional add-ons verified.')
           PY
 
-          for legal in NOTICE.txt SOURCE_CODE.txt PLAYGAMA-ALL-LICENSES.md; do
-            test -s "dist-v10/${legal}"
-            ! grep -Eqi 'yandex|яндекс' "dist-v10/${legal}"
-          done
+      - name: Create Playgama ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked_bytes="$(du -sb dist-v10 | cut -f1)"
+          echo "Unpacked Playgama bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+          (cd dist-v10 && zip -9 -X -r ../openttd-playgama-v10-launch-safe.zip .)
+          unzip -t openttd-playgama-v10-launch-safe.zip
+          sha256sum openttd-playgama-v10-launch-safe.zip > openttd-playgama-v10-launch-safe.zip.sha256
 
-      - name: Unit-test chunked cloud saves
+      - name: Convert exact Playgama base to Yandex Games
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-yandex
+          cp -a dist-v10 dist-yandex
+          python3 yandex/package_yandex_from_playgama.py dist-yandex
+
+          # Active Yandex package must contain no Playgama SDK/runtime layer.
+          ! grep -Eqi 'playgama|bridge\.playgama\.com' dist-yandex/index.html
+          ! grep -Eqi 'playgama' dist-yandex/openttd-yandex-fixes.js
+          test ! -e dist-yandex/playgama-yandex-compat.js
+          test ! -e dist-yandex/playgama-bridge-config.json
+          test ! -e dist-yandex/openttd-playgama-cloud-saves.js
+          test ! -e dist-yandex/openttd-playgama-fixes.js
+
+          # Yandex SDK follows the official dynamic /sdk.js pattern. There is no
+          # host/domain/protocol allow-list, so package operation is not tied to
+          # one moderation URL. SDK failure cannot hold the Emscripten startup.
+          grep -Fq "script.src = '/sdk.js'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'YaGames.init()' dist-yandex/yandex-bootstrap.js
+          ! grep -Eq "location\.(host|hostname|origin)|document\.domain|location\.protocol === 'file:'" dist-yandex/yandex-bootstrap.js
+          grep -Fq 'yandexGamesSDKReady' dist-yandex/openttd-runtime.js
+          grep -Fq 'setTimeout((()=>A(null)),3e3)' dist-yandex/openttd-runtime.js
+          ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
+
+          node --check dist-yandex/yandex-bootstrap.js
+          node --check dist-yandex/yandex-bridge.js
+          node --check dist-yandex/openttd-yandex-fixes.js
+          node --check dist-yandex/openttd-bundled-addons.js
+
+      - name: Unit-test Yandex SDK bootstrap order
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require('fs');
           global.window = global;
-          global.document = { hidden: false };
-          global.navigator = { language: 'en' };
-
-          const store = new Map();
-          const bridge = {
-            STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
-            storage: {
-              isSupported: () => true,
-              isAvailable: () => true,
-              async get(keys) {
-                if (Array.isArray(keys)) return keys.map(k => store.has(k) ? store.get(k) : null);
-                return store.has(keys) ? store.get(keys) : null;
-              },
-              async set(keys, values) {
-                if (Array.isArray(keys)) {
-                  for (let i = 0; i < keys.length; i++) store.set(keys[i], values[i]);
-                } else {
-                  store.set(keys, values);
-                }
+          global.navigator = { language: 'ru-RU' };
+          global.location = { protocol: 'https:', hostname: 'any-moderation-host.example' };
+          let appended = null;
+          global.document = {
+            createElement(tag) {
+              if (tag !== 'script') throw new Error('unexpected tag ' + tag);
+              return {};
+            },
+            head: {
+              appendChild(script) {
+                appended = script;
+                global.YaGames = {
+                  async init() {
+                    return { environment: { i18n: { lang: 'ru' } } };
+                  },
+                };
+                queueMicrotask(() => script.onload());
               },
             },
           };
-          global.bridge = bridge;
-          global.playgamaBridgeReady = Promise.resolve(bridge);
-          eval(fs.readFileSync('dist-v10/openttd-playgama-cloud-saves.js', 'utf8'));
 
-          function makeFS() {
-            const files = new Map();
-            const dirs = new Set(['/', '/home', '/home/web_user', '/home/web_user/.openttd', '/home/web_user/.openttd/save']);
-            const mtimes = new Map();
-            const norm = p => p.replace(/\/$/, '') || '/';
-            const parents = p => {
-              const parts = norm(p).split('/').filter(Boolean);
-              let cur = '';
-              for (let i = 0; i < parts.length - 1; i++) { cur += '/' + parts[i]; dirs.add(cur); }
-            };
-            return {
-              _files: files, _mtimes: mtimes,
-              mkdir(p) { dirs.add(norm(p)); },
-              readdir(p) {
-                p = norm(p);
-                if (!dirs.has(p)) throw new Error('ENOENT ' + p);
-                const prefix = p === '/' ? '/' : p + '/';
-                const names = new Set(['.', '..']);
-                for (const d of dirs) if (d.startsWith(prefix)) {
-                  const rest = d.slice(prefix.length); if (rest && !rest.includes('/')) names.add(rest);
-                }
-                for (const f of files.keys()) if (f.startsWith(prefix)) {
-                  const rest = f.slice(prefix.length); if (rest && !rest.includes('/')) names.add(rest);
-                }
-                return [...names];
-              },
-              stat(p) {
-                p = norm(p);
-                if (files.has(p)) return { mode: 0x8000, size: files.get(p).length, mtime: mtimes.get(p) || Date.now() };
-                if (dirs.has(p)) return { mode: 0x4000, size: 0, mtime: Date.now() };
-                throw new Error('ENOENT ' + p);
-              },
-              isDir(mode) { return (mode & 0x4000) === 0x4000; },
-              isFile(mode) { return (mode & 0x8000) === 0x8000; },
-              readFile(p, opts) {
-                p = norm(p); if (!files.has(p)) throw new Error('ENOENT ' + p);
-                const value = files.get(p);
-                if (opts?.encoding === 'utf8') return Buffer.from(value).toString('utf8');
-                return new Uint8Array(value);
-              },
-              writeFile(p, data) {
-                p = norm(p); parents(p);
-                const bytes = Buffer.from(data);
-                files.set(p, new Uint8Array(bytes)); mtimes.set(p, Date.now());
-              },
-              utime(p, a, m) { mtimes.set(norm(p), Number(new Date(m))); },
-              syncfs(populate, cb) { cb?.(); },
-            };
-          }
-
+          eval(fs.readFileSync('dist-yandex/yandex-bootstrap.js', 'utf8'));
           (async () => {
-            const FS = makeFS();
-            const root = '/home/web_user/.openttd';
-            const original = Buffer.alloc(600000);
-            for (let i = 0; i < original.length; i++) original[i] = ((i * 31) + (i >> 3)) & 255;
-            FS.writeFile(root + '/save/test.sav', original);
-            FS.writeFile(root + '/openttd.cfg', '[misc]\nlanguage = english.lng\n');
-
-            await global.__openttdPlaygamaCloudDebug.forceBackup(FS, root);
-            const meta = store.get('openttdSaveMetaV2A');
-            if (!meta || meta.size !== 600000 || meta.chunks < 10) throw new Error('cloud metadata missing');
-
-            FS._files.delete(root + '/save/test.sav');
-            FS._mtimes.delete(root + '/save/test.sav');
-            await global.yandexRestoreOpenTTDCloud(FS, root);
-
-            const restored = Buffer.from(FS.readFile(root + '/save/test.sav'));
-            if (!restored.equals(original)) throw new Error('cloud round-trip mismatch');
-            console.log('600000-byte cloud save round-trip passed in', meta.chunks, 'chunks.');
+            const sdk = await global.yandexGamesSDKReady;
+            if (!appended || appended.src !== '/sdk.js' || appended.async !== true) {
+              throw new Error('Yandex /sdk.js loader was not appended correctly');
+            }
+            if (!sdk || global.ysdk !== sdk) throw new Error('YaGames.init result was not published');
+            if (global.yandexGameLanguage !== 'ru') throw new Error('Yandex locale was not applied');
+            console.log('Yandex dynamic SDK bootstrap passed on arbitrary host.');
           })().catch(error => { console.error(error); process.exit(1); });
           NODE
 
-      - name: Validate final package
+      - name: Create Yandex Games ZIP
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-v10/index.html
-          test "$(grep -o 'openttd-playgama-cloud-saves.js' dist-v10/index.html | wc -l)" -eq 1
-          grep -q "platform_internal" dist-v10/openttd-playgama-cloud-saves.js
-          grep -q "openttdSaveMetaV2A" dist-v10/openttd-playgama-cloud-saves.js
-          grep -q "64 \* 1024 \* 1024" dist-v10/openttd-playgama-cloud-saves.js
-          grep -q "STARTUP_DEPENDENCY = 'playgama-bundled-content'" dist-v10/openttd-bundled-addons.js
+          unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
+          echo "Unpacked Yandex bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 100000000
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-launch-safe.zip .)
+          unzip -t openttd-yandexgames-launch-safe.zip
+          sha256sum openttd-yandexgames-launch-safe.zip > openttd-yandexgames-launch-safe.zip.sha256
 
-          node --check dist-v10/openttd-playgama-cloud-saves.js
-          node --check dist-v10/openttd-bundled-addons.js
-          node --check dist-v10/playgama-yandex-compat.js
-          node --check dist-v10/openttd-playgama-fixes.js
-          python3 -m json.tool dist-v10/OPENTTD-BUNDLED-ADDONS.json >/dev/null
-          python3 -m json.tool dist-v10/playgama-bridge-config.json >/dev/null
-
-          unpacked_bytes="$(du -sb dist-v10 | cut -f1)"
-          echo "Unpacked Playgama v10 bytes: ${unpacked_bytes}"
-          test "${unpacked_bytes}" -lt 300000000
-
-      - name: Create Playgama v10 ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          (cd dist-v10 && zip -9 -X -r ../openttd-playgama-v10-cloud-saves.zip .)
-          unzip -t openttd-playgama-v10-cloud-saves.zip
-          sha256sum openttd-playgama-v10-cloud-saves.zip > openttd-playgama-v10-cloud-saves.zip.sha256
-          ls -lh openttd-playgama-v10-cloud-saves.zip
-          cat openttd-playgama-v10-cloud-saves.zip.sha256
-
-      - name: Upload Playgama v10 artifact
+      - name: Upload Playgama artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v10-cloud-saves
+          name: openttd-playgama-v10-launch-safe
           path: |
-            openttd-playgama-v10-cloud-saves.zip
-            openttd-playgama-v10-cloud-saves.zip.sha256
+            openttd-playgama-v10-launch-safe.zip
+            openttd-playgama-v10-launch-safe.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload Yandex Games artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-launch-safe
+          path: |
+            openttd-yandexgames-launch-safe.zip
+            openttd-yandexgames-launch-safe.zip.sha256
           if-no-files-found: error
           retention-days: 90
