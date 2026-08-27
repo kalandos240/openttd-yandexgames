@@ -14,6 +14,7 @@ CLOUD_SCRIPT = '<script src="openttd-playgama-cloud-saves.js"></script>'
 FIXES_SCRIPT = '<script src="openttd-playgama-fixes.js"></script>'
 VIEWPORT_SCRIPT = '<script src="openttd-full-viewport.js"></script>'
 RANKING_SCRIPT = '<script src="openttd-ranking-core.js"></script>'
+GLOBAL_RANKING_SCRIPT = '<script src="openttd-global-ranking.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
 
 
@@ -128,7 +129,7 @@ def patch_runtime_fixes(dist: Path) -> None:
 
 def install_shared_helpers(dist: Path) -> None:
     root = Path(__file__).resolve().parent
-    for filename in ("openttd-full-viewport.js", "openttd-ranking-core.js"):
+    for filename in ("openttd-full-viewport.js", "openttd-ranking-core.js", "openttd-global-ranking.js"):
         source = root / filename
         if not source.is_file():
             raise SystemExit(f"Shared browser helper is missing: {source}")
@@ -153,10 +154,11 @@ def patch_index(dist: Path) -> None:
     html = html.replace(CLOUD_SCRIPT, "")
     html = html.replace(VIEWPORT_SCRIPT, "")
     html = html.replace(RANKING_SCRIPT, "")
+    html = html.replace(GLOBAL_RANKING_SCRIPT, "")
     if FIXES_SCRIPT in html:
-        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + VIEWPORT_SCRIPT + RANKING_SCRIPT + CLOUD_SCRIPT, 1)
+        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + VIEWPORT_SCRIPT + RANKING_SCRIPT + GLOBAL_RANKING_SCRIPT + CLOUD_SCRIPT, 1)
     elif ADDONS_SCRIPT in html:
-        html = html.replace(ADDONS_SCRIPT, VIEWPORT_SCRIPT + RANKING_SCRIPT + CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
+        html = html.replace(ADDONS_SCRIPT, VIEWPORT_SCRIPT + RANKING_SCRIPT + GLOBAL_RANKING_SCRIPT + CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
     else:
         raise SystemExit("Could not find Playgama runtime script insertion point")
     if html.count(CLOUD_SCRIPT) != 1:
@@ -165,6 +167,8 @@ def patch_index(dist: Path) -> None:
         raise SystemExit("Full-viewport helper insertion is not unique")
     if html.count(RANKING_SCRIPT) != 1:
         raise SystemExit("Ranking core insertion is not unique")
+    if html.count(GLOBAL_RANKING_SCRIPT) != 1:
+        raise SystemExit("Global ranking provider insertion is not unique")
     if not html.startswith("<!DOCTYPE html>"):
         raise SystemExit("index.html did not enter standards mode")
     path.write_text(html, encoding="utf-8")
@@ -202,7 +206,7 @@ def main() -> None:
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
         "- Native pause calls wait until the Emscripten runtime has started.\n"
         "- AudioContext resume is only attempted after user activation.\n"
-        "- Includes a platform-neutral local ranking store using exact 53-bit scores.\n"
+        "- Includes platform-neutral local and global ranking providers using exact 53-bit scores.\n"
         "- Keeps local IDBFS/IndexedDB persistence as a fallback.\n"
         "- Uses neutral .bin delivery names for gzip-compressed bundled add-ons.\n",
         encoding="utf-8",
