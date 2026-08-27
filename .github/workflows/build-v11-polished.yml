@@ -153,6 +153,8 @@ jobs:
           test -d dist-v12/licenses
 
       - name: Apply launch-safe full-viewport ranking refresh
+        env:
+          PLAYGAMA_SAAS_PUBLIC_TOKEN: ${{ secrets.PLAYGAMA_SAAS_PUBLIC_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -166,6 +168,26 @@ jobs:
             --cloud-saves playgama/openttd-playgama-cloud-saves.js \
             --adapter playgama/playgama-yandex-compat.js
           cp playgama/playgama-bridge-config.json dist-v12/playgama-bridge-config.json
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('dist-v12/playgama-bridge-config.json')
+          config = json.loads(path.read_text(encoding='utf-8'))
+          token = os.environ.get('PLAYGAMA_SAAS_PUBLIC_TOKEN', '').strip()
+          if token:
+              saas = config.setdefault('saas', {})
+              saas['publicToken'] = token
+              leaderboards = saas.setdefault('leaderboards', {})
+              leaderboards['platforms'] = ['playgama', 'qa_tool']
+              path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+              print('Playgama SaaS leaderboard configuration enabled from repository secret.')
+          else:
+              print('PLAYGAMA_SAAS_PUBLIC_TOKEN is not configured; keeping native platform leaderboard configuration only.')
+          PY
+
           python3 playgama/build-license-bundle.py dist-v12 --repo-license LICENSE
 
       - name: Install rebuilt native runtime
