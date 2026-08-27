@@ -124,7 +124,10 @@
         includeUser: authorized,
         quantityAround: authorized ? 3 : 0,
       });
-      const userRank = Number.isFinite(result?.userRank) ? result.userRank : NaN;
+      /* Yandex returns userRank=0 when the user is omitted from a public top
+         request. Only treat userRank as meaningful after authorization, or the
+         anonymous viewer would incorrectly highlight the first-place entry. */
+      const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
       entries = Array.isArray(result?.entries) ? result.entries.map((entry) => normalizeEntry(entry, userRank)) : [];
       status = entries.length ? 'ready' : 'empty';
       publishSoon();
