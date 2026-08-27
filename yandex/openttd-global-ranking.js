@@ -8,11 +8,13 @@
   'use strict';
   if (window.OpenTTDGlobalRanking) return;
 
-  const LEADERBOARD_NAME = 'company_rating';
+  /* Exact developer-console identifier; deliberately contains no separators. */
+  const LEADERBOARD_NAME = 'companyrating';
   const MAX_SCORE = Number.MAX_SAFE_INTEGER; // 2^53 - 1; exact JS integer range.
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
   const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
+  const FETCH_FAILURE_BACKOFF_MS = 30000;
 
   let status = 'loading';
   let authorized = false;
@@ -20,29 +22,24 @@
   let lastWrite = '';
   let submitTimer = 0;
   let inFlightSubmit = false;
+  let inFlightFetch = null;
+  let nextFetchAllowedAt = 0;
 
   const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
-
   const clampScore = (value) => {
     const n = typeof value === 'number' ? value : Number(String(value));
     if (!Number.isFinite(n)) return 0;
     return Math.max(0, Math.min(MAX_SCORE, Math.trunc(n)));
   };
-
   const storageGetNumber = (key) => {
     try { return clampScore(localStorage.getItem(key) || 0); } catch (_) { return 0; }
   };
-
   const storageSetNumber = (key, value) => {
     try { localStorage.setItem(key, String(clampScore(value))); } catch (_) {}
   };
 
   const snapshotText = () => {
-    const lines = [
-      'version\t1',
-      `status\t${status}`,
-      `authorized\t${authorized ? 1 : 0}`,
-    ];
+    const lines = ['version\t1', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
     for (const row of entries) {
       lines.push(`entry\t${Math.max(0, Math.trunc(row.rank || 0))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
     }
@@ -63,7 +60,6 @@
       return false;
     }
   };
-
   const publishSoon = () => {
     if (writeSnapshot()) return;
     setTimeout(writeSnapshot, 100);
@@ -77,24 +73,20 @@
       return window.ysdk || null;
     }
   };
-
   const getPlayer = async (sdk) => {
     if (!sdk || typeof sdk.getPlayer !== 'function') return null;
     try { return await sdk.getPlayer(); } catch (_) { return null; }
   };
-
   const checkAuthorized = async (sdk) => {
     const player = await getPlayer(sdk);
     authorized = !!(player && typeof player.isAuthorized === 'function' && player.isAuthorized());
     return player;
   };
-
   const methodAvailable = async (sdk, method) => {
     if (!sdk) return false;
     if (typeof sdk.isAvailableMethod !== 'function') return true;
     try { return (await sdk.isAvailableMethod(method)) !== false; } catch (_) { return false; }
   };
-
   const normalizeEntry = (entry, userRank) => {
     const player = entry?.player || {};
     return {
@@ -105,39 +97,51 @@
     };
   };
 
-  const requestEntries = async () => {
-    status = 'loading';
-    publishSoon();
+  const requestEntries = async (force = false) => {
+    if (inFlightFetch) return inFlightFetch;
+    if (!force && Date.now() < nextFetchAllowedAt) return false;
 
-    const sdk = await getSdk();
-    if (!sdk?.leaderboards || typeof sdk.leaderboards.getEntries !== 'function') {
-      status = 'offline';
-      entries = [];
+    inFlightFetch = (async () => {
+      status = 'loading';
       publishSoon();
-      return false;
-    }
+      const sdk = await getSdk();
+      if (!sdk?.leaderboards || typeof sdk.leaderboards.getEntries !== 'function') {
+        status = 'offline';
+        entries = [];
+        publishSoon();
+        return false;
+      }
 
-    await checkAuthorized(sdk);
+      await checkAuthorized(sdk);
+      try {
+        const result = await sdk.leaderboards.getEntries(LEADERBOARD_NAME, {
+          quantityTop: 10,
+          includeUser: authorized,
+          quantityAround: authorized ? 3 : 0,
+        });
+        /* Only treat userRank as meaningful after authorization. */
+        const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
+        entries = Array.isArray(result?.entries) ? result.entries.map((entry) => normalizeEntry(entry, userRank)) : [];
+        nextFetchAllowedAt = 0;
+        status = entries.length ? 'ready' : 'empty';
+        publishSoon();
+        return true;
+      } catch (error) {
+        /* Missing/not-yet-published boards return 404. Back off so one setup
+           mistake cannot flood the game console with repeated SDK failures. */
+        nextFetchAllowedAt = Date.now() + FETCH_FAILURE_BACKOFF_MS;
+        console.warn('[OpenTTD ranking] Global ranking temporarily unavailable', error);
+        status = 'error';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+    })();
+
     try {
-      const result = await sdk.leaderboards.getEntries(LEADERBOARD_NAME, {
-        quantityTop: 10,
-        includeUser: authorized,
-        quantityAround: authorized ? 3 : 0,
-      });
-      /* Yandex returns userRank=0 when the user is omitted from a public top
-         request. Only treat userRank as meaningful after authorization, or the
-         anonymous viewer would incorrectly highlight the first-place entry. */
-      const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
-      entries = Array.isArray(result?.entries) ? result.entries.map((entry) => normalizeEntry(entry, userRank)) : [];
-      status = entries.length ? 'ready' : 'empty';
-      publishSoon();
-      return true;
-    } catch (error) {
-      console.warn('[OpenTTD ranking] Global ranking request failed', error);
-      status = 'error';
-      entries = [];
-      publishSoon();
-      return false;
+      return await inFlightFetch;
+    } finally {
+      inFlightFetch = null;
     }
   };
 
@@ -158,7 +162,6 @@
         return;
       }
       if (!(await methodAvailable(sdk, 'leaderboards.setScore'))) return;
-
       await sdk.leaderboards.setScore(LEADERBOARD_NAME, pending);
       storageSetNumber(SUBMITTED_KEY, pending);
       status = 'ready';
@@ -173,11 +176,7 @@
   const submitScore = (score) => {
     const next = clampScore(score);
     if (next <= 0) return;
-    const pending = storageGetNumber(PENDING_KEY);
-    if (next > pending) storageSetNumber(PENDING_KEY, next);
-
-    /* The SDK permits at most one setScore request per second. Coalesce native
-       score updates and leave extra margin for retries/focus transitions. */
+    if (next > storageGetNumber(PENDING_KEY)) storageSetNumber(PENDING_KEY, next);
     clearTimeout(submitTimer);
     submitTimer = setTimeout(doSubmit, 1500);
   };
@@ -193,7 +192,7 @@
     const player = await checkAuthorized(sdk);
     if (player && authorized) {
       await doSubmit();
-      await requestEntries();
+      await requestEntries(true);
       return true;
     }
 
@@ -203,7 +202,7 @@
       await checkAuthorized(sdk);
       if (authorized) {
         await doSubmit();
-        await requestEntries();
+        await requestEntries(true);
       } else {
         status = 'auth-required';
         publishSoon();
@@ -223,11 +222,9 @@
     submitScore,
     requestEntries,
     requestAuth,
-    refresh: requestEntries,
+    refresh: () => requestEntries(true),
   };
 
-  /* Publish a neutral initial state once the virtual filesystem exists, then
-     warm the public top list without opening any authorization dialog. */
   publishSoon();
   Promise.resolve(window.yandexGamesSDKReady).then(() => requestEntries()).catch(() => {
     status = 'offline';
