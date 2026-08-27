@@ -1,0 +1,55 @@
+name: Dual-platform ranking provider probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - fix/yandex-ui-runtime-errors
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/dual-platform-ranking-probe.yml'
+      - 'ci/test-dual-platform-ranking.js'
+      - 'playgama/openttd-global-ranking.js'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/playgama-bridge-config.json'
+      - 'yandex/openttd-global-ranking.js'
+      - 'yandex/package_yandex_from_playgama.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/dual-platform-ranking-probe.yml'
+      - 'ci/test-dual-platform-ranking.js'
+      - 'playgama/openttd-global-ranking.js'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'playgama/playgama-bridge-config.json'
+      - 'yandex/openttd-global-ranking.js'
+      - 'yandex/package_yandex_from_playgama.py'
+
+permissions:
+  contents: read
+
+jobs:
+  ranking-providers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate identifiers and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m json.tool playgama/playgama-bridge-config.json >/dev/null
+          grep -Fq '"id": "companyrating"' playgama/playgama-bridge-config.json
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" playgama/openttd-global-ranking.js
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" yandex/openttd-global-ranking.js
+          ! grep -Fq "const LEADERBOARD_NAME = 'company_rating'" playgama/openttd-global-ranking.js
+          ! grep -Fq "const LEADERBOARD_NAME = 'company_rating'" yandex/openttd-global-ranking.js
+          node --check playgama/openttd-global-ranking.js
+          node --check yandex/openttd-global-ranking.js
+          node --check ci/test-dual-platform-ranking.js
+
+      - name: Exercise both leaderboard providers
+        run: node ci/test-dual-platform-ranking.js
