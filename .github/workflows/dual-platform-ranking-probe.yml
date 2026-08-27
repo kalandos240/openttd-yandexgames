@@ -31,6 +31,10 @@ on:
       - 'yandex/openttd-global-ranking.js'
       - 'yandex/package_yandex_from_playgama.py'
 
+concurrency:
+  group: dual-platform-ranking-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
