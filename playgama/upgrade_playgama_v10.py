@@ -128,6 +128,60 @@ def patch_runtime_fixes(dist: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def patch_playgama_adapter(dist: Path) -> None:
+    """Keep the game launchable if Bridge is unavailable and respect autoplay policy."""
+    path = dist / "playgama-yandex-compat.js"
+    if not path.is_file():
+        raise SystemExit("playgama-yandex-compat.js is missing")
+    text = path.read_text(encoding="utf-8")
+
+    old_audio = "if (context?.state === 'suspended') context.resume?.().catch?.(() => {});"
+    new_audio = (
+        "if (context?.state === 'suspended' && (navigator.userActivation?.hasBeenActive ?? true)) "
+        "context.resume?.().catch?.(() => {});"
+    )
+    if new_audio not in text:
+        if text.count(old_audio) != 1:
+            raise SystemExit(f"Unexpected Playgama adapter AudioContext resume count: {text.count(old_audio)}")
+        text = text.replace(old_audio, new_audio, 1)
+
+    old_init = """  window.YaGames = {
+    init() {
+      return window.playgamaBridgeReady.then((bridge) => {
+        if (!bridge) throw new Error('Playgama Bridge initialization failed');
+        return createSdk(bridge);
+      });
+    }
+  };
+"""
+    new_init = """  window.YaGames = {
+    init() {
+      return window.playgamaBridgeReady.then((bridge) => {
+        if (!bridge) {
+          console.warn('[Playgama] Bridge unavailable; starting OpenTTD with offline platform fallback.');
+          return createSdk({});
+        }
+        return createSdk(bridge);
+      });
+    }
+  };
+"""
+    if new_init not in text:
+        if text.count(old_init) != 1:
+            raise SystemExit(f"Unexpected Playgama YaGames.init block count: {text.count(old_init)}")
+        text = text.replace(old_init, new_init, 1)
+
+    required = (
+        "navigator.userActivation?.hasBeenActive",
+        "starting OpenTTD with offline platform fallback",
+        "return createSdk({});",
+    )
+    for marker in required:
+        if marker not in text:
+            raise SystemExit(f"Playgama adapter launch-safety marker missing: {marker}")
+    path.write_text(text, encoding="utf-8")
+
+
 def install_shared_helpers(dist: Path) -> None:
     root = Path(__file__).resolve().parent
     for filename in ("openttd-full-viewport.js", "openttd-ranking-core.js", "openttd-global-ranking.js"):
@@ -231,6 +285,7 @@ def main() -> None:
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
+    patch_playgama_adapter(dist)
     install_shared_helpers(dist)
     validate_global_ranking_provider(dist)
     patch_runtime_fixes(dist)
@@ -240,12 +295,13 @@ def main() -> None:
         "OpenTTD browser v12 ranking-ready base\n"
         "======================================\n"
         "- Uses the documented stable platform bridge.\n"
+        "- Bridge failure no longer blocks OpenTTD startup; an offline platform fallback is used.\n"
         "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
         "- Uses the entire browser viewport instead of forcing a 16:9 letterbox.\n"
         "- Resizes the SDL backing surface to viewport CSS pixels, avoiding stretched graphics.\n"
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
         "- Native pause calls wait until the Emscripten runtime has started.\n"
-        "- AudioContext resume is only attempted after user activation.\n"
+        "- AudioContext resume is only attempted after user activation, including the Playgama adapter.\n"
         f"- Includes local and global ranking; Playgama leaderboard id is {LEADERBOARD_NAME}.\n"
         "- Global leaderboard polling never opens authorization or native popups automatically.\n"
         "- Keeps local IDBFS/IndexedDB persistence as a fallback.\n"
