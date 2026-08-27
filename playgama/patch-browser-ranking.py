@@ -122,9 +122,25 @@ static uint64_t BrowserRankingScore(const Company *c)
 
 static std::string FormatBrowserRankingScore(uint64_t score)
 {
-	std::string value = std::to_string(score);
+	std::string value = fmt::format("{}", score);
 	for (int pos = static_cast<int>(value.size()) - 3; pos > 0; pos -= 3) value.insert(static_cast<size_t>(pos), " ");
 	return value;
+}
+
+/** Strict decimal parser kept deliberately tiny because OpenTTD safeguards
+ * reject the locale-sensitive std::stoul/std::stoull family. */
+static bool ParseBrowserRankingUnsigned(std::string_view text, uint64_t &value)
+{
+	if (text.empty()) return false;
+	uint64_t result = 0;
+	for (const char ch : text) {
+		if (ch < '0' || ch > '9') return false;
+		const uint64_t digit = static_cast<uint64_t>(ch - '0');
+		if (result > (std::numeric_limits<uint64_t>::max() - digit) / 10ULL) return false;
+		result = result * 10ULL + digit;
+	}
+	value = result;
+	return true;
 }
 
 static std::vector<std::string> SplitBrowserRankingLine(const std::string &line)
@@ -156,24 +172,25 @@ static BrowserRankingSnapshot LoadBrowserRankingSnapshot(bool global)
 			continue;
 		}
 		if (fields[0] != "entry") continue;
-		try {
-			BrowserRankingEntry entry;
-			if (global) {
-				if (fields.size() < 5) continue;
-				entry.rank = static_cast<uint32_t>(std::stoul(fields[1]));
-				entry.score = std::min<uint64_t>(std::stoull(fields[2]), BROWSER_RANKING_MAX_SCORE);
-				entry.is_user = fields[3] == "1";
-				entry.name = fields[4];
-			} else {
-				if (fields.size() < 4) continue;
-				entry.rank = static_cast<uint32_t>(std::stoul(fields[1]));
-				entry.score = std::min<uint64_t>(std::stoull(fields[2]), BROWSER_RANKING_MAX_SCORE);
-				entry.name = fields[3];
-			}
-			result.entries.push_back(std::move(entry));
-		} catch (...) {
-			/* Ignore a partially written or malformed row and keep the UI alive. */
+
+		BrowserRankingEntry entry;
+		uint64_t parsed_rank = 0;
+		uint64_t parsed_score = 0;
+		if (global) {
+			if (fields.size() < 5) continue;
+			if (!ParseBrowserRankingUnsigned(fields[1], parsed_rank) || !ParseBrowserRankingUnsigned(fields[2], parsed_score)) continue;
+			entry.rank = static_cast<uint32_t>(std::min<uint64_t>(parsed_rank, std::numeric_limits<uint32_t>::max()));
+			entry.score = std::min<uint64_t>(parsed_score, BROWSER_RANKING_MAX_SCORE);
+			entry.is_user = fields[3] == "1";
+			entry.name = fields[4];
+		} else {
+			if (fields.size() < 4) continue;
+			if (!ParseBrowserRankingUnsigned(fields[1], parsed_rank) || !ParseBrowserRankingUnsigned(fields[2], parsed_score)) continue;
+			entry.rank = static_cast<uint32_t>(std::min<uint64_t>(parsed_rank, std::numeric_limits<uint32_t>::max()));
+			entry.score = std::min<uint64_t>(parsed_score, BROWSER_RANKING_MAX_SCORE);
+			entry.name = fields[3];
 		}
+		result.entries.push_back(std::move(entry));
 	}
 	return result;
 }
@@ -201,7 +218,7 @@ static void SubmitBrowserRankingScore()
 	const Company *c = Company::Get(_local_company);
 	const uint64_t score = BrowserRankingScore(c);
 	if (score == 0) return;
-	const std::string score_text = std::to_string(score);
+	const std::string score_text = fmt::format("{}", score);
 	const std::string company_name = GetString(STR_HIGHSCORE_NAME, c->index, c->index);
 	EM_ASM({
 		const score = UTF8ToString($0);
@@ -262,25 +279,25 @@ replacement = r'''struct HighScoreWindow : EndGameHighScoreBaseWindow {
 		this->global_snapshot = LoadBrowserRankingSnapshot(true);
 	}
 
-	Rect LocalTabRect() const
+	Rect LocalTabRect()
 	{
 		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 		return Rect{pt.x + ScaleSpriteTrad(105), pt.y + ScaleSpriteTrad(96), pt.x + ScaleSpriteTrad(315), pt.y + ScaleSpriteTrad(122)};
 	}
 
-	Rect GlobalTabRect() const
+	Rect GlobalTabRect()
 	{
 		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 		return Rect{pt.x + ScaleSpriteTrad(325), pt.y + ScaleSpriteTrad(96), pt.x + ScaleSpriteTrad(535), pt.y + ScaleSpriteTrad(122)};
 	}
 
-	Rect RefreshRect() const
+	Rect RefreshRect()
 	{
 		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 		return Rect{pt.x + ScaleSpriteTrad(355), pt.y + ScaleSpriteTrad(431), pt.x + ScaleSpriteTrad(535), pt.y + ScaleSpriteTrad(457)};
 	}
 
-	Rect SignInRect() const
+	Rect SignInRect()
 	{
 		Point pt = this->GetTopLeft(ScaleSpriteTrad(640), ScaleSpriteTrad(480));
 		return Rect{pt.x + ScaleSpriteTrad(105), pt.y + ScaleSpriteTrad(431), pt.x + ScaleSpriteTrad(345), pt.y + ScaleSpriteTrad(457)};
@@ -409,6 +426,8 @@ checks = (
     'performance * 1023ULL / SCORE_MAX',
     'CalculateCompanyValue(c, true).base()',
     'BrowserRankingCheatsUsed()',
+    'ParseBrowserRankingUnsigned',
+    'fmt::format("{}", score)',
     'OpenTTDRankingCore?.submit?.',
     'OpenTTDGlobalRanking?.requestEntries?.',
     'STR_BROWSER_RANKING_LOCAL',
@@ -418,6 +437,10 @@ checks = (
 for check in checks:
     if check not in text:
         raise SystemExit(f'Missing browser ranking patch marker: {check!r}')
+
+for forbidden in ('std::to_string', 'std::stoul', 'std::stoull'):
+    if forbidden in text:
+        raise SystemExit(f'OpenTTD safeguard-forbidden conversion remains: {forbidden}')
 
 path.write_text(text, encoding='utf-8')
 print('Native local/global ranking UI and 53-bit clean-score tracking patched.')
