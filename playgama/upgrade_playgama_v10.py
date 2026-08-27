@@ -13,6 +13,7 @@ BRIDGE_SCRIPT = f'<script src="{BRIDGE_URL}"></script>'
 CLOUD_SCRIPT = '<script src="openttd-playgama-cloud-saves.js"></script>'
 FIXES_SCRIPT = '<script src="openttd-playgama-fixes.js"></script>'
 VIEWPORT_SCRIPT = '<script src="openttd-full-viewport.js"></script>'
+RANKING_SCRIPT = '<script src="openttd-ranking-core.js"></script>'
 ADDONS_SCRIPT = '<script src="openttd-bundled-addons.js"></script>'
 
 
@@ -76,7 +77,7 @@ def patch_runtime_fixes(dist: Path) -> None:
     full_bleed = r'''
   /* Use the complete platform viewport. OpenTTD/SDL handles arbitrary browser
      aspect ratios; forcing a centred 16:9 CSS surface created visible side bars
-     on wide Yandex/Playgama viewports. openttd-full-viewport.js also resizes the
+     on wide platform viewports. openttd-full-viewport.js also resizes the
      backing SDL canvas, so this CSS does not stretch or distort a 16:9 surface. */
   const style = document.createElement('style');
   style.id = 'openttd-playgama-scale-fix';
@@ -125,19 +126,19 @@ def patch_runtime_fixes(dist: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def install_viewport_helper(dist: Path) -> None:
-    source = Path(__file__).resolve().with_name("openttd-full-viewport.js")
-    if not source.is_file():
-        raise SystemExit(f"Full-viewport helper is missing: {source}")
-    shutil.copy2(source, dist / "openttd-full-viewport.js")
+def install_shared_helpers(dist: Path) -> None:
+    root = Path(__file__).resolve().parent
+    for filename in ("openttd-full-viewport.js", "openttd-ranking-core.js"):
+        source = root / filename
+        if not source.is_file():
+            raise SystemExit(f"Shared browser helper is missing: {source}")
+        shutil.copy2(source, dist / filename)
 
 
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     html = normalize_doctype(path.read_text(encoding="utf-8"))
 
-    # Old v8/v10 artifacts can contain the accidental /v2/stable reference.
-    # Normalize all historical CDN forms to the documented stable JS Core URL.
     html = re.sub(
         r'<script\s+src=["\']https://bridge\.playgama\.com/(?:v1/(?:stable|latest)|v2/(?:stable|latest)|latest)/playgama-bridge\.js["\']\s*></script>',
         BRIDGE_SCRIPT,
@@ -151,16 +152,19 @@ def patch_index(dist: Path) -> None:
 
     html = html.replace(CLOUD_SCRIPT, "")
     html = html.replace(VIEWPORT_SCRIPT, "")
+    html = html.replace(RANKING_SCRIPT, "")
     if FIXES_SCRIPT in html:
-        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + VIEWPORT_SCRIPT + CLOUD_SCRIPT, 1)
+        html = html.replace(FIXES_SCRIPT, FIXES_SCRIPT + VIEWPORT_SCRIPT + RANKING_SCRIPT + CLOUD_SCRIPT, 1)
     elif ADDONS_SCRIPT in html:
-        html = html.replace(ADDONS_SCRIPT, VIEWPORT_SCRIPT + CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
+        html = html.replace(ADDONS_SCRIPT, VIEWPORT_SCRIPT + RANKING_SCRIPT + CLOUD_SCRIPT + ADDONS_SCRIPT, 1)
     else:
         raise SystemExit("Could not find Playgama runtime script insertion point")
     if html.count(CLOUD_SCRIPT) != 1:
         raise SystemExit("Cloud save script insertion is not unique")
     if html.count(VIEWPORT_SCRIPT) != 1:
         raise SystemExit("Full-viewport helper insertion is not unique")
+    if html.count(RANKING_SCRIPT) != 1:
+        raise SystemExit("Ranking core insertion is not unique")
     if not html.startswith("<!DOCTYPE html>"):
         raise SystemExit("index.html did not enter standards mode")
     path.write_text(html, encoding="utf-8")
@@ -184,28 +188,27 @@ def main() -> None:
     shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
-    install_viewport_helper(dist)
+    install_shared_helpers(dist)
     patch_runtime_fixes(dist)
     patch_index(dist)
 
     (dist / "PLAYGAMA-V10-CHANGES.txt").write_text(
-        "OpenTTD Playgama v11 launch-safe UI refresh\n"
-        "============================================\n"
-        "- Uses the documented Playgama Bridge JS Core stable v1 CDN.\n"
+        "OpenTTD browser v12 ranking-ready base\n"
+        "======================================\n"
+        "- Uses the documented stable platform bridge.\n"
         "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
         "- Uses the entire browser viewport instead of forcing a 16:9 letterbox.\n"
         "- Resizes the SDL backing surface to viewport CSS pixels, avoiding stretched graphics.\n"
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
         "- Native pause calls wait until the Emscripten runtime has started.\n"
         "- AudioContext resume is only attempted after user activation.\n"
-        "- Uses Playgama Bridge platform_internal storage for cloud saves when available.\n"
-        "- Splits .sav data into 64 KiB text chunks and alternates A/B generations.\n"
+        "- Includes a platform-neutral local ranking store using exact 53-bit scores.\n"
         "- Keeps local IDBFS/IndexedDB persistence as a fallback.\n"
         "- Uses neutral .bin delivery names for gzip-compressed bundled add-ons.\n",
         encoding="utf-8",
     )
 
-    print("Playgama v11 launch-safe UI refresh applied:", dist)
+    print("Browser ranking-ready base applied:", dist)
 
 
 if __name__ == "__main__":
