@@ -1,4 +1,4 @@
-/* Playgama Bridge v2 compatibility layer for the OpenTTD Yandex-style browser integration. */
+/* Playgama Bridge compatibility layer for the OpenTTD Yandex-style browser integration. */
 (() => {
   'use strict';
   if (window.__playgamaYandexCompatInstalled) return;
@@ -64,16 +64,14 @@
 
   const emitPauseState = () => {
     const paused = pauseReasons.size > 0;
-    const listeners = paused ? pauseListeners : resumeListeners;
-    listeners.forEach((listener) => safeCall(listener));
+    (paused ? pauseListeners : resumeListeners).forEach((listener) => safeCall(listener));
     if (paused) pauseTrackedAudio(); else resumeTrackedAudio();
   };
 
   const setPauseReason = (reason, active) => {
     const wasPaused = pauseReasons.size > 0;
     if (active) pauseReasons.add(reason); else pauseReasons.delete(reason);
-    const isPaused = pauseReasons.size > 0;
-    if (wasPaused !== isPaused) emitPauseState();
+    if (wasPaused !== (pauseReasons.size > 0)) emitPauseState();
   };
 
   wrapAudioContext();
@@ -87,9 +85,11 @@
     await window.bridge.initialize({ configFilePath: './playgama-bridge-config.json' });
     const bridge = window.bridge;
 
-    if (!String(bridge.version || '').startsWith('2.')) {
-      throw new Error(`Playgama Bridge v2 required, loaded ${bridge.version || 'unknown'}`);
-    }
+    // Do not hard-code a major Bridge version here. The public JS Core uses the
+    // stable v1 CDN and Playgama can update the stable implementation without a
+    // game rebuild. A previous v2-only assertion caused startup failure.
+    document.documentElement.dataset.playgamaBridge = 'ready';
+    document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || 'stable');
 
     try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(120); } catch (_) {}
 
@@ -97,7 +97,7 @@
     if (!platformAudioEnabled) pauseTrackedAudio();
 
     try {
-      bridge.platform?.on?.(bridge.EVENT_NAME.PAUSE_STATE_CHANGED, (paused) => {
+      bridge.platform?.on?.(bridge.EVENT_NAME?.PAUSE_STATE_CHANGED || 'pause_state_changed', (paused) => {
         setPauseReason('platform', Boolean(paused));
       });
     } catch (error) {
@@ -105,7 +105,7 @@
     }
 
     try {
-      bridge.platform?.on?.(bridge.EVENT_NAME.AUDIO_STATE_CHANGED, (enabled) => {
+      bridge.platform?.on?.(bridge.EVENT_NAME?.AUDIO_STATE_CHANGED || 'audio_state_changed', (enabled) => {
         platformAudioEnabled = enabled !== false;
         if (platformAudioEnabled) resumeTrackedAudio(); else pauseTrackedAudio();
       });
@@ -113,16 +113,20 @@
       console.warn('[Playgama] audio event subscription failed:', error);
     }
 
+    // Storage availability must never be a startup gate.
     try {
-      const markerKey = '__openttd_playgama_bridge_v2';
-      await bridge.storage.get(markerKey).catch(() => undefined);
-      await bridge.storage.set(markerKey, { version: 2, updatedAt: Date.now() });
+      const markerKey = '__openttd_playgama_bridge';
+      await Promise.race([
+        (async () => {
+          await bridge.storage?.get?.(markerKey);
+          await bridge.storage?.set?.(markerKey, { updatedAt: Date.now() });
+        })(),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
     } catch (error) {
-      console.info('[Playgama] storage marker unavailable; game persistence can still use local storage.', error);
+      console.info('[Playgama] storage marker unavailable; local persistence will still work.', error);
     }
 
-    document.documentElement.dataset.playgamaBridge = 'ready';
-    document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || '2');
     return bridge;
   };
 
@@ -140,7 +144,7 @@
         const result = {};
         for (const key of requested) {
           try {
-            const value = await bridge.storage.get(String(key));
+            const value = await bridge.storage?.get?.(String(key));
             if (value !== undefined && value !== null) result[key] = value;
           } catch (_) {}
         }
@@ -148,7 +152,7 @@
       },
       async setData(data) {
         for (const [key, value] of Object.entries(data || {})) {
-          await bridge.storage.set(String(key), value);
+          try { await bridge.storage?.set?.(String(key), value); } catch (_) {}
         }
       },
       getMode() { return 'full'; },
@@ -166,10 +170,10 @@
       return;
     }
 
-    const eventName = bridge.EVENT_NAME.INTERSTITIAL_STATE_CHANGED;
-    const openedState = bridge.INTERSTITIAL_STATE.OPENED;
-    const closedState = bridge.INTERSTITIAL_STATE.CLOSED;
-    const failedState = bridge.INTERSTITIAL_STATE.FAILED;
+    const eventName = bridge.EVENT_NAME?.INTERSTITIAL_STATE_CHANGED || 'interstitial_state_changed';
+    const openedState = bridge.INTERSTITIAL_STATE?.OPENED || 'opened';
+    const closedState = bridge.INTERSTITIAL_STATE?.CLOSED || 'closed';
+    const failedState = bridge.INTERSTITIAL_STATE?.FAILED || 'failed';
     let opened = false;
     let finished = false;
 
@@ -238,9 +242,7 @@
           }
         }
       },
-      adv: {
-        showFullscreenAdv: createFullscreenAd(bridge)
-      },
+      adv: { showFullscreenAdv: createFullscreenAd(bridge) },
       async getPlayer() { return player; },
       on(eventName, listener) {
         if (eventName === 'game_api_pause') pauseListeners.add(listener);
