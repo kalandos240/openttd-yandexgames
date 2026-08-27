@@ -1,0 +1,103 @@
+name: Test Yandex build from fixed Playgama
+
+on:
+  push:
+    branches:
+      - fix/playgama-launch-url-independent
+    paths:
+      - 'yandex/**'
+      - '.github/workflows/test-yandex-from-playgama-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  PLAYGAMA_FIXED_ARTIFACT_ID: '9652960445'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current branch
+        uses: actions/checkout@v4
+
+      - name: Download corrected Playgama build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PLAYGAMA_FIXED_ARTIFACT_ID}/zip" \
+            -o /tmp/playgama-fixed-artifact.zip
+          rm -rf /tmp/playgama-fixed dist-yandex
+          mkdir -p /tmp/playgama-fixed dist-yandex
+          unzip -q /tmp/playgama-fixed-artifact.zip -d /tmp/playgama-fixed
+          inner="$(find /tmp/playgama-fixed -type f -name 'openttd-playgama-v10-launch-fixed.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-yandex
+
+      - name: Replace Playgama integration with Yandex Games SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile yandex/package_from_playgama.py
+          node --check yandex/yandex-bootstrap.js
+          python3 yandex/package_from_playgama.py dist-yandex --bootstrap yandex/yandex-bootstrap.js
+
+      - name: Validate Yandex package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-yandex/index.html
+          test -s dist-yandex/openttd-runtime.js
+          test -s dist-yandex/yandex-bootstrap.js
+          test -s dist-yandex/yandex-bridge.js
+          test -s dist-yandex/openttd-bundled-addons.js
+          test -s dist-yandex/YANDEX-BUILD.txt
+
+          ! test -e dist-yandex/playgama-yandex-compat.js
+          ! test -e dist-yandex/playgama-bridge-config.json
+          ! test -e dist-yandex/openttd-playgama-cloud-saves.js
+          ! grep -q 'playgama-yandex-compat.js' dist-yandex/index.html
+          ! grep -q 'bridge.playgama.com' dist-yandex/index.html
+          ! grep -q 'openttd-playgama-cloud-saves.js' dist-yandex/index.html
+
+          grep -q "YANDEX_RELATIVE_SDK = '/sdk.js'" dist-yandex/yandex-bootstrap.js
+          grep -q 'https://sdk.games.s3.yandex.net/sdk.js' dist-yandex/yandex-bootstrap.js
+          grep -q 'script.async = true' dist-yandex/yandex-bootstrap.js
+          grep -q 'window.YaGames.init' dist-yandex/yandex-bootstrap.js
+          ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
+          ! grep -q 'removeRunDependency' dist-yandex/openttd-bundled-addons.js
+
+          node --check dist-yandex/yandex-bootstrap.js
+          node --check dist-yandex/yandex-bridge.js
+          node --check dist-yandex/openttd-bundled-addons.js
+          python3 -m json.tool dist-yandex/OPENTTD-BUNDLED-ADDONS.json >/dev/null
+
+          unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
+          echo "Unpacked Yandex bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
+
+      - name: Create Yandex ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandex-launch-fixed.zip .)
+          unzip -t openttd-yandex-launch-fixed.zip
+          sha256sum openttd-yandex-launch-fixed.zip > openttd-yandex-launch-fixed.zip.sha256
+
+      - name: Upload Yandex artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandex-launch-fixed
+          path: |
+            openttd-yandex-launch-fixed.zip
+            openttd-yandex-launch-fixed.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
