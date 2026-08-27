@@ -53,10 +53,10 @@ def patch_index(dist: Path) -> None:
         raise SystemExit('Playgama runtime-fixes script tag is missing')
     html = html.replace(PLAYGAMA_FIXES_TAG, YANDEX_FIXES_TAG, 1)
 
-    # The inherited yandex-bootstrap.js dynamically loads /sdk.js using the
-    # documented Yandex-hosted archive pattern and calls YaGames.init() only
-    # after the SDK script loads. OpenTTD itself has a bounded startup wait, so
-    # an SDK network problem cannot keep main() on Loading... indefinitely.
+    # yandex-bootstrap.js dynamically loads /sdk.js using the documented
+    # Yandex-hosted archive pattern and calls YaGames.init() only after the SDK
+    # script loads. OpenTTD itself has a bounded startup wait, so an SDK network
+    # problem cannot keep main() on Loading... indefinitely.
     for required in ('yandex-bootstrap.js', 'yandex-bridge.js', 'openttd-yandex-fixes.js'):
         if required not in html:
             raise SystemExit(f'Missing required Yandex script in index.html: {required}')
@@ -64,6 +64,33 @@ def patch_index(dist: Path) -> None:
     if re.search(r'playgama|bridge\.playgama\.com', html, re.I):
         raise SystemExit('Playgama reference remains in Yandex index.html')
     path.write_text(html, encoding='utf-8')
+
+
+def patch_yandex_bootstrap(dist: Path) -> None:
+    path = dist / 'yandex-bootstrap.js'
+    text = path.read_text(encoding='utf-8')
+
+    # The old direct-file build skipped SDK initialization on file://. For the
+    # moderation fix there must be no URL/protocol allow-list at all: every URL
+    # attempts the official relative /sdk.js loader, and a failed SDK request is
+    # caught while the OpenTTD runtime continues after its bounded startup wait.
+    text, count = re.subn(
+        r"^\s*if \(location\.protocol === 'file:'\) return null;\s*\n",
+        '',
+        text,
+        count=1,
+        flags=re.M,
+    )
+    if count not in (0, 1):
+        raise SystemExit('Unexpected Yandex file-protocol guard count')
+
+    if "script.src = '/sdk.js'" not in text:
+        raise SystemExit('Yandex bootstrap does not use the required relative /sdk.js loader')
+    if 'YaGames.init()' not in text:
+        raise SystemExit('Yandex bootstrap does not initialize YaGames')
+    if re.search(r'location\.(?:host|hostname|origin)|document\.domain', text):
+        raise SystemExit('URL/domain restriction found in Yandex bootstrap')
+    path.write_text(text, encoding='utf-8')
 
 
 def make_yandex_fixes(dist: Path) -> None:
@@ -103,6 +130,7 @@ def write_platform_notice(dist: Path) -> None:
         '================================================\n'
         '- Active platform SDK: Yandex Games SDK loaded dynamically from /sdk.js.\n'
         '- YaGames.init() runs only after the SDK loader succeeds.\n'
+        '- There is no host/domain/protocol allow-list in the Yandex bootstrap.\n'
         '- OpenTTD startup is not blocked indefinitely by SDK, cloud or optional add-on requests.\n'
         '- LoadingAPI.ready() is sent after the WebAssembly runtime reaches postRun.\n'
         '- GameplayAPI, pause/resume, interstitial ads and Yandex player data are handled by yandex-bridge.js.\n'
@@ -127,6 +155,7 @@ def main() -> None:
         if not (dist / required).is_file():
             raise SystemExit(f'Required base file is missing: {required}')
 
+    patch_yandex_bootstrap(dist)
     make_yandex_fixes(dist)
     patch_index(dist)
 
