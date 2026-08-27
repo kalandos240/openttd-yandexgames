@@ -7,6 +7,8 @@ on:
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/ranking-provider-probe.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
       - 'playgama/openttd-ranking-core.js'
       - 'playgama/openttd-global-ranking.js'
       - 'playgama/playgama-bridge-config.json'
@@ -25,6 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m py_compile playgama/patch-browser-ranking.py playgama/patch-browser-ranking-core.py
           node --check playgama/openttd-ranking-core.js
           node --check playgama/openttd-global-ranking.js
           node --check yandex/openttd-global-ranking.js
@@ -97,7 +100,7 @@ jobs:
           })().catch(error => { console.error(error); process.exit(1); });
           NODE
 
-      - name: Test Yandex provider never auto-opens auth
+      - name: Test Yandex provider auth and anonymous highlighting
         shell: bash
         run: |
           set -euo pipefail
@@ -109,7 +112,11 @@ jobs:
             getItem: key => store.has(key) ? store.get(key) : null,
             setItem: (key, value) => store.set(key, String(value)),
           };
-          global.FS = { mkdirTree() {}, writeFile() {} };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('global-ranking')) snapshot = String(data); },
+          };
           let authCalls = 0;
           let setScoreCalls = 0;
           let authorized = false;
@@ -119,7 +126,12 @@ jobs:
             isAvailableMethod: async () => true,
             auth: { openAuthDialog: async () => { authCalls++; authorized = true; } },
             leaderboards: {
-              getEntries: async () => ({ entries: [], userRank: null }),
+              /* Yandex documents userRank=0 for public top requests where the
+                 current user is omitted. The first entry must not be marked as us. */
+              getEntries: async () => ({
+                userRank: 0,
+                entries: [{ rank: 0, score: 10, player: { publicName: 'First' } }],
+              }),
               setScore: async () => { setScoreCalls++; },
             },
           };
@@ -129,6 +141,9 @@ jobs:
           (async () => {
             await new Promise(resolve => setTimeout(resolve, 20));
             if (authCalls !== 0) throw new Error('authorization opened during warm-up');
+            if (!snapshot.includes('entry\t1\t10\t0\tFirst')) {
+              throw new Error(`anonymous first place was incorrectly highlighted: ${snapshot}`);
+            }
             OpenTTDGlobalRanking.submitScore(Number.MAX_SAFE_INTEGER);
             await new Promise(resolve => setTimeout(resolve, 1600));
             if (authCalls !== 0) throw new Error('score submission auto-opened auth');
@@ -145,11 +160,13 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          patch = Path('playgama/patch-browser-ranking.py').read_text(encoding='utf-8')
+          patch = Path('playgama/patch-browser-ranking-core.py').read_text(encoding='utf-8')
           player_strings = []
           for line in patch.splitlines():
               if line.startswith('STR_BROWSER_RANKING_') and ':' in line:
                   player_strings.append(line.split(':', 1)[1])
+          if not player_strings:
+              raise SystemExit('No player-facing ranking strings found in ranking core patch')
           joined = '\n'.join(player_strings).casefold()
           forbidden = ('yandex', 'яндекс', 'playgama', 'плейгама')
           bad = [word for word in forbidden if word in joined]
