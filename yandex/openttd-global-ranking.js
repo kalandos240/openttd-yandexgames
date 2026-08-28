@@ -10,10 +10,12 @@
 
   /* Exact developer-console identifier; deliberately contains no separators. */
   const LEADERBOARD_NAME = 'companyrating';
-  const MAX_SCORE = Number.MAX_SAFE_INTEGER; // 2^53 - 1; exact JS integer range.
+  const MAX_SCORE = 1000;
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
-  const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
-  const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
+  /* v2 intentionally discards pending/submitted values from the obsolete
+     53-bit scoring scheme. */
+  const PENDING_KEY = 'openttd.globalRanking.pendingScore.v2';
+  const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v2';
   const FETCH_FAILURE_BACKOFF_MS = 30000;
 
   let status = 'loading';
@@ -31,6 +33,15 @@
     if (!Number.isFinite(n)) return 0;
     return Math.max(0, Math.min(MAX_SCORE, Math.trunc(n)));
   };
+  const readLeaderboardScore = (value) => {
+    const n = typeof value === 'number' ? value : Number(String(value));
+    if (!Number.isFinite(n)) return null;
+    const score = Math.trunc(n);
+    /* Legacy v1 entries used a 53-bit packed value. Do not turn those huge
+       numbers into fake 1000-point records; hide them until a valid v2 score
+       replaces them on the platform. */
+    return score >= 0 && score <= MAX_SCORE ? score : null;
+  };
   const storageGetNumber = (key) => {
     try { return clampScore(localStorage.getItem(key) || 0); } catch (_) { return 0; }
   };
@@ -39,7 +50,7 @@
   };
 
   const snapshotText = () => {
-    const lines = ['version\t1', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
+    const lines = ['version\t2', 'scale\t0-1000', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
     for (const row of entries) {
       lines.push(`entry\t${Math.max(0, Math.trunc(row.rank || 0))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
     }
@@ -88,10 +99,12 @@
     try { return (await sdk.isAvailableMethod(method)) !== false; } catch (_) { return false; }
   };
   const normalizeEntry = (entry, userRank) => {
+    const score = readLeaderboardScore(entry?.score);
+    if (score === null) return null;
     const player = entry?.player || {};
     return {
       rank: Number.isFinite(entry?.rank) ? entry.rank + 1 : 0,
-      score: clampScore(entry?.score),
+      score,
       isUser: Number.isFinite(userRank) && entry?.rank === userRank,
       name: cleanName(player.publicName || player.getName?.() || 'Player'),
     };
@@ -121,7 +134,9 @@
         });
         /* Only treat userRank as meaningful after authorization. */
         const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
-        entries = Array.isArray(result?.entries) ? result.entries.map((entry) => normalizeEntry(entry, userRank)) : [];
+        entries = Array.isArray(result?.entries)
+          ? result.entries.map((entry) => normalizeEntry(entry, userRank)).filter(Boolean).slice(0, 10)
+          : [];
         nextFetchAllowedAt = 0;
         status = entries.length ? 'ready' : 'empty';
         publishSoon();
