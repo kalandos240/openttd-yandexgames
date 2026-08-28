@@ -1,4 +1,4 @@
-name: OpenTTD interactive tutorial compile probe
+name: OpenTTD multimodal tutorial compile probe
 
 on:
   workflow_dispatch:
@@ -10,11 +10,21 @@ on:
       - '.github/workflows/tutorial-compile-probe.yml'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-v2.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/patch-browser-tutorial-polish.py'
+      - 'playgama/patch-browser-tutorial-quality.py'
+      - 'playgama/patch-browser-tutorial-layout-normalize.py'
+      - 'playgama/patch-browser-tutorial-ux.py'
+      - 'playgama/patch-browser-tutorial-dynamic-targets.py'
+      - 'playgama/patch-browser-tutorial-v2.py'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
+
+concurrency:
+  group: tutorial-compile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -44,10 +54,16 @@ jobs:
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
           python3 -m py_compile \
             playgama/patch-browser-ranking-core.py \
+            playgama/patch-browser-ranking-v2.py \
             playgama/patch-browser-tutorial.py \
             playgama/patch-browser-tutorial-toolbar.py \
             playgama/patch-browser-tutorial-level.py \
             playgama/patch-browser-tutorial-polish.py \
+            playgama/patch-browser-tutorial-quality.py \
+            playgama/patch-browser-tutorial-layout-normalize.py \
+            playgama/patch-browser-tutorial-ux.py \
+            playgama/patch-browser-tutorial-dynamic-targets.py \
+            playgama/patch-browser-tutorial-v2.py \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py
 
@@ -71,7 +87,7 @@ jobs:
           p.write_text(text, encoding='utf-8')
           PY
 
-      - name: Compile OpenTTD 15.3 with interactive tutorial
+      - name: Compile OpenTTD 15.3 with multimodal tutorial
         working-directory: legacy
         shell: bash
         run: |
@@ -83,21 +99,32 @@ jobs:
           grep -Fq 'struct BrowserTutorialWindow final : Window' openttd/src/intro_gui.cpp
           grep -Fq 'struct BrowserTutorialCoachWindow final : Window' openttd/src/intro_gui.cpp
           grep -Fq 'struct BrowserButtonGuideWindow final : Window' openttd/src/intro_gui.cpp
-          grep -Fq 'StartBrowserTutorialLevel()' openttd/src/intro_gui.cpp
+          grep -Fq 'this->Close(); StartBrowserTutorialLevel();' openttd/src/intro_gui.cpp
           grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
-          grep -Fq 'SetWidgetHighlight(current.widget, TC_YELLOW)' openttd/src/intro_gui.cpp
-          grep -Fq 'SPR_ARROW_LEFT' openttd/src/intro_gui.cpp
-          grep -Fq 'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP' openttd/src/intro_gui.cpp
-          grep -Fq 'STR_MAPGEN_NEWGRF_SETTINGS_TOOLTIP' openttd/src/intro_gui.cpp
-          grep -Fq 'STR_PLAYGAMA_LICENSES_TOOLTIP' openttd/src/intro_gui.cpp
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20' openttd/src/intro_gui.cpp
+          grep -Fq 'custom_town_number = 8' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.industry_density = ID_HIGH' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.quantity_sea_lakes = 2' openttd/src/intro_gui.cpp
+          grep -Fq 'SetMinimalSize(74, 18)' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::FreightDelivered' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::ShipOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::AircraftOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::TownGrowthFunded' openttd/src/intro_gui.cpp
+          grep -Fq 'IsShipDepotTile(depot->xy)' openttd/src/intro_gui.cpp
+          grep -Fq 'town->fund_buildings_months > 0' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_DT_STATION' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_AT_AIRPORT' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_TA_COMMAND_LIST' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32' openttd/src/intro_gui.cpp
+          grep -Fq 'SetWidgetHighlight' openttd/src/intro_gui.cpp
           grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
           grep -Fq 'ShowBrowserButtonGuide();' openttd/src/toolbar_gui.cpp
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/20' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20                                  :20/20' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/20' openttd/src/lang/russian.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_20                                  :20/20' openttd/src/lang/russian.txt
-          grep -Fq 'Справочник кнопок' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/32' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32                                  :32/32' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/32' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32                                  :32/32' openttd/src/lang/russian.txt
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'std::clamp<int32_t>(raw_performance, 0, SCORE_MAX)' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'BROWSER_RANKING_VALUE_MASK' openttd/src/highscore_gui.cpp
 
       - name: Validate rebuilt runtime
         working-directory: legacy
@@ -109,4 +136,4 @@ jobs:
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
           test -s /tmp/tutorial-runtime/openttd-runtime.js
           node --check /tmp/tutorial-runtime/openttd-runtime.js
-          echo 'Interactive 20-step tutorial compile probe passed.'
+          echo 'Interactive 32-step multimodal tutorial compile probe passed.'
