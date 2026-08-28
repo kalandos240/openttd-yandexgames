@@ -5,7 +5,8 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
 
-const MAX = Number.MAX_SAFE_INTEGER;
+const MAX = 1000;
+const LEGACY_SCORE = Number.MAX_SAFE_INTEGER;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -69,7 +70,10 @@ async function testPlaygama() {
       async getEntries(name) {
         assert.strictEqual(name, 'companyrating');
         getEntriesCalls++;
-        return [{ rank: 0, score: MAX, id: 'player-me', name: 'Playgama Tester' }];
+        return [
+          { rank: 0, score: LEGACY_SCORE, id: 'legacy', name: 'Legacy 53-bit entry' },
+          { rank: 1, score: 987, id: 'player-me', name: 'Playgama Tester' },
+        ];
       },
       async setScore(name, score) {
         assert.strictEqual(name, 'companyrating');
@@ -90,7 +94,10 @@ async function testPlaygama() {
   assert.strictEqual(context.OpenTTDGlobalRanking.maxScore, MAX);
   await context.OpenTTDGlobalRanking.requestEntries(true);
   const snapshot = context.getSnapshot();
-  assert(snapshot.includes(`entry\t1\t${MAX}\t1\tPlaygama Tester`), snapshot);
+  assert(snapshot.includes('scale\t0-1000'), snapshot);
+  assert(snapshot.includes('entry\t2\t987\t1\tPlaygama Tester'), snapshot);
+  assert(!snapshot.includes(String(LEGACY_SCORE)), 'legacy Playgama score leaked into v2 snapshot');
+  assert(!snapshot.includes('Legacy 53-bit entry'), 'legacy Playgama row leaked into v2 snapshot');
 
   context.OpenTTDGlobalRanking.submitScore(String(MAX));
   await sleep(1650);
@@ -104,7 +111,7 @@ async function testPlaygama() {
   assert.strictEqual(lastSubmitted, MAX);
   assert(getEntriesCalls >= 1);
 
-  console.log('Playgama ranking provider passed.');
+  console.log('Playgama bounded ranking provider passed.');
 }
 
 async function testYandex() {
@@ -134,8 +141,11 @@ async function testYandex() {
         assert.strictEqual(name, 'companyrating');
         getEntriesCalls++;
         return {
-          userRank: authorized ? 0 : -1,
-          entries: [{ rank: 0, score: MAX, player: { publicName: 'Yandex Tester' } }],
+          userRank: authorized ? 1 : -1,
+          entries: [
+            { rank: 0, score: LEGACY_SCORE, player: { publicName: 'Legacy 53-bit entry' } },
+            { rank: 1, score: 965, player: { publicName: 'Yandex Tester' } },
+          ],
         };
       },
       async setScore(name, score) {
@@ -156,6 +166,12 @@ async function testYandex() {
   assert.strictEqual(context.OpenTTDGlobalRanking.leaderboardName, 'companyrating');
   assert.strictEqual(context.OpenTTDGlobalRanking.maxScore, MAX);
   await context.OpenTTDGlobalRanking.requestEntries(true);
+  let snapshot = context.getSnapshot();
+  assert(snapshot.includes('scale\t0-1000'), snapshot);
+  assert(snapshot.includes('965'), snapshot);
+  assert(snapshot.includes('Yandex Tester'), snapshot);
+  assert(!snapshot.includes(String(LEGACY_SCORE)), 'legacy Yandex score leaked into v2 snapshot');
+  assert(!snapshot.includes('Legacy 53-bit entry'), 'legacy Yandex row leaked into v2 snapshot');
 
   context.OpenTTDGlobalRanking.submitScore(String(MAX));
   await sleep(1650);
@@ -169,17 +185,15 @@ async function testYandex() {
   assert.strictEqual(lastSubmitted, MAX);
   assert(getEntriesCalls >= 1);
 
-  const snapshot = context.getSnapshot();
-  assert(snapshot.includes(`${MAX}`), snapshot);
-  assert(snapshot.includes('Yandex Tester'), snapshot);
-
-  console.log('Yandex ranking provider passed.');
+  snapshot = context.getSnapshot();
+  assert(!snapshot.includes(String(LEGACY_SCORE)), snapshot);
+  console.log('Yandex bounded ranking provider passed.');
 }
 
 (async () => {
   await testPlaygama();
   await testYandex();
-  console.log('Dual-platform ranking provider test passed.');
+  console.log('Dual-platform 0-1000 ranking provider test passed.');
 })().catch(error => {
   console.error(error);
   process.exit(1);
