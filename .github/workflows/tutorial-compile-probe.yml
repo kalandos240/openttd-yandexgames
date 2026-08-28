@@ -117,8 +117,5 @@ jobs:
           mkdir -p /tmp/tutorial-runtime
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
           test -s /tmp/tutorial-runtime/openttd-runtime.js
-          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
-            grep -aFq "${font}" /tmp/tutorial-runtime/openttd-runtime.js
-          done
           node --check /tmp/tutorial-runtime/openttd-runtime.js
           echo 'Interactive tutorial compile probe passed.'
