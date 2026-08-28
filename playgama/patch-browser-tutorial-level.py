@@ -142,14 +142,17 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_tutorial_wid
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_BROWSER_TUTORIAL_CAPTION),
 	EndContainer(),
+	/* Keep the footer compact enough for the 640x360 moderation viewport.
+	   Separate navigation from the long Russian action labels so no widget can
+	   overlap another row when GUI/font scaling changes. */
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BT_TEXT), SetMinimalSize(560, 168), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BT_START_LEVEL), SetStringTip(STR_BROWSER_TUTORIAL_START_LEVEL, STR_BROWSER_TUTORIAL_START_LEVEL_TOOLTIP), SetMinimalSize(240, 28), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_BUTTON_GUIDE), SetStringTip(STR_BROWSER_BUTTON_GUIDE_MENU, STR_BROWSER_BUTTON_GUIDE_TOOLTIP), SetMinimalSize(220, 28), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 26), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 26), SetFill(1, 0),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BT_TEXT), SetMinimalSize(560, 210), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(150, 22), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(150, 22), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BT_START_LEVEL), SetStringTip(STR_BROWSER_TUTORIAL_START_LEVEL, STR_BROWSER_TUTORIAL_START_LEVEL_TOOLTIP), SetMinimalSize(250, 28), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_BUTTON_GUIDE), SetStringTip(STR_BROWSER_BUTTON_GUIDE_MENU, STR_BROWSER_BUTTON_GUIDE_TOOLTIP), SetMinimalSize(250, 28), SetFill(1, 0),
 	EndContainer(),
 };
 
@@ -251,7 +254,7 @@ static constexpr BrowserButtonGuideEntry _browser_toolbar_guide[] = {
 	{SPR_IMG_QUERY, STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP},
 };
 
-static constexpr size_t BROWSER_GUIDE_ROWS = 6;
+static constexpr size_t BROWSER_GUIDE_ROWS = 4;
 static constexpr size_t BROWSER_MAIN_PAGES = (std::size(_browser_main_menu_guide) + BROWSER_GUIDE_ROWS - 1) / BROWSER_GUIDE_ROWS;
 static constexpr size_t BROWSER_TOOLBAR_PAGES = (std::size(_browser_toolbar_guide) + BROWSER_GUIDE_ROWS - 1) / BROWSER_GUIDE_ROWS;
 static constexpr size_t BROWSER_GUIDE_PAGES = BROWSER_MAIN_PAGES + BROWSER_TOOLBAR_PAGES;
@@ -261,10 +264,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_button_guide
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_BROWSER_MANUAL_CAPTION),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BBG_CONTENT), SetMinimalSize(680, 350), SetFill(1, 1), EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BBG_CONTENT), SetMinimalSize(560, 210), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(150, 22), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(150, 22), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 26), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 26), SetFill(1, 0),
 	EndContainer(),
 };
 
@@ -304,9 +307,9 @@ struct BrowserButtonGuideWindow final : Window {
 		for (size_t row = 0; row < BROWSER_GUIDE_ROWS && start + row < count; ++row) {
 			const BrowserButtonGuideEntry &entry = entries[start + row];
 			DrawSprite(entry.sprite, PAL_NONE, body.left + 10, y + 6);
-			Rect text_rect{body.left + 50, y, body.right, y + 45};
+			Rect text_rect{body.left + 50, y, body.right, y + 43};
 			DrawStringMultiLine(text_rect, entry.description, TC_FROMSTRING, SA_LEFT);
-			y += 50;
+			y += 47;
 		}
 	}
 
@@ -380,15 +383,15 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_tutorial_coa
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_BROWSER_TUTORIAL_COACH_CAPTION),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BTC_CONTENT), SetMinimalSize(600, 190), SetFill(1, 1), EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BTC_CONTENT), SetMinimalSize(560, 150), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BTC_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(140, 22), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BTC_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(140, 22), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BTC_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 28), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BTC_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 28), SetFill(1, 0),
 	EndContainer(),
 };
 
 static WindowDesc _browser_tutorial_coach_desc(
-	WDP_AUTO, {}, 0, 0,
+	WDP_CENTER, {}, 0, 0,
 	WC_HELPWIN, WC_NONE,
 	{},
 	_nested_browser_tutorial_coach_widgets
@@ -601,6 +604,9 @@ for path, markers in {
         'SPR_ARROW_LEFT',
         'struct BrowserButtonGuideWindow final : Window',
         'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP',
+        'SetMinimalSize(560, 168)',
+        'static constexpr size_t BROWSER_GUIDE_ROWS = 4;',
+        '_browser_tutorial_coach_desc(\n\tWDP_CENTER',
     ),
     openttd_path: ('BrowserTutorialGameStarted();',),
     toolbar_path: ('ShowBrowserButtonGuide();', 'STR_BROWSER_BUTTON_GUIDE_MENU'),
