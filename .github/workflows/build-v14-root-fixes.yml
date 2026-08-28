@@ -25,6 +25,7 @@ on:
       - 'playgama/patch-browser-ai-player-selection.py'
       - 'playgama/patch-browser-startup-watchdog.py'
       - 'playgama/patch-browser-build-performance.py'
+      - 'playgama/patch-browser-streaming-runtime.py'
       - 'playgama/openttd-ranking-core.js'
       - 'playgama/install-classic-ai-package.py'
       - 'playgama/upgrade_playgama_v10.py'
@@ -73,6 +74,7 @@ jobs:
             playgama/patch-browser-ai-player-selection.py \
             playgama/patch-browser-startup-watchdog.py \
             playgama/patch-browser-build-performance.py \
+            playgama/patch-browser-streaming-runtime.py \
             playgama/install-classic-ai-package.py
 
           python3 - <<'PY'
@@ -112,9 +114,12 @@ jobs:
           build.write_text(b.replace(anchor, addition, 1), encoding='utf-8')
           PY
 
+          # Game platforms serve normal static resources. Undo the historical
+          # file:// SINGLE_FILE mode so browsers can stream/cache Wasm and data.
+          python3 playgama/patch-browser-streaming-runtime.py legacy/ci/build-direct-file.sh
           python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
 
-      - name: Rebuild OpenTTD 15.3 with stable runtime, native AI and tutorial
+      - name: Rebuild OpenTTD 15.3 with split runtime, native AI and tutorial
         working-directory: legacy
         shell: bash
         run: |
@@ -151,6 +156,14 @@ jobs:
           ! grep -Fq 'MEMORY_GROWTH_GEOMETRIC_STEP' openttd/build/CMakeCache.txt
           ! grep -Fq 'MEMORY_GROWTH_GEOMETRIC_CAP' openttd/build/CMakeCache.txt
 
+          # Platform runtime is split: no base64 Wasm hidden in a giant JS file.
+          test -s openttd/build/openttd.js
+          test -s openttd/build/openttd.wasm
+          test -s openttd/build/openttd.data
+          test "$(stat -c%s openttd/build/openttd.js)" -lt 20000000
+          test "$(stat -c%s openttd/build/openttd.wasm)" -gt 40000000
+          ! grep -Fq 'SINGLE_FILE=1' openttd/CMakeLists.txt
+
           # Cold IndexedDB/cloud startup can never hold Emscripten forever.
           grep -Fq 'browser_startup_watchdog' openttd/os/emscripten/pre.js
           grep -Fq 'browser_release_startup_dependency' openttd/os/emscripten/pre.js
@@ -161,7 +174,6 @@ jobs:
           grep -Fq 'fields[1] == "3"' openttd/src/highscore_gui.cpp
           grep -Fq 'parsed_score > BROWSER_RANKING_MAX_SCORE' openttd/src/highscore_gui.cpp
           ! grep -Fq 'entry.score = std::min<uint64_t>(parsed_score' openttd/src/highscore_gui.cpp
-
           grep -Fq 'The browser edition ships its own OpenTTD fonts' openttd/src/strings.cpp
 
           # Tutorial uses actual station facilities and actual visits.
@@ -179,9 +191,11 @@ jobs:
           rm -rf /tmp/v14-native
           mkdir -p /tmp/v14-native
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/v14-native
-          test -s /tmp/v14-native/openttd-runtime.js
-          node --check /tmp/v14-native/openttd-runtime.js
-          grep -Fq 'startup watchdog released a stalled startup dependency' /tmp/v14-native/openttd-runtime.js
+          test -s /tmp/v14-native/openttd.js
+          test -s /tmp/v14-native/openttd.wasm
+          test -s /tmp/v14-native/openttd.data
+          node --check /tmp/v14-native/openttd.js
+          grep -Fq 'startup watchdog released a stalled startup dependency' /tmp/v14-native/openttd.js
 
       - name: Assemble current Playgama package
         env:
@@ -209,7 +223,7 @@ jobs:
           cp playgama/playgama-bridge-config.json dist-v14/playgama-bridge-config.json
           python3 playgama/build-license-bundle.py dist-v14 --repo-license LICENSE
 
-      - name: Install SimpleAI recovery bundle and stable native runtime
+      - name: Install SimpleAI recovery bundle and split native runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -221,14 +235,22 @@ jobs:
             --manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
 
           unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
-          test -s /tmp/rebuilt-runtime/openttd-runtime.js
-          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
+          test -s /tmp/rebuilt-runtime/openttd.js
+          test -s /tmp/rebuilt-runtime/openttd.wasm
+          test -s /tmp/rebuilt-runtime/openttd.data
+          cp /tmp/rebuilt-runtime/openttd.js dist-v14/openttd-runtime.js
+          cp /tmp/rebuilt-runtime/openttd.wasm dist-v14/openttd.wasm
+          cp /tmp/rebuilt-runtime/openttd.data dist-v14/openttd.data
 
           node --check dist-v14/openttd-runtime.js
           node --check dist-v14/openttd-classic-ai.js
           node --check dist-v14/openttd-ranking-core.js
           node --check dist-v14/openttd-playgama-fixes.js
           node --check dist-v14/yandex-bridge.js
+          test "$(stat -c%s dist-v14/openttd-runtime.js)" -lt 20000000
+          test -s dist-v14/openttd.wasm
+          test -s dist-v14/openttd.data
+          ! grep -Fq 'data:application/octet-stream;base64,AGFzb' dist-v14/openttd-runtime.js
           grep -Fq 'startup watchdog released a stalled startup dependency' dist-v14/openttd-runtime.js
           ! grep -Fq 'const COMPETITORS =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-v14/openttd-playgama-fixes.js
@@ -281,6 +303,8 @@ jobs:
           set -euo pipefail
           test -s dist-v14/index.html
           test -s dist-v14/openttd-runtime.js
+          test -s dist-v14/openttd.wasm
+          test -s dist-v14/openttd.data
           test -s dist-v14/openttd-classic-ai.js
           (cd dist-v14 && zip -9 -X -r ../openttd-playgama-v14-root-fixes.zip .)
           unzip -t openttd-playgama-v14-root-fixes.zip
@@ -296,6 +320,8 @@ jobs:
 
           test -s dist-yandex-v14/index.html
           test -s dist-yandex-v14/openttd-runtime.js
+          test -s dist-yandex-v14/openttd.wasm
+          test -s dist-yandex-v14/openttd.data
           test -s dist-yandex-v14/openttd-classic-ai.js
           test -s dist-yandex-v14/openttd-yandex-fixes.js
           test -s dist-yandex-v14/yandex-bridge.js
@@ -306,6 +332,8 @@ jobs:
           grep -Fq '/sdk.js' dist-yandex-v14/yandex-bootstrap.js
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
+          test "$(stat -c%s dist-yandex-v14/openttd-runtime.js)" -lt 20000000
+          ! grep -Fq 'data:application/octet-stream;base64,AGFzb' dist-yandex-v14/openttd-runtime.js
           grep -Fq 'startup watchdog released a stalled startup dependency' dist-yandex-v14/openttd-runtime.js
           ! grep -Fq 'const COMPETITORS =' dist-yandex-v14/openttd-yandex-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-yandex-v14/openttd-yandex-fixes.js
