@@ -55,6 +55,8 @@ if not any(cid == 'ai/534d504c' for cid, _, _ in manifest):
 if not any(cid.startswith(('ai-library/', 'ailibrary/')) for cid, _, _ in manifest):
     raise SystemExit('SimpleAI libraries were not staged')
 
+# These compatibility scripts are consumed by old-API AIs through the same
+# native /ai search path. Copy the official OpenTTD 15.3 files, not a JS clone.
 compat_src = ROOT / 'bin' / 'ai'
 compat_files = sorted(compat_src.glob('compat_*.nut'))
 if not compat_files:
@@ -72,17 +74,28 @@ if preload not in text:
     text = text.replace(anchor, anchor + preload, 1)
     cmake.write_text(text, encoding='utf-8')
 
-# OpenTTD's company tick logic treats interval 0 as "start all configured
-# competitors now", rather than waiting N minutes between AI starts.
 settings = ROOT / 'src' / 'table' / 'settings' / 'difficulty_settings.ini'
 s = settings.read_text(encoding='utf-8')
-block_old = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 10\n'''
-block_new = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 0\n'''
-if block_old in s:
-    s = s.replace(block_old, block_new, 1)
-elif block_new not in s:
+
+# Fix the actual native new-game defaults instead of byte-replacing the built
+# JavaScript afterwards. Three competitors are enabled in normal free play.
+max_old = '''[SDT_VAR]\nvar      = difficulty.max_no_competitors\ntype     = SLE_UINT8\nfrom     = SLV_97\ndef      = 0\n'''
+max_new = '''[SDT_VAR]\nvar      = difficulty.max_no_competitors\ntype     = SLE_UINT8\nfrom     = SLV_97\ndef      = 3\n'''
+if max_old in s:
+    s = s.replace(max_old, max_new, 1)
+elif max_new not in s:
+    raise SystemExit('Could not patch max_no_competitors native default')
+
+# OpenTTD company_cmd.cpp treats interval 0 as a special immediate-fill mode:
+# it posts CCA_NEW_AI until max_no_competitors has been reached.
+interval_old = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 10\n'''
+interval_new = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 0\n'''
+if interval_old in s:
+    s = s.replace(interval_old, interval_new, 1)
+elif interval_new not in s:
     raise SystemExit('Could not patch competitors_interval native default')
 settings.write_text(s, encoding='utf-8')
 
 print('Static AI filesystem staged before TarScanner/AI::Initialize:', manifest)
 print(f'Copied {len(compat_files)} official OpenTTD AI compatibility scripts.')
+print('Native free-play defaults: 3 competitors, immediate-fill interval 0.')
