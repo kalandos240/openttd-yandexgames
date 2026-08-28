@@ -53,41 +53,75 @@ def patch_fixes(path: Path) -> None:
 
 
 def patch_cloud_bridge(path: Path) -> None:
-    """Stop cloud/config sanitisation from silently disabling free-play AIs."""
+    """Keep restored cloud configs from disabling the native browser AIs.
+
+    Historical packages used several different sanitizeOfflineConfig bodies,
+    including early-return variants. Matching/re-writing that function proved
+    brittle. Patch the stable cloud-restore boundary instead: every config that
+    is about to be restored is normalized through one small helper.
+    """
     text = path.read_text(encoding='utf-8')
-    start = text.find('function sanitizeOfflineConfig(config)')
-    end = text.find('function readConfig', start)
-    if start < 0 or end < 0:
-        raise SystemExit('Could not find cloud config sanitizer')
-    block = text[start:end]
 
-    # Preserve three competitors and use OpenTTD's native immediate-start mode.
-    block = block.replace('max_no_competitors = 0', 'max_no_competitors = 3')
-    block = block.replace('competitors_interval = 1', 'competitors_interval = 0')
+    helper_name = 'forceBrowserAIConfig'
+    restore_anchor = '  function restoreCloudConfig(FS, personalDir, cloudConfig) {'
+    if restore_anchor not in text:
+        raise SystemExit('Could not find cloud restore boundary')
 
-    # Old baselines may not have an interval line at all.
-    if 'competitors_interval' not in block:
-        return_anchor = '    return config;\n'
-        addition = """    if (/^competitors_interval\\s*=.*$/m.test(config)) {
-      config = config.replace(/^competitors_interval\\s*=.*$/m, 'competitors_interval = 0');
-    } else if (/^\\[difficulty\\]\\s*$/m.test(config)) {
-      config = config.replace(/^\\[difficulty\\]\\s*$/m, '[difficulty]\\ncompetitors_interval = 0');
+    helper = r'''  function forceBrowserAIConfig(config) {
+    config = String(config || '');
+
+    if (/^max_no_competitors\s*=.*$/m.test(config)) {
+      config = config.replace(/^max_no_competitors\s*=.*$/m, 'max_no_competitors = 3');
+    } else if (/^\[difficulty\]\s*$/m.test(config)) {
+      config = config.replace(/^\[difficulty\]\s*$/m, '[difficulty]\nmax_no_competitors = 3');
     } else {
-      config += (config.length === 0 || config.endsWith('\\n') ? '' : '\\n') + '[difficulty]\\ncompetitors_interval = 0\\n';
+      config += (config && !config.endsWith('\n') ? '\n' : '') + '[difficulty]\nmax_no_competitors = 3\n';
     }
-"""
-        if return_anchor not in block:
-            raise SystemExit('Could not add immediate AI interval to cloud sanitizer')
-        block = block.replace(return_anchor, addition + return_anchor, 1)
 
-    text = text[:start] + block + text[end:]
-    patched = text[start:text.find('function readConfig', start)]
-    if 'max_no_competitors = 0' in patched:
-        raise SystemExit('Cloud bridge still disables competitors')
-    if 'competitors_interval = 1' in patched:
-        raise SystemExit('Cloud bridge still delays competitors')
-    if 'max_no_competitors = 3' not in patched or 'competitors_interval = 0' not in patched:
-        raise SystemExit('Cloud bridge does not preserve immediate AI settings')
+    if (/^competitors_interval\s*=.*$/m.test(config)) {
+      config = config.replace(/^competitors_interval\s*=.*$/m, 'competitors_interval = 0');
+    } else if (/^\[difficulty\]\s*$/m.test(config)) {
+      config = config.replace(/^\[difficulty\]\s*$/m, '[difficulty]\ncompetitors_interval = 0');
+    } else {
+      config += (config && !config.endsWith('\n') ? '\n' : '') + '[difficulty]\ncompetitors_interval = 0\n';
+    }
+    return config;
+  }
+
+'''
+
+    if f'function {helper_name}(config)' not in text:
+        text = text.replace(restore_anchor, helper + restore_anchor, 1)
+
+    # The legacy Yandex bridge writes the cloud string at this single boundary.
+    # Handle both the direct form and historical sanitizer-wrapped form.
+    direct = 'FS.writeFile(configPath, cloudConfig.config);'
+    wrapped = 'FS.writeFile(configPath, sanitizeOfflineConfig(cloudConfig.config));'
+    replacement = 'FS.writeFile(configPath, forceBrowserAIConfig(cloudConfig.config));'
+    if replacement not in text:
+        if direct in text:
+            text = text.replace(direct, replacement, 1)
+        elif wrapped in text:
+            text = text.replace(wrapped, replacement, 1)
+        else:
+            raise SystemExit('Could not route cloud config restore through AI normalizer')
+
+    # If an old sanitizer remains elsewhere, make its literal defaults safe too.
+    text = text.replace('max_no_competitors = 0', 'max_no_competitors = 3')
+    text = text.replace('competitors_interval = 1', 'competitors_interval = 0')
+
+    if f'function {helper_name}(config)' not in text:
+        raise SystemExit('Cloud AI normalizer was not installed')
+    if replacement not in text:
+        raise SystemExit('Cloud restore does not use AI normalizer')
+
+    helper_start = text.find(f'function {helper_name}(config)')
+    helper_end = text.find('function restoreCloudConfig', helper_start)
+    patched = text[helper_start:helper_end]
+    for marker in ('max_no_competitors = 3', 'competitors_interval = 0', 'return config;'):
+        if marker not in patched:
+            raise SystemExit(f'Cloud AI normalizer missing marker: {marker}')
+
     path.write_text(text, encoding='utf-8')
 
 
@@ -121,7 +155,7 @@ def main() -> None:
 
     patch_fixes(fixes)
     patch_cloud_bridge(cloud_bridge)
-    print('SimpleAI recovery bundle installed; native runtime also preloads AI files and configured competitors start immediately.')
+    print('SimpleAI recovery bundle installed; native runtime preloads AI files and restored cloud configs preserve 3 immediate competitors.')
 
 
 if __name__ == '__main__':
