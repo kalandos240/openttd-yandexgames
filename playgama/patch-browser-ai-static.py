@@ -96,6 +96,27 @@ elif interval_new not in s:
     raise SystemExit('Could not patch competitors_interval native default')
 settings.write_text(s, encoding='utf-8')
 
+# The legacy Yandex runtime-cleanup patch was written for an edition with no AI
+# modules. Its pre.js hook runs *after* all source patches and used to rewrite
+# max_no_competitors back to 0 immediately before OpenTTD main(). That silently
+# defeated both the native default above and every AI selected in New Game.
+# This browser edition now ships AI modules, so keep the legacy startup/cloud
+# sanitizers compatible with the native setting instead of disabling companies.
+legacy_cleanup = Path('ci/patch-yandex-runtime-cleanup.py')
+if not legacy_cleanup.is_file():
+    raise SystemExit('Legacy Yandex runtime-cleanup patch is missing')
+cleanup = legacy_cleanup.read_text(encoding='utf-8')
+disable_count = cleanup.count('max_no_competitors = 0')
+if disable_count < 3:
+    raise SystemExit(f'Expected legacy AI-disable literals in runtime cleanup, got {disable_count}')
+cleanup = cleanup.replace('max_no_competitors = 0', 'max_no_competitors = 3')
+cleanup = cleanup.replace(
+    'even though no downloadable AI modules exist in this strictly\n    # offline edition. Force the setting to zero before OpenTTD reads the config.',
+    'while this browser edition now bundles AI modules locally. Keep competitors\n    # enabled before OpenTTD reads the config.',
+)
+legacy_cleanup.write_text(cleanup, encoding='utf-8')
+
 print('Static AI filesystem staged before TarScanner/AI::Initialize:', manifest)
 print(f'Copied {len(compat_files)} official OpenTTD AI compatibility scripts.')
+print(f'Removed {disable_count} legacy runtime AI-disable literals before pre.js generation.')
 print('Native free-play defaults: 3 competitors, immediate-fill interval 0.')
