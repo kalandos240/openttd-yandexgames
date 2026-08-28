@@ -134,7 +134,7 @@ jobs:
           test "$(find openttd/browser_ai -maxdepth 1 -type f -name '*.tar' | wc -l)" -ge 1
           test "$(find openttd/browser_ai/library -type f -name '*.tar' | wc -l)" -ge 1
           test "$(find openttd/browser_ai -maxdepth 1 -type f -name 'compat_*.nut' | wc -l)" -ge 1
-          grep -Fq 'const int required_competitors = this->slot.base();' openttd/src/script/script_gui.cpp
+          grep -Fq 'const int required_competitors = this->slot.base() + 1;' openttd/src/script/script_gui.cpp
           grep -Fq 'IConsoleSetSetting("difficulty.max_no_competitors", required_competitors);' openttd/src/script/script_gui.cpp
           grep -Fq 'if (timeout == 0)' openttd/src/company_cmd.cpp
 
@@ -161,7 +161,9 @@ jobs:
           test -s openttd/build/openttd.wasm
           test -s openttd/build/openttd.data
           test "$(stat -c%s openttd/build/openttd.js)" -lt 20000000
-          test "$(stat -c%s openttd/build/openttd.wasm)" -gt 40000000
+          test "$(stat -c%s openttd/build/openttd.wasm)" -gt 5000000
+          test "$(stat -c%s openttd/build/openttd.wasm)" -lt 30000000
+          test "$(stat -c%s openttd/build/openttd.data)" -gt 30000000
           ! grep -Fq 'SINGLE_FILE=1' openttd/CMakeLists.txt
 
           # Cold IndexedDB/cloud startup can never hold Emscripten forever.
