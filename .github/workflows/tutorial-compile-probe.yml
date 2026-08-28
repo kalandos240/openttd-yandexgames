@@ -118,10 +118,10 @@ jobs:
           grep -Fq 'SetWidgetHighlight' openttd/src/intro_gui.cpp
           grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
           grep -Fq 'ShowBrowserButtonGuide();' openttd/src/toolbar_gui.cpp
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/32' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32                                  :32/32' openttd/src/lang/english.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/32' openttd/src/lang/russian.txt
-          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32                                  :32/32' openttd/src/lang/russian.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_01[[:space:]]*:1/32' openttd/src/lang/english.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_32[[:space:]]*:32/32' openttd/src/lang/english.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_01[[:space:]]*:1/32' openttd/src/lang/russian.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_32[[:space:]]*:32/32' openttd/src/lang/russian.txt
           grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
           grep -Fq 'std::clamp<int32_t>(raw_performance, 0, SCORE_MAX)' openttd/src/highscore_gui.cpp
           ! grep -Fq 'BROWSER_RANKING_VALUE_MASK' openttd/src/highscore_gui.cpp
