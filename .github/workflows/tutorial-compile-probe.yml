@@ -66,6 +66,20 @@ jobs:
           )
           text = text.replace(anchor, anchor + addition, 1)
           p.write_text(text, encoding='utf-8')
+
+          build = Path('legacy/ci/build-final.sh')
+          build_text = build.read_text(encoding='utf-8')
+          fonts_anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          fonts_copy = (
+              fonts_anchor
+              + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf '
+              + 'openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf '
+              + 'openttd/build/yandex_baseset/\n'
+          )
+          if build_text.count(fonts_anchor) != 1:
+              raise SystemExit(f'Expected one base-set staging anchor, got {build_text.count(fonts_anchor)}')
+          build_text = build_text.replace(fonts_anchor, fonts_copy, 1)
+          build.write_text(build_text, encoding='utf-8')
           PY
 
       - name: Compile OpenTTD 15.3 with interactive tutorial
@@ -75,6 +89,9 @@ jobs:
           set -euo pipefail
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
+          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
+            test -s "openttd/build/yandex_baseset/${font}"
+          done
 
           grep -Fq 'WID_SGI_TUTORIAL' openttd/src/widgets/intro_widget.h
           grep -Fq 'struct BrowserTutorialWindow final : Window' openttd/src/intro_gui.cpp
@@ -100,5 +117,8 @@ jobs:
           mkdir -p /tmp/tutorial-runtime
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
           test -s /tmp/tutorial-runtime/openttd-runtime.js
+          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
+            grep -aFq "${font}" /tmp/tutorial-runtime/openttd-runtime.js
+          done
           node --check /tmp/tutorial-runtime/openttd-runtime.js
           echo 'Interactive tutorial compile probe passed.'
