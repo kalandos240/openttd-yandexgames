@@ -267,11 +267,14 @@ jobs:
           test -s dist-yandex-v14/index.html
           test -s dist-yandex-v14/openttd-runtime.js
           test -s dist-yandex-v14/openttd-classic-ai.js
+          test -s dist-yandex-v14/openttd-yandex-fixes.js
           node --check dist-yandex-v14/openttd-runtime.js
           node --check dist-yandex-v14/openttd-ranking-core.js
+          node --check dist-yandex-v14/openttd-yandex-fixes.js
           grep -Fq '/sdk.js' dist-yandex-v14/index.html
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
-          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-yandex-v14/openttd-playgama-fixes.js
+          ! test -e dist-yandex-v14/openttd-playgama-fixes.js
+          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-yandex-v14/openttd-yandex-fixes.js
           grep -Fq 'openttd.localRanking.v4' dist-yandex-v14/openttd-ranking-core.js
 
       - name: Create Yandex Games v14 ZIP
