@@ -8,10 +8,12 @@
   if (window.OpenTTDGlobalRanking) return;
 
   const LEADERBOARD_NAME = 'companyrating';
-  const MAX_SCORE = Number.MAX_SAFE_INTEGER;
+  const MAX_SCORE = 1000;
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
-  const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
-  const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
+  /* v2 intentionally discards pending/submitted values from the obsolete
+     53-bit scoring scheme. */
+  const PENDING_KEY = 'openttd.globalRanking.pendingScore.v2';
+  const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v2';
   const FETCH_FAILURE_BACKOFF_MS = 30000;
 
   let status = 'loading';
@@ -28,6 +30,14 @@
     const n = typeof value === 'number' ? value : Number(String(value));
     if (!Number.isFinite(n)) return 0;
     return Math.max(0, Math.min(MAX_SCORE, Math.trunc(n)));
+  };
+  const readLeaderboardScore = (value) => {
+    const n = typeof value === 'number' ? value : Number(String(value));
+    if (!Number.isFinite(n)) return null;
+    const score = Math.trunc(n);
+    /* Do not clamp old trillion-point entries to 1000. They belong to the
+       retired v1 formula and must disappear from the new readable table. */
+    return score >= 0 && score <= MAX_SCORE ? score : null;
   };
 
   const storageGetNumber = (key) => {
@@ -59,7 +69,7 @@
   };
 
   const snapshotText = () => {
-    const lines = ['version\t1', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
+    const lines = ['version\t2', 'scale\t0-1000', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
     for (const row of entries) {
       lines.push(`entry\t${Math.max(1, Math.trunc(row.rank || 1))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
     }
@@ -112,18 +122,20 @@
         const rows = Array.isArray(result) ? result : [];
         const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
         const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
-        entries = rows.slice(0, 10).map((entry, index) => {
+        entries = rows.map((entry, index) => {
+          const score = readLeaderboardScore(entry?.score);
+          if (score === null) return null;
           const rawRank = Number(entry?.rank);
           const rank = Number.isFinite(rawRank)
             ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
             : index + 1;
           return {
             rank,
-            score: clampScore(entry?.score),
+            score,
             isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
             name: cleanName(entry?.name),
           };
-        });
+        }).filter(Boolean).slice(0, 10);
         nextFetchAllowedAt = 0;
         status = entries.length ? 'ready' : 'empty';
         publishSoon();
