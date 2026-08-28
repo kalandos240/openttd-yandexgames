@@ -71,8 +71,10 @@ async function testPlaygama() {
         assert.strictEqual(name, 'companyrating');
         getEntriesCalls++;
         return [
-          { rank: 0, score: LEGACY_SCORE, id: 'legacy', name: 'Legacy 53-bit entry' },
+          { rank: 0, score: LEGACY_SCORE, id: 'legacy-a', name: 'Legacy 53-bit entry A' },
           { rank: 1, score: 987, id: 'player-me', name: 'Playgama Tester' },
+          { rank: 2, score: LEGACY_SCORE, id: 'legacy-b', name: 'Legacy 53-bit entry B' },
+          { rank: 3, score: 876, id: 'player-two', name: 'Second Playgama Player' },
         ];
       },
       async setScore(name, score) {
@@ -95,7 +97,9 @@ async function testPlaygama() {
   await context.OpenTTDGlobalRanking.requestEntries(true);
   const snapshot = context.getSnapshot();
   assert(snapshot.includes('scale\t0-1000'), snapshot);
-  assert(snapshot.includes('entry\t2\t987\t1\tPlaygama Tester'), snapshot);
+  assert(snapshot.includes('entry\t1\t987\t1\tPlaygama Tester'), snapshot);
+  assert(snapshot.includes('entry\t2\t876\t0\tSecond Playgama Player'), snapshot);
+  assert(!snapshot.includes('entry\t3\t'), `filtered Playgama rows left a display-rank gap:\n${snapshot}`);
   assert(!snapshot.includes(String(LEGACY_SCORE)), 'legacy Playgama score leaked into v2 snapshot');
   assert(!snapshot.includes('Legacy 53-bit entry'), 'legacy Playgama row leaked into v2 snapshot');
 
@@ -143,8 +147,10 @@ async function testYandex() {
         return {
           userRank: authorized ? 1 : -1,
           entries: [
-            { rank: 0, score: LEGACY_SCORE, player: { publicName: 'Legacy 53-bit entry' } },
+            { rank: 0, score: LEGACY_SCORE, player: { publicName: 'Legacy 53-bit entry A' } },
             { rank: 1, score: 965, player: { publicName: 'Yandex Tester' } },
+            { rank: 2, score: LEGACY_SCORE, player: { publicName: 'Legacy 53-bit entry B' } },
+            { rank: 3, score: 854, player: { publicName: 'Second Yandex Player' } },
           ],
         };
       },
@@ -168,8 +174,9 @@ async function testYandex() {
   await context.OpenTTDGlobalRanking.requestEntries(true);
   let snapshot = context.getSnapshot();
   assert(snapshot.includes('scale\t0-1000'), snapshot);
-  assert(snapshot.includes('965'), snapshot);
-  assert(snapshot.includes('Yandex Tester'), snapshot);
+  assert(snapshot.includes('entry\t1\t965\t0\tYandex Tester'), snapshot);
+  assert(snapshot.includes('entry\t2\t854\t0\tSecond Yandex Player'), snapshot);
+  assert(!snapshot.includes('entry\t3\t'), `filtered Yandex rows left a display-rank gap:\n${snapshot}`);
   assert(!snapshot.includes(String(LEGACY_SCORE)), 'legacy Yandex score leaked into v2 snapshot');
   assert(!snapshot.includes('Legacy 53-bit entry'), 'legacy Yandex row leaked into v2 snapshot');
 
@@ -186,6 +193,8 @@ async function testYandex() {
   assert(getEntriesCalls >= 1);
 
   snapshot = context.getSnapshot();
+  assert(snapshot.includes('entry\t1\t965\t1\tYandex Tester'), snapshot);
+  assert(snapshot.includes('entry\t2\t854\t0\tSecond Yandex Player'), snapshot);
   assert(!snapshot.includes(String(LEGACY_SCORE)), snapshot);
   console.log('Yandex bounded ranking provider passed.');
 }
