@@ -145,14 +145,14 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_tutorial_wid
 	/* Keep the footer compact enough for the 640x360 moderation viewport.
 	   Separate navigation from the long Russian action labels so no widget can
 	   overlap another row when GUI/font scaling changes. */
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BT_TEXT), SetMinimalSize(560, 168), SetFill(1, 1), EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BT_TEXT), SetMinimalSize(420, 100), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 26), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 26), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(140, 24), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(140, 24), SetFill(1, 0),
 	EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BT_START_LEVEL), SetStringTip(STR_BROWSER_TUTORIAL_START_LEVEL, STR_BROWSER_TUTORIAL_START_LEVEL_TOOLTIP), SetMinimalSize(250, 28), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_BUTTON_GUIDE), SetStringTip(STR_BROWSER_BUTTON_GUIDE_MENU, STR_BROWSER_BUTTON_GUIDE_TOOLTIP), SetMinimalSize(250, 28), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BT_START_LEVEL), SetStringTip(STR_BROWSER_TUTORIAL_START_LEVEL, STR_BROWSER_TUTORIAL_START_LEVEL_TOOLTIP), SetMinimalSize(190, 26), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BT_BUTTON_GUIDE), SetStringTip(STR_BROWSER_BUTTON_GUIDE_MENU, STR_BROWSER_BUTTON_GUIDE_TOOLTIP), SetMinimalSize(190, 26), SetFill(1, 0),
 	EndContainer(),
 };
 
@@ -181,7 +181,7 @@ struct BrowserTutorialWindow final : Window {
 	void DrawWidget(const Rect &r, WidgetID widget) const override
 	{
 		if (widget != WID_BT_TEXT) return;
-		DrawStringMultiLine(r.Shrink(WidgetDimensions::scaled.sparse), _browser_tutorial_steps[this->step], TC_FROMSTRING, SA_LEFT);
+		DrawStringMultiLine(r.Shrink(WidgetDimensions::scaled.sparse), _browser_tutorial_steps[this->step], TC_BLACK, SA_LEFT);
 	}
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
@@ -254,7 +254,7 @@ static constexpr BrowserButtonGuideEntry _browser_toolbar_guide[] = {
 	{SPR_IMG_QUERY, STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP},
 };
 
-static constexpr size_t BROWSER_GUIDE_ROWS = 4;
+static constexpr size_t BROWSER_GUIDE_ROWS = 3;
 static constexpr size_t BROWSER_MAIN_PAGES = (std::size(_browser_main_menu_guide) + BROWSER_GUIDE_ROWS - 1) / BROWSER_GUIDE_ROWS;
 static constexpr size_t BROWSER_TOOLBAR_PAGES = (std::size(_browser_toolbar_guide) + BROWSER_GUIDE_ROWS - 1) / BROWSER_GUIDE_ROWS;
 static constexpr size_t BROWSER_GUIDE_PAGES = BROWSER_MAIN_PAGES + BROWSER_TOOLBAR_PAGES;
@@ -264,10 +264,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_button_guide
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_BROWSER_MANUAL_CAPTION),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BBG_CONTENT), SetMinimalSize(560, 210), SetFill(1, 1), EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BBG_CONTENT), SetMinimalSize(420, 140), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 26), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 26), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(140, 24), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BBG_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(140, 24), SetFill(1, 0),
 	EndContainer(),
 };
 
@@ -307,9 +307,9 @@ struct BrowserButtonGuideWindow final : Window {
 		for (size_t row = 0; row < BROWSER_GUIDE_ROWS && start + row < count; ++row) {
 			const BrowserButtonGuideEntry &entry = entries[start + row];
 			DrawSprite(entry.sprite, PAL_NONE, body.left + 10, y + 6);
-			Rect text_rect{body.left + 50, y, body.right, y + 43};
-			DrawStringMultiLine(text_rect, entry.description, TC_FROMSTRING, SA_LEFT);
-			y += 47;
+			Rect text_rect{body.left + 50, y, body.right, y + 35};
+			DrawStringMultiLine(text_rect, entry.description, TC_BLACK, SA_LEFT);
+			y += 38;
 		}
 	}
 
@@ -383,10 +383,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_browser_tutorial_coa
 		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
 		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_BROWSER_TUTORIAL_COACH_CAPTION),
 	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BTC_CONTENT), SetMinimalSize(560, 150), SetFill(1, 1), EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN, WID_BTC_CONTENT), SetMinimalSize(420, 105), SetFill(1, 1), EndContainer(),
 	NWidget(NWID_HORIZONTAL), SetPIP(WidgetDimensions::unscaled.sparse.left, WidgetDimensions::unscaled.hsep_wide, WidgetDimensions::unscaled.sparse.right),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BTC_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(180, 28), SetFill(1, 0),
-		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BTC_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(180, 28), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_BTC_PREVIOUS), SetStringTip(STR_BROWSER_TUTORIAL_PREVIOUS), SetMinimalSize(140, 24), SetFill(1, 0),
+		NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_BTC_NEXT), SetStringTip(STR_BROWSER_TUTORIAL_NEXT), SetMinimalSize(140, 24), SetFill(1, 0),
 	EndContainer(),
 };
 
@@ -440,7 +440,7 @@ struct BrowserTutorialCoachWindow final : Window {
 		Rect body = r.Shrink(WidgetDimensions::scaled.sparse);
 		DrawSprite(current.icon, PAL_NONE, body.left + 12, body.top + 16);
 		Rect text_rect{body.left + 58, body.top + 4, body.right, body.bottom - 35};
-		DrawStringMultiLine(text_rect, current.text, TC_FROMSTRING, SA_LEFT);
+		DrawStringMultiLine(text_rect, current.text, TC_BLACK, SA_LEFT);
 		Rect hint_rect{body.left + 58, body.bottom - 30, body.right, body.bottom};
 		DrawStringMultiLine(hint_rect, STR_BROWSER_TUTORIAL_COACH_HINT, TC_YELLOW, SA_LEFT);
 
@@ -453,9 +453,28 @@ struct BrowserTutorialCoachWindow final : Window {
 				const int cx = this->left + (body.left + body.right) / 2;
 				const int cy = this->top + (body.top + body.bottom) / 2;
 				SpriteID arrow = SPR_ARROW_UP;
-				if (std::abs(tx - cx) > std::abs(ty - cy)) arrow = tx < cx ? SPR_ARROW_LEFT : SPR_ARROW_RIGHT;
-				else arrow = ty < cy ? SPR_ARROW_UP : SPR_ARROW_DOWN;
-				DrawSprite(arrow, PAL_NONE, body.left + 20, body.bottom - 27);
+				int arrow_x = (body.left + body.right) / 2;
+				int arrow_y = body.top + 3;
+				if (std::abs(tx - cx) > std::abs(ty - cy)) {
+					if (tx < cx) {
+						arrow = SPR_ARROW_LEFT;
+						arrow_x = body.left + 3;
+						arrow_y = (body.top + body.bottom) / 2;
+					} else {
+						arrow = SPR_ARROW_RIGHT;
+						arrow_x = body.right - 18;
+						arrow_y = (body.top + body.bottom) / 2;
+					}
+				} else if (ty < cy) {
+					arrow = SPR_ARROW_UP;
+					arrow_x = (body.left + body.right) / 2;
+					arrow_y = body.top + 3;
+				} else {
+					arrow = SPR_ARROW_DOWN;
+					arrow_x = (body.left + body.right) / 2;
+					arrow_y = body.bottom - 18;
+				}
+				DrawSprite(arrow, PAL_NONE, arrow_x, arrow_y);
 			}
 		}
 	}
@@ -604,8 +623,8 @@ for path, markers in {
         'SPR_ARROW_LEFT',
         'struct BrowserButtonGuideWindow final : Window',
         'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP',
-        'SetMinimalSize(560, 168)',
-        'static constexpr size_t BROWSER_GUIDE_ROWS = 4;',
+        'SetMinimalSize(420, 100)',
+        'static constexpr size_t BROWSER_GUIDE_ROWS = 3;',
         '_browser_tutorial_coach_desc(\n\tWDP_CENTER',
     ),
     openttd_path: ('BrowserTutorialGameStarted();',),
