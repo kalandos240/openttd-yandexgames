@@ -11,6 +11,10 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -28,6 +32,10 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -86,7 +94,21 @@ jobs:
               raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
           text = text.replace(anchor, anchor + additions, 1)
           p.write_text(text, encoding='utf-8')
-          print('Configured native NewGRF/localization and ranking source patches.')
+
+          build = Path('legacy/ci/build-final.sh')
+          build_text = build.read_text(encoding='utf-8')
+          fonts_anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          fonts_copy = (
+              fonts_anchor
+              + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf '
+              + 'openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf '
+              + 'openttd/build/yandex_baseset/\n'
+          )
+          if build_text.count(fonts_anchor) != 1:
+              raise SystemExit(f'Expected one base-set staging anchor, got {build_text.count(fonts_anchor)}')
+          build_text = build_text.replace(fonts_anchor, fonts_copy, 1)
+          build.write_text(build_text, encoding='utf-8')
+          print('Configured native UI/ranking patches and embedded OpenTTD fonts.')
           PY
 
       - name: Rebuild OpenTTD 15.3 WebAssembly runtime
@@ -96,6 +118,9 @@ jobs:
           set -euo pipefail
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
+          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
+            test -s "openttd/build/yandex_baseset/${font}"
+          done
 
           grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
           grep -Fq 'GetBundledGRFRussianDescription' openttd/src/newgrf_gui.cpp
@@ -159,6 +184,9 @@ jobs:
           set -euo pipefail
           unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
           test -s /tmp/rebuilt-runtime/openttd-runtime.js
+          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
+            grep -aFq "${font}" /tmp/rebuilt-runtime/openttd-runtime.js
+          done
 
           python3 - <<'PY'
           from pathlib import Path
