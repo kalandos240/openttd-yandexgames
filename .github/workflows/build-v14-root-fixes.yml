@@ -66,7 +66,8 @@ jobs:
             playgama/patch-browser-ranking-strict.py \
             playgama/patch-browser-font-web.py \
             playgama/patch-browser-tutorial-real-objectives.py \
-            playgama/patch-browser-ai-static.py
+            playgama/patch-browser-ai-static.py \
+            playgama/install-classic-ai-package.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -74,7 +75,8 @@ jobs:
           text = p.read_text(encoding='utf-8')
 
           # The legacy browser pipeline intentionally disabled AI. Remove that
-          # source hook entirely; v14 enables AI inside OpenTTD itself.
+          # source hook entirely; the current browser build bundles AI locally
+          # while OpenTTD itself owns the player's AI count and start interval.
           ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
           if text.count(ai_off) != 1:
               raise SystemExit(f'Expected one legacy AI-disable hook, got {text.count(ai_off)}')
@@ -90,9 +92,10 @@ jobs:
           text = text.replace(anchor, anchor + additions, 1)
           p.write_text(text, encoding='utf-8')
 
-          # Keep the official OpenTTD fonts in the generated browser data set.
           build = Path('legacy/ci/build-final.sh')
           b = build.read_text(encoding='utf-8')
+
+          # Keep the official OpenTTD fonts in the generated browser data set.
           anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
           addition = (
               anchor
@@ -102,7 +105,35 @@ jobs:
           )
           if b.count(anchor) != 1:
               raise SystemExit('Could not find font staging anchor')
-          build.write_text(b.replace(anchor, addition, 1), encoding='utf-8')
+          b = b.replace(anchor, addition, 1)
+
+          # Large maps grow the Wasm heap quickly. Start with a larger heap to
+          # avoid repeated stop-the-world memory growth during early gameplay.
+          memory_old = 'INITIAL_MEMORY=67108864'
+          if b.count(memory_old) != 1:
+              raise SystemExit(f'Expected one 64 MiB initial-memory setting, got {b.count(memory_old)}')
+          b = b.replace(memory_old, 'INITIAL_MEMORY=134217728', 1)
+
+          # Release already disables game assertions. Explicitly enable Wasm
+          # SIMD/autovectorization and use geometric heap growth so later large
+          # allocations happen less often. This keeps single-threaded OpenTTD
+          # semantics intact while improving the browser hot path.
+          configure_old = '''  emcmake cmake .. \\
+    -DHOST_BINARY_DIR=../build-host \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DOPTION_USE_ASSERTS=OFF
+'''
+          configure_new = '''  emcmake cmake .. \\
+    -DHOST_BINARY_DIR=../build-host \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DOPTION_USE_ASSERTS=OFF \\
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128" \\
+    -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-O3 -msimd128 -s MEMORY_GROWTH_GEOMETRIC_STEP=0.5 -s MEMORY_GROWTH_GEOMETRIC_CAP=268435456"
+'''
+          if b.count(configure_old) != 1:
+              raise SystemExit('Could not find Emscripten Release configure block')
+          b = b.replace(configure_old, configure_new, 1)
+          build.write_text(b, encoding='utf-8')
           PY
 
       - name: Rebuild OpenTTD 15.3 with native AI and real tutorial
@@ -119,17 +150,23 @@ jobs:
           test "$(find openttd/browser_ai/library -type f -name '*.tar' | wc -l)" -ge 1
           test "$(find openttd/browser_ai -maxdepth 1 -type f -name 'compat_*.nut' | wc -l)" -ge 1
 
+          # Browser integration must not redefine the player's AI settings.
           python3 - <<'PY'
           from pathlib import Path
           s = Path('openttd/src/table/settings/difficulty_settings.ini').read_text()
           max_block = s[s.index('var      = difficulty.max_no_competitors'):]
           max_block = max_block[:max_block.index('[SDT_VAR]', 1)]
-          assert 'def      = 3' in max_block, max_block
+          assert 'def      = 0' in max_block, max_block
           interval = s[s.index('var      = difficulty.competitors_interval'):]
           interval = interval[:interval.index('[SDT_VAR]', 1)]
-          assert 'def      = 0' in interval, interval
-          print('Native AI defaults verified: 3 competitors, immediate-fill interval 0.')
+          assert 'def      = 10' in interval, interval
+          print('Native AI defaults remain upstream; player controls AI count and interval.')
           PY
+
+          # Performance build invariants.
+          grep -Fq 'INITIAL_MEMORY=134217728' openttd/CMakeLists.txt
+          grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
+          grep -Fq 'MEMORY_GROWTH_GEOMETRIC_STEP=0.5' openttd/build/CMakeCache.txt
 
           # Ranking rejects stale packed snapshots; it never clamps them to 1000.
           grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
@@ -199,13 +236,17 @@ jobs:
           test -s /tmp/rebuilt-runtime/openttd-runtime.js
           cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
 
-          # No post-build byte replacement: the runtime was compiled with the
-          # intended AI defaults and /ai preload from source.
           node --check dist-v14/openttd-runtime.js
           node --check dist-v14/openttd-classic-ai.js
           node --check dist-v14/openttd-ranking-core.js
           node --check dist-v14/openttd-playgama-fixes.js
-          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-v14/openttd-playgama-fixes.js
+          node --check dist-v14/yandex-bridge.js
+          ! grep -Fq 'const COMPETITORS =' dist-v14/openttd-playgama-fixes.js
+          ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-v14/openttd-playgama-fixes.js
+          ! grep -Fq "'max_no_competitors = 3'" dist-v14/yandex-bridge.js
+          ! grep -Fq "'competitors_interval = 0'" dist-v14/yandex-bridge.js
+          grep -Fq 'gameplayStateRequest' dist-v14/yandex-bridge.js
+          grep -Fq 'setPlatformGameplay(gameplayActive);' dist-v14/yandex-bridge.js
           grep -Fq 'openttd.localRanking.v4' dist-v14/openttd-ranking-core.js
           grep -Fq "'openttd.localRanking.v3'" dist-v14/openttd-ranking-core.js
           grep -Fq "version\\t3" dist-v14/openttd-ranking-core.js
@@ -268,13 +309,20 @@ jobs:
           test -s dist-yandex-v14/openttd-runtime.js
           test -s dist-yandex-v14/openttd-classic-ai.js
           test -s dist-yandex-v14/openttd-yandex-fixes.js
+          test -s dist-yandex-v14/yandex-bridge.js
           node --check dist-yandex-v14/openttd-runtime.js
           node --check dist-yandex-v14/openttd-ranking-core.js
           node --check dist-yandex-v14/openttd-yandex-fixes.js
+          node --check dist-yandex-v14/yandex-bridge.js
           grep -Fq '/sdk.js' dist-yandex-v14/yandex-bootstrap.js
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
-          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-yandex-v14/openttd-yandex-fixes.js
+          ! grep -Fq 'const COMPETITORS =' dist-yandex-v14/openttd-yandex-fixes.js
+          ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-yandex-v14/openttd-yandex-fixes.js
+          ! grep -Fq "'max_no_competitors = 3'" dist-yandex-v14/yandex-bridge.js
+          ! grep -Fq "'competitors_interval = 0'" dist-yandex-v14/yandex-bridge.js
+          grep -Fq 'gameplayStateRequest' dist-yandex-v14/yandex-bridge.js
+          grep -Fq 'setPlatformGameplay(gameplayActive);' dist-yandex-v14/yandex-bridge.js
           grep -Fq 'openttd.localRanking.v4' dist-yandex-v14/openttd-ranking-core.js
 
       - name: Create Yandex Games v14 ZIP
