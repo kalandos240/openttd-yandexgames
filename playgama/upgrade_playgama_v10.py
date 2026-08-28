@@ -34,9 +34,9 @@ def normalize_addon_assets(dist: Path) -> None:
         if asset.endswith(".gz"):
             target_rel = asset[:-3] + ".bin"
             target = dist / target_rel
+            target.parent.mkdir(parents=True, exist_ok=True)
             if not source.is_file():
                 raise SystemExit(f"Manifest asset is missing: {source}")
-            target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 target.unlink()
             source.replace(target)
@@ -200,7 +200,8 @@ def validate_global_ranking_provider(dist: Path) -> None:
 
     required = (
         f"LEADERBOARD_NAME = '{LEADERBOARD_NAME}'",
-        "Number.MAX_SAFE_INTEGER",
+        "const MAX_SCORE = 1000",
+        "readLeaderboardScore",
         "playgamaBridgeReady",
         "leaderboards.getEntries",
         "leaderboards.setScore",
@@ -214,6 +215,7 @@ def validate_global_ranking_provider(dist: Path) -> None:
             raise SystemExit(f"Playgama global ranking provider is missing required marker: {marker}")
 
     forbidden = (
+        "Number.MAX_SAFE_INTEGER",
         "LEADERBOARD_NAME = 'company_rating'",
         "leaderboards.showNativePopup(",
     )
