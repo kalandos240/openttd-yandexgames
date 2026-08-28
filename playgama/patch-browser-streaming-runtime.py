@@ -4,18 +4,23 @@
 The legacy pipeline intentionally used Emscripten SINGLE_FILE and --embed-file
 so index.html could run from file:// with no server. Yandex Games and Playgama
 serve ordinary same-origin files, so that mode is counterproductive: a ~57 MiB
-Wasm binary becomes base64 inside a ~76 MiB JavaScript file, increasing parse,
+Wasm binary becomes base64 inside a huge JavaScript file, increasing parse,
 decode and peak-memory cost on every cold browser profile.
 
-Keep all gameplay/audio/source patches from the tested direct-file pipeline, but
-leave Emscripten's normal JS + WASM + DATA output intact. The final packaging
-step renames only the JS loader to openttd-runtime.js; Wasm/data remain separate
-and cacheable/streamable by the browser.
+Patch only stable individual markers in the historical shell generator. Avoid
+matching a large formatted block so harmless whitespace/quoting cannot break CI.
 """
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f'Expected one {label}, got {count}')
+    return text.replace(old, new, 1)
 
 
 def main() -> None:
@@ -28,60 +33,56 @@ def main() -> None:
         raise SystemExit(f'Legacy direct-file build script is missing: {path}')
     text = path.read_text(encoding='utf-8')
 
-    single_old = r"""patch = r'''# Direct-file build: embed all files and the WebAssembly binary.
-s = s.replace('--preload-file', '--embed-file')
-wasm_marker = '    target_link_libraries(WASM::WASM INTERFACE \"-s WASM_BIGINT\")\\n'
-single_file = '    target_link_libraries(WASM::WASM INTERFACE \"-s SINGLE_FILE=1\")\\n'
-if single_file not in s:
-    if wasm_marker not in s:
-        raise SystemExit('Could not find WASM_BIGINT linker marker')
-    s = s.replace(wasm_marker, wasm_marker + single_file, 1)
-cmake.write_text(s)
-'''
-"""
-    single_new = r"""patch = r'''# Platform delivery: keep JS, Wasm and preloaded data as separate files.
-# Do not convert --preload-file to --embed-file and do not enable SINGLE_FILE.
-if '--embed-file' in s:
-    raise SystemExit('Unexpected embedded-file flag before platform runtime patch')
-if 'SINGLE_FILE=1' in s:
-    raise SystemExit('Unexpected SINGLE_FILE flag before platform runtime patch')
-cmake.write_text(s)
-'''
-"""
-    if text.count(single_old) != 1:
-        raise SystemExit(f'Could not locate historical SINGLE_FILE mutation block ({text.count(single_old)})')
-    text = text.replace(single_old, single_new, 1)
-
-    copy_old = """s = s.replace('cp openttd/build/openttd.wasm dist/\\n', '')
-s = s.replace('cp openttd/build/openttd.data dist/\\n', '')
-s = s.replace('cp openttd/build/openttd.js dist/\\n', '[ ! -f openttd/build/openttd.js ] || cp openttd/build/openttd.js dist/\\n')
-"""
-    copy_new = """# Platform packages keep the generated JS loader, Wasm binary and data archive.
-# build-final.sh already copies all three files into dist/.
-"""
-    if text.count(copy_old) != 1:
-        raise SystemExit(f'Could not locate direct-file output stripping block ({text.count(copy_old)})')
-    text = text.replace(copy_old, copy_new, 1)
-
-    checks_old = """checks = '''test -f dist/index.html\\ntest ! -e dist/openttd.wasm\\ntest ! -e dist/openttd.data\\n\\n'''
-"""
-    checks_new = """checks = '''test -f dist/index.html\\ntest -s dist/openttd.js\\ntest -s dist/openttd.wasm\\ntest -s dist/openttd.data\\n\\n'''
-"""
-    if text.count(checks_old) != 1:
-        raise SystemExit(f'Could not locate direct-file output assertions ({text.count(checks_old)})')
-    text = text.replace(checks_old, checks_new, 1)
-
-    text = text.replace(
-        '# - all Emscripten resources are embedded, so index.html works via file://',
-        '# - gameplay/audio patches come from the tested direct-file pipeline, but platform output stays split',
-        1,
+    # Keep Emscripten preload files external instead of converting them to
+    # base64-embedded assets.
+    text = replace_once(
+        text,
+        "s = s.replace('--preload-file', '--embed-file')\n",
+        "# Platform delivery keeps --preload-file resources external.\n",
+        'preload-to-embed mutation',
     )
 
+    # Leave the old conditional structure intact but make its sentinel the
+    # empty string. Empty string is always present in `s`, so the insertion
+    # branch can never add SINGLE_FILE=1.
+    text = replace_once(
+        text,
+        "single_file = '    target_link_libraries(WASM::WASM INTERFACE \"-s SINGLE_FILE=1\")\\n'\n",
+        "single_file = ''  # Platform build: never add SINGLE_FILE.\n",
+        'SINGLE_FILE linker marker',
+    )
+
+    # build-final.sh already copies all normal Emscripten outputs. Remove the
+    # historical post-processing that deliberately discarded wasm/data.
+    for old, label in (
+        ("s = s.replace('cp openttd/build/openttd.wasm dist/\\n', '')\n", 'wasm output stripping'),
+        ("s = s.replace('cp openttd/build/openttd.data dist/\\n', '')\n", 'data output stripping'),
+        ("s = s.replace('cp openttd/build/openttd.js dist/\\n', '[ ! -f openttd/build/openttd.js ] || cp openttd/build/openttd.js dist/\\n')\n", 'JS copy mutation'),
+    ):
+        text = replace_once(text, old, '', label)
+
+    text = replace_once(
+        text,
+        "test ! -e dist/openttd.wasm\\ntest ! -e dist/openttd.data",
+        "test -s dist/openttd.js\\ntest -s dist/openttd.wasm\\ntest -s dist/openttd.data",
+        'direct-file output assertions',
+    )
+
+    old_header = '# - all Emscripten resources are embedded, so index.html works via file://'
+    if old_header in text:
+        text = text.replace(
+            old_header,
+            '# - platform output keeps JS, WebAssembly and preload data as separate cacheable files',
+            1,
+        )
+
     for forbidden in (
-        "s.replace('--preload-file', '--embed-file')",
-        'single_file =',
+        "s = s.replace('--preload-file', '--embed-file')",
+        'SINGLE_FILE=1',
         "test ! -e dist/openttd.wasm",
         "test ! -e dist/openttd.data",
+        "s = s.replace('cp openttd/build/openttd.wasm dist/",
+        "s = s.replace('cp openttd/build/openttd.data dist/",
     ):
         if forbidden in text:
             raise SystemExit(f'Historical single-file behaviour remains: {forbidden}')
