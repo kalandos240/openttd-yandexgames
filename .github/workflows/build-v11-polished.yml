@@ -11,10 +11,17 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-v2.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/patch-browser-tutorial-polish.py'
+      - 'playgama/patch-browser-tutorial-quality.py'
+      - 'playgama/patch-browser-tutorial-layout-normalize.py'
+      - 'playgama/patch-browser-tutorial-ux.py'
+      - 'playgama/patch-browser-tutorial-dynamic-targets.py'
+      - 'playgama/patch-browser-tutorial-v2.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -33,10 +40,17 @@ on:
       - '.github/workflows/build-v11-polished.yml'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-v2.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
       - 'playgama/patch-browser-tutorial-polish.py'
+      - 'playgama/patch-browser-tutorial-quality.py'
+      - 'playgama/patch-browser-tutorial-layout-normalize.py'
+      - 'playgama/patch-browser-tutorial-ux.py'
+      - 'playgama/patch-browser-tutorial-dynamic-targets.py'
+      - 'playgama/patch-browser-tutorial-v2.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -80,7 +94,20 @@ jobs:
           set -euo pipefail
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
-          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py legacy/ci/patch-browser-ranking.py
+          python3 -m py_compile \
+            playgama/patch-browser-ranking-core.py \
+            playgama/patch-browser-ranking-v2.py \
+            playgama/patch-browser-tutorial.py \
+            playgama/patch-browser-tutorial-toolbar.py \
+            playgama/patch-browser-tutorial-level.py \
+            playgama/patch-browser-tutorial-polish.py \
+            playgama/patch-browser-tutorial-quality.py \
+            playgama/patch-browser-tutorial-layout-normalize.py \
+            playgama/patch-browser-tutorial-ux.py \
+            playgama/patch-browser-tutorial-dynamic-targets.py \
+            playgama/patch-browser-tutorial-v2.py \
+            legacy/ci/patch-playgama-newgrf-main-menu.py \
+            legacy/ci/patch-browser-ranking.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -101,7 +128,7 @@ jobs:
               raise SystemExit(f'Expected exactly one source patch anchor, got {text.count(anchor)}')
           text = text.replace(anchor, anchor + additions, 1)
           p.write_text(text, encoding='utf-8')
-          print('Configured native NewGRF/localization and ranking source patches.')
+          print('Configured native NewGRF/localization, bounded ranking and multimodal tutorial source patches.')
           PY
 
       - name: Rebuild OpenTTD 15.3 WebAssembly runtime
@@ -117,15 +144,32 @@ jobs:
           grep -Fq 'GetCurrentLanguageIsoCode().starts_with("ru")' openttd/src/newgrf_gui.cpp
           grep -Fq 'Комплексный набор поездов' openttd/src/newgrf_gui.cpp
 
-          grep -Fq 'BROWSER_RANKING_MAX_SCORE = (1ULL << 53) - 1' openttd/src/highscore_gui.cpp
-          grep -Fq 'performance * 1023ULL / SCORE_MAX' openttd/src/highscore_gui.cpp
-          grep -Fq 'CalculateCompanyValue(c, true).base()' openttd/src/highscore_gui.cpp
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'std::clamp<int32_t>(raw_performance, 0, SCORE_MAX)' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'BROWSER_RANKING_VALUE_MASK' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'CalculateCompanyValue(c, true).base()' openttd/src/highscore_gui.cpp
           grep -Fq 'BrowserRankingCheatsUsed()' openttd/src/highscore_gui.cpp
           grep -Fq 'OpenTTDRankingCore?.submit?.' openttd/src/highscore_gui.cpp
           grep -Fq 'OpenTTDGlobalRanking?.requestEntries?.' openttd/src/highscore_gui.cpp
           grep -Fq 'STR_BROWSER_RANKING_LOCAL' openttd/src/lang/russian.txt
           grep -Fq 'STR_BROWSER_RANKING_GLOBAL' openttd/src/lang/russian.txt
-          grep -Fq 'Использование читов отключает учёт очков' openttd/src/lang/russian.txt
+          grep -Fq 'эффективности компании OpenTTD (0-1000)' openttd/src/lang/russian.txt
+
+          grep -Fq 'this->Close(); StartBrowserTutorialLevel();' openttd/src/intro_gui.cpp
+          grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
+          grep -Fq 'custom_town_number = 8' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.industry_density = ID_HIGH' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.quantity_sea_lakes = 2' openttd/src/intro_gui.cpp
+          grep -Fq 'SetMinimalSize(74, 18)' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::FreightDelivered' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::ShipOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::AircraftOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::TownGrowthFunded' openttd/src/intro_gui.cpp
+          grep -Fq 'IsShipDepotTile(depot->xy)' openttd/src/intro_gui.cpp
+          grep -Fq 'town->fund_buildings_months > 0' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_01                                  :1/32' openttd/src/lang/russian.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32                                  :32/32' openttd/src/lang/russian.txt
 
       - name: Download verified Playgama v8 content package
         env:
@@ -226,10 +270,14 @@ jobs:
           test -s dist-v12/openttd-ranking-core.js
           test -s dist-v12/openttd-global-ranking.js
           grep -Fq 'Module.setCanvasSize(width, height)' dist-v12/openttd-full-viewport.js
-          grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-ranking-core.js
-          grep -Fq 'openttd.localRanking.v2' dist-v12/openttd-ranking-core.js
+          grep -Fq 'const MAX_SCORE = 1000' dist-v12/openttd-ranking-core.js
+          grep -Fq 'openttd.localRanking.v3' dist-v12/openttd-ranking-core.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-ranking-core.js
           grep -Fq 'window.OpenTTDGlobalRanking?.submitScore?.' dist-v12/openttd-ranking-core.js
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" dist-v12/openttd-global-ranking.js
+          grep -Fq 'const MAX_SCORE = 1000' dist-v12/openttd-global-ranking.js
+          grep -Fq 'readLeaderboardScore' dist-v12/openttd-global-ranking.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-global-ranking.js
           ! grep -Fq 'company_rating' dist-v12/openttd-global-ranking.js
           grep -Fq 'playgamaBridgeReady' dist-v12/openttd-global-ranking.js
           grep -Fq 'leaderboards.getEntries' dist-v12/openttd-global-ranking.js
@@ -257,7 +305,7 @@ jobs:
           python3 -m json.tool dist-v12/OPENTTD-BUNDLED-ADDONS.json >/dev/null
           python3 -m json.tool dist-v12/playgama-bridge-config.json >/dev/null
 
-      - name: Unit-test local 53-bit ranking core
+      - name: Unit-test local 0-1000 ranking core
         shell: bash
         run: |
           set -euo pipefail
@@ -265,6 +313,7 @@ jobs:
           const fs = require('fs');
           global.window = global;
           const store = new Map();
+          store.set('openttd.localRanking.v2', JSON.stringify([{ name: 'Legacy', score: Number.MAX_SAFE_INTEGER }]));
           global.localStorage = {
             getItem: key => store.has(key) ? store.get(key) : null,
             setItem: (key, value) => store.set(key, String(value)),
@@ -275,12 +324,13 @@ jobs:
             writeFile(path, data) { if (path.includes('local-ranking')) snapshot = String(data); },
           };
           eval(fs.readFileSync('dist-v12/openttd-ranking-core.js', 'utf8'));
-          if (OpenTTDRankingCore.maxScore !== Number.MAX_SAFE_INTEGER) throw new Error('wrong max score');
-          OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER), 'Test Company', true);
+          if (OpenTTDRankingCore.maxScore !== 1000) throw new Error('wrong max score');
+          OpenTTDRankingCore.submit('1000', 'Test Company', true);
           OpenTTDRankingCore.requestLocalSnapshot();
-          if (!snapshot.includes(String(Number.MAX_SAFE_INTEGER))) throw new Error('max safe score not preserved exactly');
-          if (!snapshot.includes('Test Company')) throw new Error('company record missing');
-          console.log('Local 53-bit ranking core passed.');
+          if (!snapshot.includes('scale\t0-1000')) throw new Error('bounded score scale missing');
+          if (!snapshot.includes('entry\t1\t1000\tTest Company')) throw new Error('1000-point record missing');
+          if (snapshot.includes('Legacy')) throw new Error('legacy v2 local record leaked into v3 table');
+          console.log('Local 0-1000 ranking core passed.');
           NODE
 
       - name: Verify optional add-on payloads
@@ -345,9 +395,13 @@ jobs:
 
           test -s dist-yandex/openttd-ranking-core.js
           test -s dist-yandex/openttd-global-ranking.js
+          grep -Fq 'const MAX_SCORE = 1000' dist-yandex/openttd-ranking-core.js
+          grep -Fq 'openttd.localRanking.v3' dist-yandex/openttd-ranking-core.js
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" dist-yandex/openttd-global-ranking.js
+          grep -Fq 'const MAX_SCORE = 1000' dist-yandex/openttd-global-ranking.js
+          grep -Fq 'readLeaderboardScore' dist-yandex/openttd-global-ranking.js
           ! grep -Fq 'company_rating' dist-yandex/openttd-global-ranking.js
-          grep -Fq 'Number.MAX_SAFE_INTEGER' dist-yandex/openttd-global-ranking.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' dist-yandex/openttd-global-ranking.js
           grep -Fq 'isAvailableMethod' dist-yandex/openttd-global-ranking.js
           grep -Fq 'leaderboards.setScore' dist-yandex/openttd-global-ranking.js
           grep -Fq 'leaderboards.getEntries' dist-yandex/openttd-global-ranking.js
@@ -421,7 +475,7 @@ jobs:
             },
           });
           eval(fs.readFileSync('dist-yandex/openttd-global-ranking.js', 'utf8'));
-          OpenTTDGlobalRanking.submitScore(String(Number.MAX_SAFE_INTEGER));
+          OpenTTDGlobalRanking.submitScore('1000');
           setTimeout(() => {
             if (authOpened !== 0) throw new Error('authorization dialog opened without user action');
             if (submitted !== 0) throw new Error('unauthorized score was submitted');
