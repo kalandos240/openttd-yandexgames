@@ -1,0 +1,301 @@
+name: Build OpenTTD v14 root fixes Playgama + Yandex
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/build-v14-root-fixes.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-readable.py'
+      - 'playgama/patch-browser-ranking-strict.py'
+      - 'playgama/patch-browser-font-web.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-native-layout.py'
+      - 'playgama/patch-browser-tutorial-objectives.py'
+      - 'playgama/patch-browser-tutorial-compile-fix.py'
+      - 'playgama/patch-browser-tutorial-final-polish.py'
+      - 'playgama/patch-browser-tutorial-v15-compat.py'
+      - 'playgama/patch-browser-tutorial-real-objectives.py'
+      - 'playgama/patch-browser-ai-static.py'
+      - 'playgama/openttd-ranking-core.js'
+      - 'playgama/install-classic-ai-package.py'
+      - 'playgama/upgrade_playgama_v10.py'
+      - 'yandex/package_yandex_from_playgama.py'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  V8_ARTIFACT_ID: '9306987648'
+  LEGACY_BUILD_REF: fix/direct-file-launch
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout root-fix sources
+        uses: actions/checkout@v4
+
+      - name: Checkout tested OpenTTD browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LEGACY_BUILD_REF }}
+          path: legacy
+
+      - name: Wire native root-cause patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+
+          cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          python3 -m py_compile \
+            legacy/ci/patch-playgama-newgrf-main-menu.py \
+            legacy/ci/patch-browser-ranking.py \
+            playgama/patch-browser-ranking-strict.py \
+            playgama/patch-browser-font-web.py \
+            playgama/patch-browser-tutorial-real-objectives.py \
+            playgama/patch-browser-ai-static.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+
+          # The legacy browser pipeline intentionally disabled AI. Remove that
+          # source hook entirely; v14 enables AI inside OpenTTD itself.
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected one legacy AI-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          additions = (
+              "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
+          )
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one source patch anchor, got {text.count(anchor)}')
+          text = text.replace(anchor, anchor + additions, 1)
+          p.write_text(text, encoding='utf-8')
+
+          # Keep the official OpenTTD fonts in the generated browser data set.
+          build = Path('legacy/ci/build-final.sh')
+          b = build.read_text(encoding='utf-8')
+          anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          addition = (
+              anchor
+              + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf '
+              + 'openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf '
+              + 'openttd/build/yandex_baseset/\n'
+          )
+          if b.count(anchor) != 1:
+              raise SystemExit('Could not find font staging anchor')
+          build.write_text(b.replace(anchor, addition, 1), encoding='utf-8')
+          PY
+
+      - name: Rebuild OpenTTD 15.3 with native AI and real tutorial
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          # AI must be part of the Emscripten filesystem before AI::Initialize.
+          grep -Fq 'browser_ai@/ai' openttd/CMakeLists.txt
+          test "$(find openttd/browser_ai -maxdepth 1 -type f -name '*.tar' | wc -l)" -ge 1
+          test "$(find openttd/browser_ai/library -type f -name '*.tar' | wc -l)" -ge 1
+          test "$(find openttd/browser_ai -maxdepth 1 -type f -name 'compat_*.nut' | wc -l)" -ge 1
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('openttd/src/table/settings/difficulty_settings.ini').read_text()
+          max_block = s[s.index('var      = difficulty.max_no_competitors'):]
+          max_block = max_block[:max_block.index('[SDT_VAR]', 1)]
+          assert 'def      = 3' in max_block, max_block
+          interval = s[s.index('var      = difficulty.competitors_interval'):]
+          interval = interval[:interval.index('[SDT_VAR]', 1)]
+          assert 'def      = 0' in interval, interval
+          print('Native AI defaults verified: 3 competitors, immediate-fill interval 0.')
+          PY
+
+          # Ranking rejects stale packed snapshots; it never clamps them to 1000.
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'fields[1] == "3"' openttd/src/highscore_gui.cpp
+          grep -Fq 'parsed_score > BROWSER_RANKING_MAX_SCORE' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'entry.score = std::min<uint64_t>(parsed_score' openttd/src/highscore_gui.cpp
+
+          # The browser build no longer raises the desktop-only missing-glyph dialog.
+          grep -Fq 'The browser edition ships its own OpenTTD fonts' openttd/src/strings.cpp
+
+          # Tutorial uses actual station facilities and actual visits, not tile-count proxies.
+          grep -Fq 'Практическое обучение - реальные цели' openttd/src/lang/russian.txt
+          grep -Fq 'BrowserTutorialObjective::TrainService' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialCargoIndustryStationCount' openttd/src/intro_gui.cpp
+          grep -Fq 'StationFacility::Dock) >= 2' openttd/src/intro_gui.cpp
+          grep -Fq 'HVOT_SHIP' openttd/src/intro_gui.cpp
+          grep -Fq 'StationFacility::Airport) >= 2' openttd/src/intro_gui.cpp
+          grep -Fq 'HVOT_AIRCRAFT' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialServedTownCount' openttd/src/intro_gui.cpp
+          grep -Fq 'custom_industry_number = 16' openttd/src/intro_gui.cpp
+          grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
+
+          rm -rf /tmp/v14-native
+          mkdir -p /tmp/v14-native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/v14-native
+          test -s /tmp/v14-native/openttd-runtime.js
+          node --check /tmp/v14-native/openttd-runtime.js
+
+      - name: Assemble current Playgama package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
+            -o /tmp/v8-artifact.zip
+
+          rm -rf /tmp/v8-artifact dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai
+          mkdir -p /tmp/v8-artifact dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai
+          unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
+          inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
+          test -s "$inner"
+          unzip -q "$inner" -d dist-v14
+
+          python3 playgama/upgrade_playgama_v10.py dist-v14 \
+            --loader playgama/openttd-bundled-addons.js \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js \
+            --adapter playgama/playgama-yandex-compat.js
+          cp playgama/playgama-bridge-config.json dist-v14/playgama-bridge-config.json
+          python3 playgama/build-license-bundle.py dist-v14 --repo-license LICENSE
+
+      - name: Install SimpleAI recovery bundle and native runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 playgama/build-simple-ai-bundle.py \
+            --output-js /tmp/classic-ai/openttd-classic-ai.js \
+            --output-manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
+          python3 playgama/install-classic-ai-package.py dist-v14 \
+            --bundle /tmp/classic-ai/openttd-classic-ai.js \
+            --manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
+
+          unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
+          test -s /tmp/rebuilt-runtime/openttd-runtime.js
+          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
+
+          # No post-build byte replacement: the runtime was compiled with the
+          # intended AI defaults and /ai preload from source.
+          node --check dist-v14/openttd-runtime.js
+          node --check dist-v14/openttd-classic-ai.js
+          node --check dist-v14/openttd-ranking-core.js
+          node --check dist-v14/openttd-playgama-fixes.js
+          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-v14/openttd-playgama-fixes.js
+          grep -Fq 'openttd.localRanking.v4' dist-v14/openttd-ranking-core.js
+          grep -Fq "'openttd.localRanking.v3'" dist-v14/openttd-ranking-core.js
+          grep -Fq "version\\t3" dist-v14/openttd-ranking-core.js
+
+      - name: Unit-test strict local ranking purge
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const store = new Map([
+            ['openttd.localRanking.v1', '[]'],
+            ['openttd.localRanking.v2', JSON.stringify([{name:'packed',score:Number.MAX_SAFE_INTEGER}])],
+            ['openttd.localRanking.v3', JSON.stringify([{name:'stale',score:1000}])],
+          ]);
+          global.localStorage = {
+            getItem: k => store.has(k) ? store.get(k) : null,
+            setItem: (k,v) => store.set(k,String(v)),
+            removeItem: k => store.delete(k),
+          };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('local-ranking')) snapshot = String(data); },
+          };
+          eval(fs.readFileSync('dist-v14/openttd-ranking-core.js','utf8'));
+          for (const key of ['openttd.localRanking.v1','openttd.localRanking.v2','openttd.localRanking.v3']) {
+            if (store.has(key)) throw new Error('legacy key survived: ' + key);
+          }
+          if (OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER),'broken',true)) throw new Error('oversized score accepted');
+          if (!OpenTTDRankingCore.submit('1000','Real Company',true)) throw new Error('valid score rejected');
+          OpenTTDRankingCore.requestLocalSnapshot();
+          if (!snapshot.startsWith('version\t3\n')) throw new Error('wrong snapshot version: ' + snapshot);
+          if (!snapshot.includes('entry\t1\t1000\tReal Company')) throw new Error('valid entry missing');
+          if (snapshot.includes('packed') || snapshot.includes('stale') || snapshot.includes('broken')) throw new Error('legacy data leaked');
+          console.log('Strict local ranking purge passed.');
+          NODE
+
+      - name: Create Playgama v14 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-v14/index.html
+          test -s dist-v14/openttd-runtime.js
+          test -s dist-v14/openttd-classic-ai.js
+          (cd dist-v14 && zip -9 -X -r ../openttd-playgama-v14-root-fixes.zip .)
+          unzip -t openttd-playgama-v14-root-fixes.zip
+          sha256sum openttd-playgama-v14-root-fixes.zip > openttd-playgama-v14-root-fixes.zip.sha256
+
+      - name: Convert exact v14 base to Yandex Games
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-yandex-v14
+          cp -a dist-v14 dist-yandex-v14
+          python3 yandex/package_yandex_from_playgama.py dist-yandex-v14
+
+          test -s dist-yandex-v14/index.html
+          test -s dist-yandex-v14/openttd-runtime.js
+          test -s dist-yandex-v14/openttd-classic-ai.js
+          node --check dist-yandex-v14/openttd-runtime.js
+          node --check dist-yandex-v14/openttd-ranking-core.js
+          grep -Fq '/sdk.js' dist-yandex-v14/index.html
+          ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
+          grep -Fq 'const COMPETITOR_INTERVAL = 0' dist-yandex-v14/openttd-playgama-fixes.js
+          grep -Fq 'openttd.localRanking.v4' dist-yandex-v14/openttd-ranking-core.js
+
+      - name: Create Yandex Games v14 ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd dist-yandex-v14 && zip -9 -X -r ../openttd-yandexgames-v14-root-fixes.zip .)
+          unzip -t openttd-yandexgames-v14-root-fixes.zip
+          sha256sum openttd-yandexgames-v14-root-fixes.zip > openttd-yandexgames-v14-root-fixes.zip.sha256
+
+      - name: Upload Playgama v14 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v14-root-fixes
+          path: |
+            openttd-playgama-v14-root-fixes.zip
+            openttd-playgama-v14-root-fixes.zip.sha256
+          if-no-files-found: error
+
+      - name: Upload Yandex Games v14 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-v14-root-fixes
+          path: |
+            openttd-yandexgames-v14-root-fixes.zip
+            openttd-yandexgames-v14-root-fixes.zip.sha256
+          if-no-files-found: error
