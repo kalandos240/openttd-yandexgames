@@ -22,6 +22,7 @@ on:
       - 'playgama/patch-browser-tutorial-v15-compat.py'
       - 'playgama/patch-browser-tutorial-real-objectives.py'
       - 'playgama/patch-browser-ai-static.py'
+      - 'playgama/patch-browser-build-performance.py'
       - 'playgama/openttd-ranking-core.js'
       - 'playgama/install-classic-ai-package.py'
       - 'playgama/upgrade_playgama_v10.py'
@@ -67,6 +68,7 @@ jobs:
             playgama/patch-browser-font-web.py \
             playgama/patch-browser-tutorial-real-objectives.py \
             playgama/patch-browser-ai-static.py \
+            playgama/patch-browser-build-performance.py \
             playgama/install-classic-ai-package.py
 
           python3 - <<'PY'
@@ -75,8 +77,7 @@ jobs:
           text = p.read_text(encoding='utf-8')
 
           # The legacy browser pipeline intentionally disabled AI. Remove that
-          # source hook entirely; the current browser build bundles AI locally
-          # while OpenTTD itself owns the player's AI count and start interval.
+          # source hook entirely; OpenTTD now owns the player's AI settings.
           ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
           if text.count(ai_off) != 1:
               raise SystemExit(f'Expected one legacy AI-disable hook, got {text.count(ai_off)}')
@@ -92,10 +93,9 @@ jobs:
           text = text.replace(anchor, anchor + additions, 1)
           p.write_text(text, encoding='utf-8')
 
+          # Keep the official OpenTTD fonts in the generated browser data set.
           build = Path('legacy/ci/build-final.sh')
           b = build.read_text(encoding='utf-8')
-
-          # Keep the official OpenTTD fonts in the generated browser data set.
           anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
           addition = (
               anchor
@@ -105,36 +105,10 @@ jobs:
           )
           if b.count(anchor) != 1:
               raise SystemExit('Could not find font staging anchor')
-          b = b.replace(anchor, addition, 1)
-
-          # Large maps grow the Wasm heap quickly. Start with a larger heap to
-          # avoid repeated stop-the-world memory growth during early gameplay.
-          memory_old = 'INITIAL_MEMORY=67108864'
-          if b.count(memory_old) != 1:
-              raise SystemExit(f'Expected one 64 MiB initial-memory setting, got {b.count(memory_old)}')
-          b = b.replace(memory_old, 'INITIAL_MEMORY=134217728', 1)
-
-          # Release already disables game assertions. Explicitly enable Wasm
-          # SIMD/autovectorization and use geometric heap growth so later large
-          # allocations happen less often. This keeps single-threaded OpenTTD
-          # semantics intact while improving the browser hot path.
-          configure_old = '''  emcmake cmake .. \\
-    -DHOST_BINARY_DIR=../build-host \\
-    -DCMAKE_BUILD_TYPE=Release \\
-    -DOPTION_USE_ASSERTS=OFF
-'''
-          configure_new = '''  emcmake cmake .. \\
-    -DHOST_BINARY_DIR=../build-host \\
-    -DCMAKE_BUILD_TYPE=Release \\
-    -DOPTION_USE_ASSERTS=OFF \\
-    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128" \\
-    -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-O3 -msimd128 -s MEMORY_GROWTH_GEOMETRIC_STEP=0.5 -s MEMORY_GROWTH_GEOMETRIC_CAP=268435456"
-'''
-          if b.count(configure_old) != 1:
-              raise SystemExit('Could not find Emscripten Release configure block')
-          b = b.replace(configure_old, configure_new, 1)
-          build.write_text(b, encoding='utf-8')
+          build.write_text(b.replace(anchor, addition, 1), encoding='utf-8')
           PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
 
       - name: Rebuild OpenTTD 15.3 with native AI and real tutorial
         working-directory: legacy
@@ -144,13 +118,13 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
-          # AI must be part of the Emscripten filesystem before AI::Initialize.
+          # AI files are available before AI::Initialize, but the browser layer
+          # does not choose count or interval for the player.
           grep -Fq 'browser_ai@/ai' openttd/CMakeLists.txt
           test "$(find openttd/browser_ai -maxdepth 1 -type f -name '*.tar' | wc -l)" -ge 1
           test "$(find openttd/browser_ai/library -type f -name '*.tar' | wc -l)" -ge 1
           test "$(find openttd/browser_ai -maxdepth 1 -type f -name 'compat_*.nut' | wc -l)" -ge 1
 
-          # Browser integration must not redefine the player's AI settings.
           python3 - <<'PY'
           from pathlib import Path
           s = Path('openttd/src/table/settings/difficulty_settings.ini').read_text()
@@ -174,10 +148,9 @@ jobs:
           grep -Fq 'parsed_score > BROWSER_RANKING_MAX_SCORE' openttd/src/highscore_gui.cpp
           ! grep -Fq 'entry.score = std::min<uint64_t>(parsed_score' openttd/src/highscore_gui.cpp
 
-          # The browser build no longer raises the desktop-only missing-glyph dialog.
           grep -Fq 'The browser edition ships its own OpenTTD fonts' openttd/src/strings.cpp
 
-          # Tutorial uses actual station facilities and actual visits, not tile-count proxies.
+          # Tutorial uses actual station facilities and actual visits.
           grep -Fq 'Практическое обучение - реальные цели' openttd/src/lang/russian.txt
           grep -Fq 'BrowserTutorialObjective::TrainService' openttd/src/intro_gui.cpp
           grep -Fq 'BrowserTutorialCargoIndustryStationCount' openttd/src/intro_gui.cpp
