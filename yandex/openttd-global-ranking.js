@@ -52,7 +52,7 @@
   const snapshotText = () => {
     const lines = ['version\t2', 'scale\t0-1000', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
     for (const row of entries) {
-      lines.push(`entry\t${Math.max(0, Math.trunc(row.rank || 0))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
+      lines.push(`entry\t${Math.max(1, Math.trunc(row.rank || 1))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
     }
     return lines.join('\n') + '\n';
   };
@@ -103,7 +103,6 @@
     if (score === null) return null;
     const player = entry?.player || {};
     return {
-      rank: Number.isFinite(entry?.rank) ? entry.rank + 1 : 0,
       score,
       isUser: Number.isFinite(userRank) && entry?.rank === userRank,
       name: cleanName(player.publicName || player.getName?.() || 'Player'),
@@ -135,7 +134,7 @@
         /* Only treat userRank as meaningful after authorization. */
         const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
         entries = Array.isArray(result?.entries)
-          ? result.entries.map((entry) => normalizeEntry(entry, userRank)).filter(Boolean).slice(0, 10)
+          ? result.entries.map((entry) => normalizeEntry(entry, userRank)).filter(Boolean).slice(0, 10).map((row, index) => ({ ...row, rank: index + 1 }))
           : [];
         nextFetchAllowedAt = 0;
         status = entries.length ? 'ready' : 'empty';
