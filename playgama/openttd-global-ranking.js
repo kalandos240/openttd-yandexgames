@@ -121,21 +121,15 @@
         const result = await leaderboards.getEntries(LEADERBOARD_NAME);
         const rows = Array.isArray(result) ? result : [];
         const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
-        const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
-        entries = rows.map((entry, index) => {
+        entries = rows.map((entry) => {
           const score = readLeaderboardScore(entry?.score);
           if (score === null) return null;
-          const rawRank = Number(entry?.rank);
-          const rank = Number.isFinite(rawRank)
-            ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
-            : index + 1;
           return {
-            rank,
             score,
             isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
             name: cleanName(entry?.name),
           };
-        }).filter(Boolean).slice(0, 10);
+        }).filter(Boolean).slice(0, 10).map((row, index) => ({ ...row, rank: index + 1 }));
         nextFetchAllowedAt = 0;
         status = entries.length ? 'ready' : 'empty';
         publishSoon();
