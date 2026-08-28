@@ -1,4 +1,4 @@
-name: Build OpenTTD v12 rankings Playgama + Yandex
+name: Build OpenTTD v13 full tutorial + AI Playgama + Yandex
 
 on:
   workflow_dispatch:
@@ -12,9 +12,14 @@ on:
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-readable.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-native-layout.py'
+      - 'playgama/patch-browser-tutorial-objectives.py'
+      - 'playgama/build-simple-ai-bundle.py'
+      - 'playgama/install-classic-ai-package.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -33,9 +38,14 @@ on:
       - 'playgama/patch-playgama-newgrf-main-menu.py'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-readable.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-native-layout.py'
+      - 'playgama/patch-browser-tutorial-objectives.py'
+      - 'playgama/build-simple-ai-bundle.py'
+      - 'playgama/install-classic-ai-package.py'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/openttd-full-viewport.js'
       - 'playgama/openttd-ranking-core.js'
@@ -53,7 +63,7 @@ env:
 jobs:
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 85
     container:
       image: emscripten/emsdk:3.1.57
 
@@ -73,7 +83,11 @@ jobs:
           set -euo pipefail
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
-          python3 -m py_compile legacy/ci/patch-playgama-newgrf-main-menu.py legacy/ci/patch-browser-ranking.py
+          python3 -m py_compile \
+            legacy/ci/patch-playgama-newgrf-main-menu.py \
+            legacy/ci/patch-browser-ranking.py \
+            playgama/patch-browser-ranking-readable.py \
+            playgama/patch-browser-tutorial-objectives.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -108,7 +122,7 @@ jobs:
               raise SystemExit(f'Expected one base-set staging anchor, got {build_text.count(fonts_anchor)}')
           build_text = build_text.replace(fonts_anchor, fonts_copy, 1)
           build.write_text(build_text, encoding='utf-8')
-          print('Configured native UI/ranking patches and embedded OpenTTD fonts.')
+          print('Configured native UI/ranking/tutorial patches and embedded OpenTTD fonts.')
           PY
 
       - name: Rebuild OpenTTD 15.3 WebAssembly runtime
@@ -127,12 +141,24 @@ jobs:
           grep -Fq 'GetCurrentLanguageIsoCode().starts_with("ru")' openttd/src/newgrf_gui.cpp
           grep -Fq 'Комплексный набор поездов' openttd/src/newgrf_gui.cpp
 
-          grep -Fq 'BROWSER_RANKING_MAX_SCORE = (1ULL << 53) - 1' openttd/src/highscore_gui.cpp
-          grep -Fq 'performance * 1023ULL / SCORE_MAX' openttd/src/highscore_gui.cpp
-          grep -Fq 'CalculateCompanyValue(c, true).base()' openttd/src/highscore_gui.cpp
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'std::clamp<int32_t>(raw_performance, 0, SCORE_MAX)' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'BROWSER_RANKING_VALUE_MASK' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'performance * 1023ULL / SCORE_MAX' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'CalculateCompanyValue(c, true).base()' openttd/src/highscore_gui.cpp
           grep -Fq 'BrowserRankingCheatsUsed()' openttd/src/highscore_gui.cpp
           grep -Fq 'OpenTTDRankingCore?.submit?.' openttd/src/highscore_gui.cpp
           grep -Fq 'OpenTTDGlobalRanking?.requestEntries?.' openttd/src/highscore_gui.cpp
+
+          grep -Fq 'BrowserTutorialObjectiveComplete' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::Aircraft' openttd/src/intro_gui.cpp
+          grep -Fq 'c->group_all[VEH_SHIP].num_vehicle' openttd/src/intro_gui.cpp
+          grep -Fq 'custom_industry_number = 16' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialRestoreNewGameSettings();' openttd/src/intro_gui.cpp
+          grep -Fq '_settings_game.difficulty.max_no_competitors = 0' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/russian.txt
+          grep -Fq '28/28 - Завершение' openttd/src/lang/russian.txt
+
           grep -Fq 'STR_BROWSER_RANKING_LOCAL' openttd/src/lang/russian.txt
           grep -Fq 'STR_BROWSER_RANKING_GLOBAL' openttd/src/lang/russian.txt
           grep -Fq 'Использование читов отключает учёт очков' openttd/src/lang/russian.txt
@@ -149,8 +175,8 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
             -o /tmp/v8-artifact.zip
 
-          rm -rf /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime
-          mkdir -p /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime
+          rm -rf /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime /tmp/classic-ai
+          mkdir -p /tmp/v8-artifact dist-v12 /tmp/rebuilt-runtime /tmp/classic-ai
           unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
           inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
           test -s "$inner"
@@ -169,6 +195,8 @@ jobs:
           python3 -m py_compile \
             playgama/upgrade_playgama_v10.py \
             playgama/build-license-bundle.py \
+            playgama/build-simple-ai-bundle.py \
+            playgama/install-classic-ai-package.py \
             yandex/package_yandex_from_playgama.py
 
           python3 playgama/upgrade_playgama_v10.py dist-v12 \
@@ -177,6 +205,24 @@ jobs:
             --adapter playgama/playgama-yandex-compat.js
           cp playgama/playgama-bridge-config.json dist-v12/playgama-bridge-config.json
           python3 playgama/build-license-bundle.py dist-v12 --repo-license LICENSE
+
+      - name: Build and install bundled SimpleAI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          python3 playgama/build-simple-ai-bundle.py \
+            --output-js /tmp/classic-ai/openttd-classic-ai.js \
+            --output-manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
+          python3 playgama/install-classic-ai-package.py dist-v12 \
+            --bundle /tmp/classic-ai/openttd-classic-ai.js \
+            --manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
+          node --check dist-v12/openttd-classic-ai.js
+          python3 -m json.tool dist-v12/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
+          grep -Fq '<script src="openttd-classic-ai.js"></script>' dist-v12/index.html
+          grep -Fq 'window.__openttdClassicAIArchives' dist-v12/openttd-classic-ai.js
+          grep -Fq 'COMPETITOR_INTERVAL = 1' dist-v12/openttd-playgama-fixes.js
+          grep -Fq "'competitors_interval = ' + COMPETITOR_INTERVAL" dist-v12/openttd-playgama-fixes.js
 
       - name: Install rebuilt native runtime
         shell: bash
@@ -212,9 +258,11 @@ jobs:
 
           test -s dist-v12/openttd-full-viewport.js
           test -s dist-v12/openttd-ranking-core.js
+          test -s dist-v12/openttd-classic-ai.js
           grep -Fq 'Module.setCanvasSize(width, height)' dist-v12/openttd-full-viewport.js
-          grep -Fq 'Number.MAX_SAFE_INTEGER' dist-v12/openttd-ranking-core.js
-          grep -Fq 'openttd.localRanking.v2' dist-v12/openttd-ranking-core.js
+          grep -Fq 'const MAX_SCORE = 1000' dist-v12/openttd-ranking-core.js
+          grep -Fq 'openttd.localRanking.v3' dist-v12/openttd-ranking-core.js
+          grep -Fq "LEGACY_LOCAL_KEYS = ['openttd.localRanking.v1', 'openttd.localRanking.v2']" dist-v12/openttd-ranking-core.js
           grep -Fq 'window.OpenTTDGlobalRanking?.submitScore?.' dist-v12/openttd-ranking-core.js
 
           ! grep -q 'addRunDependency' dist-v12/openttd-bundled-addons.js
@@ -227,6 +275,7 @@ jobs:
           ! grep -Fq 'aspect-ratio: 16 / 9' dist-v12/openttd-playgama-fixes.js
           grep -Fq 'Module.calledRun === true' dist-v12/openttd-playgama-fixes.js
           grep -Fq 'navigator.userActivation?.hasBeenActive' dist-v12/openttd-playgama-fixes.js
+          grep -Fq 'COMPETITOR_INTERVAL = 1' dist-v12/openttd-playgama-fixes.js
 
           node --check dist-v12/openttd-playgama-cloud-saves.js
           node --check dist-v12/openttd-bundled-addons.js
@@ -234,20 +283,23 @@ jobs:
           node --check dist-v12/openttd-playgama-fixes.js
           node --check dist-v12/openttd-full-viewport.js
           node --check dist-v12/openttd-ranking-core.js
+          node --check dist-v12/openttd-classic-ai.js
           python3 -m json.tool dist-v12/OPENTTD-BUNDLED-ADDONS.json >/dev/null
           python3 -m json.tool dist-v12/playgama-bridge-config.json >/dev/null
+          python3 -m json.tool dist-v12/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
 
-      - name: Unit-test local 53-bit ranking core
+      - name: Unit-test clean local 0..1000 ranking core
         shell: bash
         run: |
           set -euo pipefail
           node <<'NODE'
           const fs = require('fs');
           global.window = global;
-          const store = new Map();
+          const store = new Map([['openttd.localRanking.v2', JSON.stringify([{ name: 'Broken old score', score: Number.MAX_SAFE_INTEGER }])]]);
           global.localStorage = {
             getItem: key => store.has(key) ? store.get(key) : null,
             setItem: (key, value) => store.set(key, String(value)),
+            removeItem: key => store.delete(key),
           };
           let snapshot = '';
           global.FS = {
@@ -255,12 +307,14 @@ jobs:
             writeFile(path, data) { if (path.includes('local-ranking')) snapshot = String(data); },
           };
           eval(fs.readFileSync('dist-v12/openttd-ranking-core.js', 'utf8'));
-          if (OpenTTDRankingCore.maxScore !== Number.MAX_SAFE_INTEGER) throw new Error('wrong max score');
-          OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER), 'Test Company', true);
+          if (OpenTTDRankingCore.maxScore !== 1000) throw new Error('wrong max score');
+          if (store.has('openttd.localRanking.v2')) throw new Error('legacy packed ranking was not cleared');
+          if (OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER), 'Impossible Company', true)) throw new Error('oversized score was accepted');
+          OpenTTDRankingCore.submit('1000', 'Test Company', true);
           OpenTTDRankingCore.requestLocalSnapshot();
-          if (!snapshot.includes(String(Number.MAX_SAFE_INTEGER))) throw new Error('max safe score not preserved exactly');
-          if (!snapshot.includes('Test Company')) throw new Error('company record missing');
-          console.log('Local 53-bit ranking core passed.');
+          if (!snapshot.includes('entry\t1\t1000\tTest Company')) throw new Error('0..1000 score not published');
+          if (snapshot.includes('Impossible Company')) throw new Error('invalid company leaked into snapshot');
+          console.log('Local 0..1000 ranking core and legacy cleanup passed.');
           NODE
 
       - name: Verify optional add-on payloads
@@ -293,9 +347,9 @@ jobs:
           unpacked_bytes="$(du -sb dist-v12 | cut -f1)"
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
-          (cd dist-v12 && zip -9 -X -r ../openttd-playgama-v12-ranking.zip .)
-          unzip -t openttd-playgama-v12-ranking.zip
-          sha256sum openttd-playgama-v12-ranking.zip > openttd-playgama-v12-ranking.zip.sha256
+          (cd dist-v12 && zip -9 -X -r ../openttd-playgama-v13-tutorial-ai.zip .)
+          unzip -t openttd-playgama-v13-tutorial-ai.zip
+          sha256sum openttd-playgama-v13-tutorial-ai.zip > openttd-playgama-v13-tutorial-ai.zip.sha256
 
       - name: Convert exact ranking base to Yandex Games
         shell: bash
@@ -325,6 +379,11 @@ jobs:
 
           test -s dist-yandex/openttd-ranking-core.js
           test -s dist-yandex/openttd-global-ranking.js
+          test -s dist-yandex/openttd-classic-ai.js
+          test -s dist-yandex/OPENTTD-CLASSIC-AI-MANIFEST.json
+          grep -Fq '<script src="openttd-classic-ai.js"></script>' dist-yandex/index.html
+          grep -Fq 'window.__openttdClassicAIArchives' dist-yandex/openttd-classic-ai.js
+          grep -Fq 'COMPETITOR_INTERVAL = 1' dist-yandex/openttd-yandex-fixes.js
           grep -Fq "LEADERBOARD_NAME = 'company_rating'" dist-yandex/openttd-global-ranking.js
           grep -Fq 'Number.MAX_SAFE_INTEGER' dist-yandex/openttd-global-ranking.js
           grep -Fq 'isAvailableMethod' dist-yandex/openttd-global-ranking.js
@@ -338,6 +397,8 @@ jobs:
           node --check dist-yandex/openttd-bundled-addons.js
           node --check dist-yandex/openttd-ranking-core.js
           node --check dist-yandex/openttd-global-ranking.js
+          node --check dist-yandex/openttd-classic-ai.js
+          python3 -m json.tool dist-yandex/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
 
       - name: Unit-test SDK bootstrap order
         shell: bash
@@ -400,7 +461,7 @@ jobs:
             },
           });
           eval(fs.readFileSync('dist-yandex/openttd-global-ranking.js', 'utf8'));
-          OpenTTDGlobalRanking.submitScore(String(Number.MAX_SAFE_INTEGER));
+          OpenTTDGlobalRanking.submitScore('1000');
           setTimeout(() => {
             if (authOpened !== 0) throw new Error('authorization dialog opened without user action');
             if (submitted !== 0) throw new Error('unauthorized score was submitted');
@@ -427,26 +488,26 @@ jobs:
           unpacked_bytes="$(du -sb dist-yandex | cut -f1)"
           echo "Unpacked Yandex bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 100000000
-          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-v12-ranking.zip .)
-          unzip -t openttd-yandexgames-v12-ranking.zip
-          sha256sum openttd-yandexgames-v12-ranking.zip > openttd-yandexgames-v12-ranking.zip.sha256
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandexgames-v13-tutorial-ai.zip .)
+          unzip -t openttd-yandexgames-v13-tutorial-ai.zip
+          sha256sum openttd-yandexgames-v13-tutorial-ai.zip > openttd-yandexgames-v13-tutorial-ai.zip.sha256
 
       - name: Upload Playgama artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v12-ranking
+          name: openttd-playgama-v13-tutorial-ai
           path: |
-            openttd-playgama-v12-ranking.zip
-            openttd-playgama-v12-ranking.zip.sha256
+            openttd-playgama-v13-tutorial-ai.zip
+            openttd-playgama-v13-tutorial-ai.zip.sha256
           if-no-files-found: error
           retention-days: 90
 
       - name: Upload Yandex Games artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-yandexgames-v12-ranking
+          name: openttd-yandexgames-v13-tutorial-ai
           path: |
-            openttd-yandexgames-v12-ranking.zip
-            openttd-yandexgames-v12-ranking.zip.sha256
+            openttd-yandexgames-v13-tutorial-ai.zip
+            openttd-yandexgames-v13-tutorial-ai.zip.sha256
           if-no-files-found: error
           retention-days: 90

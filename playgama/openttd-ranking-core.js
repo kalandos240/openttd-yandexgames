@@ -1,24 +1,35 @@
 /* Platform-neutral ranking core shared by browser builds.
- * Player-facing text is rendered by native OpenTTD code; this module only
- * stores local records and forwards eligible scores to an optional global
- * provider when one exists.
+ * Local ranking uses OpenTTD's native company performance rating (0..1000).
+ * Older experimental 53-bit local tables are deliberately discarded because
+ * those packed values were not meaningful to players.
  */
 (() => {
   'use strict';
   if (window.OpenTTDRankingCore) return;
 
-  const MAX_SCORE = Number.MAX_SAFE_INTEGER;
-  const LOCAL_KEY = 'openttd.localRanking.v2';
+  const MAX_SCORE = 1000;
+  const LOCAL_KEY = 'openttd.localRanking.v3';
+  const LEGACY_LOCAL_KEYS = ['openttd.localRanking.v1', 'openttd.localRanking.v2'];
   const SNAPSHOT_PATH = '/home/web_user/.openttd/local-ranking.tsv';
   const LIMIT = 10;
   let lastSnapshot = '';
 
   const cleanName = (value) => String(value || 'Company').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Company';
-  const clampScore = (value) => {
+  const normalizeScore = (value) => {
     const n = Number(String(value));
     if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(MAX_SCORE, Math.trunc(n)));
+    const score = Math.trunc(n);
+    if (score <= 0 || score > MAX_SCORE) return 0;
+    return score;
   };
+
+  /* v1/v2 stored packed 53-bit values. Never reinterpret those values as the
+     new human-readable 0..1000 rating; start the local table clean instead. */
+  try {
+    if (typeof localStorage.removeItem === 'function') {
+      LEGACY_LOCAL_KEYS.forEach((key) => localStorage.removeItem(key));
+    }
+  } catch (_) {}
 
   const load = () => {
     try {
@@ -26,7 +37,7 @@
       if (!Array.isArray(parsed)) return [];
       return parsed.map((row) => ({
         name: cleanName(row?.name),
-        score: clampScore(row?.score),
+        score: normalizeScore(row?.score),
         stamp: Number.isFinite(row?.stamp) ? row.stamp : 0,
       })).filter((row) => row.score > 0).sort((a, b) => b.score - a.score || b.stamp - a.stamp).slice(0, LIMIT);
     } catch (_) {
@@ -40,7 +51,7 @@
 
   const writeSnapshot = () => {
     const rows = load();
-    const lines = ['version\t1'];
+    const lines = ['version\t2'];
     rows.forEach((row, index) => lines.push(`entry\t${index + 1}\t${row.score}\t${row.name}`));
     const text = lines.join('\n') + '\n';
     if (text === lastSnapshot) return true;
@@ -61,7 +72,7 @@
   };
 
   const submit = (scoreValue, companyName, eligible = true) => {
-    const score = clampScore(scoreValue);
+    const score = normalizeScore(scoreValue);
     if (!eligible || score <= 0) return false;
     const name = cleanName(companyName);
     const rows = load();
