@@ -26,4 +26,5 @@ runpy.run_path(str(locate("patch-browser-tutorial-native-layout.py")), run_name=
 runpy.run_path(str(locate("patch-browser-tutorial-objectives.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-compile-fix.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-final-polish.py")), run_name="__main__")
-print("Native readable ranking + full objective tutorial patches applied with final browser polish.")
+runpy.run_path(str(locate("patch-browser-tutorial-v15-compat.py")), run_name="__main__")
+print("Native readable ranking + full objective tutorial patches applied with final browser polish and OpenTTD 15.3 compatibility.")
