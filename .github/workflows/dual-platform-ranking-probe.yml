@@ -11,6 +11,7 @@ on:
       - '.github/workflows/dual-platform-ranking-probe.yml'
       - 'ci/test-dual-platform-ranking.js'
       - 'ci/test-playgama-startup.js'
+      - 'playgama/openttd-ranking-core.js'
       - 'playgama/openttd-global-ranking.js'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/upgrade_playgama_v10.py'
@@ -24,6 +25,7 @@ on:
       - '.github/workflows/dual-platform-ranking-probe.yml'
       - 'ci/test-dual-platform-ranking.js'
       - 'ci/test-playgama-startup.js'
+      - 'playgama/openttd-ranking-core.js'
       - 'playgama/openttd-global-ranking.js'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/upgrade_playgama_v10.py'
@@ -45,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate identifiers and syntax
+      - name: Validate identifiers score scale and syntax
         shell: bash
         run: |
           set -euo pipefail
@@ -53,10 +55,20 @@ jobs:
           grep -Fq '"id": "companyrating"' playgama/playgama-bridge-config.json
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" playgama/openttd-global-ranking.js
           grep -Fq "LEADERBOARD_NAME = 'companyrating'" yandex/openttd-global-ranking.js
+          grep -Fq 'const MAX_SCORE = 1000' playgama/openttd-ranking-core.js
+          grep -Fq 'const MAX_SCORE = 1000' playgama/openttd-global-ranking.js
+          grep -Fq 'const MAX_SCORE = 1000' yandex/openttd-global-ranking.js
+          grep -Fq "openttd.localRanking.v3" playgama/openttd-ranking-core.js
+          grep -Fq 'readLeaderboardScore' playgama/openttd-global-ranking.js
+          grep -Fq 'readLeaderboardScore' yandex/openttd-global-ranking.js
           ! grep -Fq 'company_rating' playgama/openttd-global-ranking.js
           ! grep -Fq 'company_rating' yandex/openttd-global-ranking.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' playgama/openttd-ranking-core.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' playgama/openttd-global-ranking.js
+          ! grep -Fq 'Number.MAX_SAFE_INTEGER' yandex/openttd-global-ranking.js
           grep -Fq 'starting OpenTTD with offline platform fallback' playgama/playgama-yandex-compat.js
           grep -Fq 'navigator.userActivation?.hasBeenActive' playgama/playgama-yandex-compat.js
+          node --check playgama/openttd-ranking-core.js
           node --check playgama/openttd-global-ranking.js
           node --check playgama/playgama-yandex-compat.js
           node --check yandex/openttd-global-ranking.js
