@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make browser AIs part of the OpenTTD runtime filesystem before AI scanning."""
+"""Make browser AIs available before OpenTTD scans scripts, without changing player settings."""
 from __future__ import annotations
 
 import shutil
@@ -55,8 +55,7 @@ if not any(cid == 'ai/534d504c' for cid, _, _ in manifest):
 if not any(cid.startswith(('ai-library/', 'ailibrary/')) for cid, _, _ in manifest):
     raise SystemExit('SimpleAI libraries were not staged')
 
-# These compatibility scripts are consumed by old-API AIs through the same
-# native /ai search path. Copy the official OpenTTD 15.3 files, not a JS clone.
+# Old-API AIs need the official compatibility chain in the same native /ai path.
 compat_src = ROOT / 'bin' / 'ai'
 compat_files = sorted(compat_src.glob('compat_*.nut'))
 if not compat_files:
@@ -74,49 +73,52 @@ if preload not in text:
     text = text.replace(anchor, anchor + preload, 1)
     cmake.write_text(text, encoding='utf-8')
 
+# Keep OpenTTD's own defaults. More importantly, do not rewrite the settings
+# selected by the player in New Game -> AI/Game Script Settings. The browser
+# integration is responsible only for making the AI scripts available.
 settings = ROOT / 'src' / 'table' / 'settings' / 'difficulty_settings.ini'
 s = settings.read_text(encoding='utf-8')
+max_block = s[s.index('var      = difficulty.max_no_competitors'):]
+max_block = max_block[:max_block.index('[SDT_VAR]', 1)]
+interval_block = s[s.index('var      = difficulty.competitors_interval'):]
+interval_block = interval_block[:interval_block.index('[SDT_VAR]', 1)]
+if 'def      = 0' not in max_block:
+    raise SystemExit('Unexpected upstream max_no_competitors default')
+if 'def      = 10' not in interval_block:
+    raise SystemExit('Unexpected upstream competitors_interval default')
 
-# Fix the actual native new-game defaults instead of byte-replacing the built
-# JavaScript afterwards. Three competitors are enabled in normal free play.
-max_old = '''[SDT_VAR]\nvar      = difficulty.max_no_competitors\ntype     = SLE_UINT8\nfrom     = SLV_97\ndef      = 0\n'''
-max_new = '''[SDT_VAR]\nvar      = difficulty.max_no_competitors\ntype     = SLE_UINT8\nfrom     = SLV_97\ndef      = 3\n'''
-if max_old in s:
-    s = s.replace(max_old, max_new, 1)
-elif max_new not in s:
-    raise SystemExit('Could not patch max_no_competitors native default')
-
-# OpenTTD company_cmd.cpp treats interval 0 as a special immediate-fill mode:
-# it posts CCA_NEW_AI until max_no_competitors has been reached.
-interval_old = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 10\n'''
-interval_new = '''[SDT_VAR]\nvar      = difficulty.competitors_interval\ntype     = SLE_UINT16\nfrom     = SLV_AI_START_DATE\ndef      = 0\n'''
-if interval_old in s:
-    s = s.replace(interval_old, interval_new, 1)
-elif interval_new not in s:
-    raise SystemExit('Could not patch competitors_interval native default')
-settings.write_text(s, encoding='utf-8')
-
-# The legacy Yandex runtime-cleanup patch was written for an edition with no AI
-# modules. Its pre.js hook runs *after* all source patches and used to rewrite
-# max_no_competitors back to 0 immediately before OpenTTD main(). That silently
-# defeated both the native default above and every AI selected in New Game.
-# This browser edition now ships AI modules, so keep the legacy startup/cloud
-# sanitizers compatible with the native setting instead of disabling companies.
+# The historical Yandex cleanup was written for an offline package without AI
+# modules. It used to alter max_no_competitors during startup and cloud sync.
+# Neutralize only those calls; the helper may remain in generated code unused.
 legacy_cleanup = Path('ci/patch-yandex-runtime-cleanup.py')
 if not legacy_cleanup.is_file():
     raise SystemExit('Legacy Yandex runtime-cleanup patch is missing')
 cleanup = legacy_cleanup.read_text(encoding='utf-8')
-disable_count = cleanup.count('max_no_competitors = 0')
-if disable_count < 3:
-    raise SystemExit(f'Expected legacy AI-disable literals in runtime cleanup, got {disable_count}')
-cleanup = cleanup.replace('max_no_competitors = 0', 'max_no_competitors = 3')
-cleanup = cleanup.replace(
-    'even though no downloadable AI modules exist in this strictly\n    # offline edition. Force the setting to zero before OpenTTD reads the config.',
-    'while this browser edition now bundles AI modules locally. Keep competitors\n    # enabled before OpenTTD reads the config.',
-)
+
+startup_call = '                sanitizeYandexConfig();\n'
+if cleanup.count(startup_call) != 1:
+    raise SystemExit(f'Expected one startup AI sanitizer call, got {cleanup.count(startup_call)}')
+cleanup = cleanup.replace(startup_call, '', 1)
+
+read_wrapped = "return sanitizeOfflineConfig(FS.readFile(personalDir + '/openttd.cfg', { encoding: 'utf8' }));"
+read_direct = "return FS.readFile(personalDir + '/openttd.cfg', { encoding: 'utf8' });"
+if cleanup.count(read_wrapped) != 1:
+    raise SystemExit('Could not find cloud config read sanitizer')
+cleanup = cleanup.replace(read_wrapped, read_direct, 1)
+
+empty_wrapped = "return sanitizeOfflineConfig('');"
+if cleanup.count(empty_wrapped) != 1:
+    raise SystemExit('Could not find empty cloud config sanitizer')
+cleanup = cleanup.replace(empty_wrapped, "return '';", 1)
+
+write_wrapped = 'FS.writeFile(configPath, sanitizeOfflineConfig(cloudConfig.config));'
+write_direct = 'FS.writeFile(configPath, cloudConfig.config);'
+if cleanup.count(write_wrapped) != 1:
+    raise SystemExit('Could not find cloud config restore sanitizer')
+cleanup = cleanup.replace(write_wrapped, write_direct, 1)
+
 legacy_cleanup.write_text(cleanup, encoding='utf-8')
 
 print('Static AI filesystem staged before TarScanner/AI::Initialize:', manifest)
 print(f'Copied {len(compat_files)} official OpenTTD AI compatibility scripts.')
-print(f'Removed {disable_count} legacy runtime AI-disable literals before pre.js generation.')
-print('Native free-play defaults: 3 competitors, immediate-fill interval 0.')
+print('Player-selected AI count and competitors interval are preserved unchanged.')
