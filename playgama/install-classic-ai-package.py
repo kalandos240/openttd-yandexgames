@@ -18,7 +18,7 @@ def patch_fixes(path: Path) -> None:
             raise SystemExit('Could not find COMPETITORS runtime anchor')
         text = text.replace(anchor, anchor + '  const COMPETITOR_INTERVAL = 1;\n', 1)
 
-    marker = "competitors_interval = ' + COMPETITOR_INTERVAL"
+    marker = 'competitors_interval = \' + COMPETITOR_INTERVAL'
     if marker not in text:
         max_block = """    if (/^max_no_competitors\\s*=.*$/m.test(config)) {
       config = config.replace(/^max_no_competitors\\s*=.*$/m, 'max_no_competitors = ' + COMPETITORS);
@@ -47,6 +47,49 @@ def patch_fixes(path: Path) -> None:
     path.write_text(text, encoding='utf-8')
 
 
+
+def patch_cloud_bridge(path: Path) -> None:
+    """Stop cloud/config sanitisation from silently disabling free-play AIs."""
+    text = path.read_text(encoding='utf-8')
+    old = """  function sanitizeOfflineConfig(config) {
+    config = String(config || '');
+    if (/^max_no_competitors\\s*=.*$/m.test(config)) {
+      return config.replace(/^max_no_competitors\\s*=.*$/m, 'max_no_competitors = 0');
+    }
+    if (/^\\[difficulty\\]\\s*$/m.test(config)) {
+      return config.replace(/^\\[difficulty\\]\\s*$/m, '[difficulty]\\nmax_no_competitors = 0');
+    }
+    return config + (config.length === 0 || config.endsWith('\\n') ? '' : '\\n') + '[difficulty]\\nmax_no_competitors = 0\\n';
+  }
+"""
+    new = """  function sanitizeOfflineConfig(config) {
+    config = String(config || '');
+    if (/^max_no_competitors\\s*=.*$/m.test(config)) {
+      config = config.replace(/^max_no_competitors\\s*=.*$/m, 'max_no_competitors = 3');
+    } else if (/^\\[difficulty\\]\\s*$/m.test(config)) {
+      config = config.replace(/^\\[difficulty\\]\\s*$/m, '[difficulty]\\nmax_no_competitors = 3');
+    } else {
+      config += (config.length === 0 || config.endsWith('\\n') ? '' : '\\n') + '[difficulty]\\nmax_no_competitors = 3\\n';
+    }
+    if (/^competitors_interval\\s*=.*$/m.test(config)) {
+      config = config.replace(/^competitors_interval\\s*=.*$/m, 'competitors_interval = 1');
+    } else if (/^\\[difficulty\\]\\s*$/m.test(config)) {
+      config = config.replace(/^\\[difficulty\\]\\s*$/m, '[difficulty]\\ncompetitors_interval = 1');
+    } else {
+      config += (config.length === 0 || config.endsWith('\\n') ? '' : '\\n') + '[difficulty]\\ncompetitors_interval = 1\\n';
+    }
+    return config;
+  }
+"""
+    if old not in text:
+        if 'max_no_competitors = 3' in text and 'competitors_interval = 1' in text:
+            return
+        raise SystemExit('Could not find legacy cloud AI-disable sanitizer')
+    text = text.replace(old, new, 1)
+    if 'max_no_competitors = 0' in text[text.find('function sanitizeOfflineConfig'):text.find('function readConfig')]:
+        raise SystemExit('Cloud bridge still disables competitors')
+    path.write_text(text, encoding='utf-8')
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('dist', type=Path)
@@ -57,8 +100,9 @@ def main() -> None:
     dist = args.dist.resolve()
     index = dist / 'index.html'
     fixes = dist / 'openttd-playgama-fixes.js'
-    if not index.is_file() or not fixes.is_file():
-        raise SystemExit('Production package is missing index.html or runtime fixes')
+    cloud_bridge = dist / 'yandex-bridge.js'
+    if not index.is_file() or not fixes.is_file() or not cloud_bridge.is_file():
+        raise SystemExit('Production package is missing index.html, runtime fixes, or cloud bridge')
 
     shutil.copy2(args.bundle, dist / 'openttd-classic-ai.js')
     shutil.copy2(args.manifest, dist / 'OPENTTD-CLASSIC-AI-MANIFEST.json')
@@ -73,7 +117,8 @@ def main() -> None:
     index.write_text(html, encoding='utf-8')
 
     patch_fixes(fixes)
-    print('Bundled SimpleAI installed before OpenTTD runtime; competitors start every 1 minute.')
+    patch_cloud_bridge(cloud_bridge)
+    print('Bundled SimpleAI installed before OpenTTD runtime; free-play competitors are preserved and start every 1 minute.')
 
 
 if __name__ == '__main__':

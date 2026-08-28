@@ -30,4 +30,6 @@ runpy.run_path(str(locate("patch-browser-tutorial-level.py")), run_name="__main_
 runpy.run_path(str(locate("patch-browser-tutorial-native-layout.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-objectives.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-compile-fix.py")), run_name="__main__")
-print("Native readable ranking + full objective tutorial patches applied with stock OpenTTD layout polish.")
+runpy.run_path(str(locate("patch-browser-tutorial-final-polish.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-ai-default.py")), run_name="__main__")
+print("Native readable ranking + full objective tutorial + reliable browser AI patches applied.")

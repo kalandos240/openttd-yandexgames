@@ -38,7 +38,12 @@ def build() -> tuple[dict[str, str], list[dict[str, object]]]:
             else:
                 raise RuntimeError(f'Unexpected SimpleAI dependency type: {content_id}')
 
-            payload[relative] = base64.b64encode(data).decode('ascii')
+            encoded = base64.b64encode(data).decode('ascii')
+            if relative in payload:
+                if payload[relative] != encoded:
+                    raise RuntimeError(f'Conflicting duplicate SimpleAI dependency: {relative}')
+                continue
+            payload[relative] = encoded
             manifest.append({
                 'content_id': content_id,
                 'filename': filename,
