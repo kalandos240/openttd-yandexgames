@@ -7,8 +7,10 @@
   'use strict';
   if (window.OpenTTDRankingCore) return;
 
-  const MAX_SCORE = Number.MAX_SAFE_INTEGER;
-  const LOCAL_KEY = 'openttd.localRanking.v2';
+  /* Native OpenTTD performance_history is explicitly defined on a 0..1000
+     scale. Keep the browser leaderboard on that same human-readable scale. */
+  const MAX_SCORE = 1000;
+  const LOCAL_KEY = 'openttd.localRanking.v3';
   const SNAPSHOT_PATH = '/home/web_user/.openttd/local-ranking.tsv';
   const LIMIT = 10;
   let lastSnapshot = '';
@@ -40,7 +42,7 @@
 
   const writeSnapshot = () => {
     const rows = load();
-    const lines = ['version\t1'];
+    const lines = ['version\t2', 'scale\t0-1000'];
     rows.forEach((row, index) => lines.push(`entry\t${index + 1}\t${row.score}\t${row.name}`));
     const text = lines.join('\n') + '\n';
     if (text === lastSnapshot) return true;
