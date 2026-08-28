@@ -9,9 +9,15 @@ on:
       - '.github/workflows/tutorial-compile-probe.yml'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-readable.py'
       - 'playgama/patch-browser-tutorial.py'
       - 'playgama/patch-browser-tutorial-toolbar.py'
       - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-native-layout.py'
+      - 'playgama/patch-browser-tutorial-objectives.py'
+      - 'playgama/patch-browser-tutorial-compile-fix.py'
+      - 'playgama/patch-browser-tutorial-final-polish.py'
+      - 'playgama/patch-browser-tutorial-v15-compat.py'
       - 'playgama/patch-playgama-newgrf-main-menu.py'
 
 permissions:
@@ -42,9 +48,15 @@ jobs:
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
           python3 -m py_compile \
             playgama/patch-browser-ranking-core.py \
+            playgama/patch-browser-ranking-readable.py \
             playgama/patch-browser-tutorial.py \
             playgama/patch-browser-tutorial-toolbar.py \
             playgama/patch-browser-tutorial-level.py \
+            playgama/patch-browser-tutorial-native-layout.py \
+            playgama/patch-browser-tutorial-objectives.py \
+            playgama/patch-browser-tutorial-compile-fix.py \
+            playgama/patch-browser-tutorial-final-polish.py \
+            playgama/patch-browser-tutorial-v15-compat.py \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py
 
@@ -99,7 +111,8 @@ jobs:
           grep -Fq 'struct BrowserButtonGuideWindow final : Window' openttd/src/intro_gui.cpp
           grep -Fq 'StartBrowserTutorialLevel()' openttd/src/intro_gui.cpp
           grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
-          grep -Fq 'SetWidgetHighlight(current.widget, TC_YELLOW)' openttd/src/intro_gui.cpp
+          grep -Fq 'this->highlight_bright ? TC_WHITE : TC_YELLOW' openttd/src/intro_gui.cpp
+          grep -Fq '_settings_newgame.difficulty.vehicle_breakdowns = 1' openttd/src/intro_gui.cpp
           grep -Fq 'SPR_ARROW_LEFT' openttd/src/intro_gui.cpp
           grep -Fq 'STR_TOOLBAR_TOOLTIP_PAUSE_GAME + WID_TN_HELP' openttd/src/intro_gui.cpp
           grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
