@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply native browser ranking and tutorial patches as one build step."""
+"""Apply browser-edition native fixes as one deterministic source patch step."""
 from pathlib import Path
 import runpy
 
@@ -17,6 +17,7 @@ def locate(name: str) -> Path:
     raise SystemExit(f"Could not locate combined browser patch dependency: {name}")
 
 
+# Base browser ranking and tutorial implementation.
 runpy.run_path(str(locate("patch-browser-ranking-core.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-ranking-readable.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial.py")), run_name="__main__")
@@ -27,4 +28,13 @@ runpy.run_path(str(locate("patch-browser-tutorial-objectives.py")), run_name="__
 runpy.run_path(str(locate("patch-browser-tutorial-compile-fix.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-final-polish.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-v15-compat.py")), run_name="__main__")
-print("Native readable ranking + full objective tutorial patches applied with final browser polish and OpenTTD 15.3 compatibility.")
+
+# Root-cause repairs must run last so older compatibility/polish patches cannot
+# restore proxy objectives, permissive legacy ranking parsing, or the desktop
+# font warning. AI files are staged into Emscripten's /ai before AI::Initialize.
+runpy.run_path(str(locate("patch-browser-ranking-strict.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-font-web.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-tutorial-real-objectives.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-ai-static.py")), run_name="__main__")
+
+print("Root-cause browser fixes applied: static native AI preload, immediate AI startup, strict 0..1000 ranking, web font handling, and real tutorial objectives.")
