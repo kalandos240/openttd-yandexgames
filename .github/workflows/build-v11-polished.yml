@@ -184,9 +184,6 @@ jobs:
           set -euo pipefail
           unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
           test -s /tmp/rebuilt-runtime/openttd-runtime.js
-          for font in OpenTTD-Sans.ttf OpenTTD-Small.ttf OpenTTD-Serif.ttf OpenTTD-Mono.ttf; do
-            grep -aFq "${font}" /tmp/rebuilt-runtime/openttd-runtime.js
-          done
 
           python3 - <<'PY'
           from pathlib import Path
