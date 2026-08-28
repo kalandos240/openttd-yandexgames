@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Apply native browser ranking and tutorial patches as one build step.
-
-The production workflow already invokes this filename. Keeping the feature
-implementation in sibling files lets the combined build reuse focused probes
-without duplicating the source transformations.
-"""
+"""Apply native browser ranking and tutorial patches as one build step."""
 from pathlib import Path
 import runpy
 
@@ -31,5 +26,4 @@ runpy.run_path(str(locate("patch-browser-tutorial-native-layout.py")), run_name=
 runpy.run_path(str(locate("patch-browser-tutorial-objectives.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-compile-fix.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-final-polish.py")), run_name="__main__")
-runpy.run_path(str(locate("patch-browser-ai-default.py")), run_name="__main__")
-print("Native readable ranking + full objective tutorial + reliable browser AI patches applied.")
+print("Native readable ranking + full objective tutorial patches applied with final browser polish.")

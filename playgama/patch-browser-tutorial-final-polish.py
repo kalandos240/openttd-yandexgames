@@ -1,186 +1,129 @@
 #!/usr/bin/env python3
-"""Final tutorial polish: readable coach, pulsing targets, canonical practice settings."""
 from pathlib import Path
 import re
 
 
-def set_string(path: Path, key: str, value: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    line = f"{key:<64}:{value}"
-    pattern = re.compile(rf"^{re.escape(key)}\s*:.*$", re.M)
-    if not pattern.search(text):
-        raise SystemExit(f"Missing tutorial string {key} in {path}")
-    path.write_text(pattern.sub(line, text, count=1), encoding="utf-8")
+def add_details(path, details, label):
+    text = path.read_text(encoding='utf-8')
+    for i, detail in enumerate(details, 1):
+        key = f'STR_BROWSER_TUTORIAL_LEVEL_{i:02d}'
+        m = re.search(rf'^({key}\s*:)(.*)$', text, re.M)
+        if not m:
+            raise SystemExit(f'missing {key}')
+        if f'{{}}{label}:' not in m.group(2):
+            value = m.group(2) + f'{{}}{{YELLOW}}{label}:{{BLACK}} {detail}'
+            text = text[:m.start()] + m.group(1) + value + text[m.end():]
+    path.write_text(text, encoding='utf-8')
 
 
-def append_step_details(path: Path, extras: list[str], label: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    for i, extra in enumerate(extras, 1):
-        key = f"STR_BROWSER_TUTORIAL_LEVEL_{i:02d}"
-        pattern = re.compile(rf"^({re.escape(key)}\s*:)(.*)$", re.M)
-        match = pattern.search(text)
-        if not match:
-            raise SystemExit(f"Missing {key} in {path}")
-        value = match.group(2)
-        if f"{{}}{label}:" not in value:
-            value += f"{{}}{label}: {extra}"
-            text = text[:match.start()] + match.group(1) + value + text[match.end():]
-    path.write_text(text, encoding="utf-8")
+def set_string(path, key, value):
+    text = path.read_text(encoding='utf-8')
+    p = re.compile(rf'^({key}\s*:).*$', re.M)
+    if not p.search(text): raise SystemExit(f'missing {key}')
+    path.write_text(p.sub(lambda m: m.group(1) + value, text, count=1), encoding='utf-8')
 
 
-RU_EXTRA = [
-    "Проверьте, где находятся ближайшие города, предприятия и вода; это пригодится в следующих шагах.",
-    "Для точного строительства используйте обычную скорость, а ускорение оставляйте для ожидания рейсов.",
-    "Выбирайте два близких города с заметной жилой застройкой, чтобы первый маршрут быстро молучил пассажиров.",
-    "На панели дорог заранее найдите инструменты дороги, депо и автобусной остановки.",
-    "Стройте непрерывно: разрыв даже в одну клетку не позволит автобусу пройти маршрут.",
-    "Ставьте остановки рядом с домами и обязательно соединяйте их с дорогой; смотрите на зону охвата.",
-    "Депо должно иметь выезд на вашу дорогу; после покупки дитесь, что автобус не остановлен вручную.",
-    "В заданиях должны быть обе остановки; если автобус не едет, проверьте доступность дороги и порядок заданий.",
-    "Смотрите именно транспортный доход: единичная прибыль ещё не означает, что сеть окупает постоянные расходы.",
-    "Для первого поезда выбирайте короткую прямую линию, чтобы проще проверить путь, станции сигналы.",
-    "Проверьте непрерывность рельсов и правильное соединение всех поворотов до покупки поезда.",
-    "Платформы должны быть соединены с рельсами, а зона охвата - захватывать нужные здания или предприятие.",
-    "Для учебной линии достаточно одного сигнала; позже сигналами сеть делится на безопасные блоки.",
-    "Покупайте состав под назначение маршрута и убедитесь, что локомотив может выйти из депо на линию.",
-    "Если поезд пишет, что не может найти путь, проверьте соединение станций, депо, направление и задания.",
-    "Сначала посмотрите, какой груз производит предприятие и какое предприятие именно этот груз принимает.",
-    "Станции грузового маршрута должны покрывать производителя и потребителя, иначе груз не будет приниматься.",
-    "Проверяйте значки грузов на станциях: нужны реальные доставки двух разных типов, а не только наличие транспорта.",
-    "Между причалами должен существовать непрерывный водный путь без недоступных участков суши.",
-    "Если причал не ставится, найдите другой участок берега; причал должен одновременно касаться воды и иметь полезную зону охвата.",
-    "После покупки задайте кораблю доступные причалы и рбедитесь, что он может выйти из депо в открытый водный путь.",
-    "Для аэропорта нужна большая ровная площадка; заранее оставьте достаточно свободного пространства возле города.",
-    "Проверьте зону охвата аэропорта: она должна захватывать городские здания, иначе пассажиропоток будет слабым.",
-    "Самолёту нужны корректные аэропорты в заданиях; после запуска проверьте, что он действительно покидает ангар.",
-    "Высокий рейтинг станции и регулярный транспорт помогают удерживать спрос и развивать город.",
-    "Изменяйте рельеф только при необходимости: мост или тоннель часто дешевле и сохраняет маршрут прямым.",
-    "Сравнивайте прибыль отдельных машин и общие графики компании, чтобы находить слабые маршруты.",
-    "После завершения вернитесь в главное меню: обычная свободная игра восстановит ваши настройки и снова разрешит ИИ.",
+RU = [
+'Найдите два близких города, предприятия и воду; они понадобятся дальше.',
+'Пауза нужна перед строительством, ускорение - только для ожидания рейсов.',
+'Выберите два близких города с домами, чтобы быстро появился спрос.',
+'На панели дорог найдите дорогу, остановку и депо.',
+'Соедините города непрерывной дорогой без разрывов.',
+'Поставьте остановки у домов и соедините их с дорогой; нужны 2 станционные клетки.',
+'Постройте депо с выездом на дорогу, купите и запустите автобус.',
+'Добавьте обе остановки в задания автобуса и дождитесь реальной доставки.',
+'Откройте финансы и дождитесь положительного транспортного дохода.',
+'Для первого поезда выберите короткую прямую трассу.',
+'Проложите непрерывные рельсы, проверьте повороты и доступ к депо.',
+'Станции должны покрывать нужные здания или предприятия; нужны 4 станционные клетки.',
+'Поставьте минимум один сигнал на железной дороге.',
+'Купите поезд и убедитесь, что он может выехать из депо на линию.',
+'Задайте поезду обе станции; если пути нет, проверьте рельсы и задания.',
+'Найдите производителя груза и предприятие, которое этот груз принимает.',
+'Зоны охвата грузовых станций должны включать производителя и потребителя.',
+'Доставьте реально два разных типа грузов; наличие транспорта не засчитывается.',
+'Найдите два берега с непрерывным водным путём между ними.',
+'Причал должен касаться воды и иметь полезную зону охвата.',
+'Купите корабль, задайте доступные причалы и запустите его.',
+'Найдите достаточно большую ровную площадку возле города.',
+'Постройте аэропорт так, чтобы зона охвата захватывала городские здания.',
+'Купите самолёт, задайте аэропорты и убедитесь, что он вышел из ангара.',
+'Регулярный транспорт и хороший рейтинг станции поддерживают рост города.',
+'Меняйте рельеф экономно; мост или тоннель часто выгоднее большой выемки.',
+'Сравните графики и прибыль транспорта, найдите слабые маршруты.',
+'Готово: после выхода обычные настройки новой игры будут восстановлены.',
 ]
+EN = [
+'Locate two nearby towns, industries and water; later steps use them.',
+'Pause before building; fast-forward only while waiting for trips.',
+'Choose two nearby towns with buildings so demand appears quickly.',
+'Find the road, bus-stop and depot tools.',
+'Connect the towns with one continuous road.',
+'Place stops by buildings and connect them to the road; two station tiles are required.',
+'Build a depot with road access, buy a bus and start it.',
+'Add both stops to the bus orders and wait for a real delivery.',
+'Open finances and wait for positive transport income.',
+'Use a short, straight route for the first train.',
+'Build continuous rails and check curves and depot access.',
+'Stations must cover the target buildings or industries; four station tiles are required.',
+'Place at least one signal on the railway.',
+'Buy a train and verify it can leave the depot.',
+'Give the train both stations; if no path exists, inspect rails and orders.',
+'Find a cargo producer and an industry that accepts that cargo.',
+'Cargo-station catchment must cover both producer and consumer.',
+'Deliver two different cargo types; merely owning cargo vehicles is not enough.',
+'Find two shores connected by an uninterrupted water path.',
+'A dock must touch water and have useful catchment.',
+'Buy a ship, assign reachable docks and start it.',
+'Find a large enough flat area near a town.',
+'Build an airport whose catchment reaches town buildings.',
+'Buy an aircraft, assign airports and verify it leaves the hangar.',
+'Regular service and good station ratings help town growth.',
+'Landscape sparingly; a bridge or tunnel is often cheaper than major terraforming.',
+'Compare graphs and vehicle profit to find weak routes.',
+'Done: leaving training restores normal new-game settings.',
+]
+if len(RU) != 28 or len(EN) != 28: raise SystemExit('need 28 tutorial details')
 
-EN_EXTRA = [
-    "Locate nearby towns, industries and water now; later steps use all of them.",
-    "Use normal speed for precise building and fast-forward only while waiting for vehicles.",
-    "Pick two close towns with visible buildings so the first passenger route gets demand quickly.",
-    "Identify the road, depot and bus-stop tools before you start building.",
-    "Keep the road continuous; a single missing tile can make the route unreachable.",
-    "Place stops close to buildings, connect them to the road and watch the catchment highlight.",
-    "The depot must exit onto your road; after purchase make sure the bus is not manually stopped.",
-    "Both stops must be in Orders; if the bus does not move, check road access and order sequence.",
-    "Watch transport income, not only one profitable trip; recurring costs matter.",
-    "Use a short straight firsttom };\n"
+p = Path('openttd/src/intro_gui.cpp')
+s = p.read_text(encoding='utf-8')
+for old, new in [('SetMinimalSize(420, 100)','SetMinimalSize(600, 175)'),('SetMinimalSize(420, 140)','SetMinimalSize(600, 190)'),('SetMinimalSize(420, 105)','SetMinimalSize(640, 240)')]:
+    if old not in s: raise SystemExit(f'missing layout {old}')
+    s = s.replace(old, new, 1)
+s = s.replace('target->SetWidgetHighlight(current.widget, TC_YELLOW);','target->SetWidgetHighlight(current.widget, TC_WHITE);',2)
 
-new = "\t\trect text_rect{body.left + 58, body.top + 4, body.right, body.bottom - 46};\n\t\t\tDrawStringMultiLine(text_rect, current.text, TC_BLACK, SA_LEFT);\n\t\t\tRect hint_rect{body.left + 58, body.bottom - 40, body.right, body.bottom};\n"
-if old not in intro:
-    raise SystemExit("Tutorial coach text geometry anchor missing")
-intro = intro.replace(old, new, 1)
+if '#include "newgrf_config.h"' not in s:
+    a = '#include "company_base.h"\n'
+    if a not in s: raise SystemExit('missing include anchor')
+    s = s.replace(a, a + '#include "newgrf_config.h"\n', 1)
 
-member = "struct BrowserTutorialCoachWindow final : Window {\n\tsize_t step = 0;\n"
-if member not in intro:
-    raise SystemExit("Tutorial coach member anchor missing")
-intro = intro.replace(member, member + "\tuint highlight_elapsed_ms = 0;\n\tbool highlight_bright = true;\n", 1)
+a = '\tdecltype(_settings_newgame.game_creation.map_x) map_x{};\n'
+if a not in s: raise SystemExit('missing saved settings anchor')
+s = s.replace(a, a + '\tdecltype(_settings_newgame.game_creation.starting_year) starting_year{};\n\tdecltype(_settings_newgame.difficulty.max_no_competitors) max_no_competitors{};\n', 1)
+a = 'static BrowserTutorialSavedSettings _browser_tutorial_saved_settings{};\nstatic bool _browser_tutorial_settings_saved = false;\n'
+if a not in s: raise SystemExit('missing globals anchor')
+s = s.replace(a, 'static BrowserTutorialSavedSettings _browser_tutorial_saved_settings{};\nstatic GRFConfigList _browser_tutorial_saved_newgrfs{};\nstatic bool _browser_tutorial_settings_saved = false;\n', 1)
+a = '\ts.map_x = _settings_newgame.game_creation.map_x; s.map_y = _settings_newgame.game_creation.map_y;\n'
+if a not in s: raise SystemExit('missing save anchor')
+s = s.replace(a, a + '\ts.starting_year = _settings_newgame.game_creation.starting_year;\n\ts.max_no_competitors = _settings_newgame.difficulty.max_no_competitors;\n\tClearGRFConfigList(_browser_tutorial_saved_newgrfs);\n\tCopyGRFConfigList(_browser_tutorial_saved_newgrfs, _grfconfig_newgame, false);\n', 1)
+a = '\t_settings_newgame.game_creation.map_x = s.map_x; _settings_newgame.game_creation.map_y = s.map_y;\n'
+if a not in s: raise SystemExit('missing restore anchor')
+s = s.replace(a, a + '\t_settings_newgame.game_creation.starting_year = s.starting_year;\n\t_settings_newgame.difficulty.max_no_competitors = s.max_no_competitors;\n', 1)
+a = '\t_settings_newgame.difficulty.town_council_tolerance = s.town_council_tolerance; _settings_newgame.difficulty.disasters = s.disasters;\n\t_browser_tutorial_settings_saved = false;\n'
+if a not in s: raise SystemExit('missing restore tail')
+s = s.replace(a, '\t_settings_newgame.difficulty.town_council_tolerance = s.town_council_tolerance; _settings_newgame.difficulty.disasters = s.disasters;\n\tClearGRFConfigList(_grfconfig_newgame);\n\tCopyGRFConfigList(_grfconfig_newgame, _browser_tutorial_saved_newgrfs, false);\n\tClearGRFConfigList(_browser_tutorial_saved_newgrfs);\n\t_browser_tutorial_settings_saved = false;\n', 1)
+a = '\tBrowserTutorialSaveNewGameSettings();\n\t_settings_newgame.game_creation.map_x = 6; _settings_newgame.game_creation.map_y = 6;\n'
+if a not in s: raise SystemExit('missing tutorial start')
+s = s.replace(a, '\tBrowserTutorialSaveNewGameSettings();\n\t_settings_newgame.game_creation.starting_year = TimerGameCalendar::Year{1950};\n\t_settings_newgame.difficulty.max_no_competitors = 0;\n\tClearGRFConfigList(_grfconfig_newgame);\n\t_settings_newgame.game_creation.map_x = 6; _settings_newgame.game_creation.map_y = 6;\n', 1)
+a = '\t_settings_newgame.difficulty.max_loan = 1000000; _settings_newgame.difficulty.vehicle_breakdowns = 0;\n'
+if a not in s: raise SystemExit('missing tutorial difficulty')
+s = s.replace(a, '\t_settings_newgame.difficulty.max_loan = 300000; _settings_newgame.difficulty.vehicle_breakdowns = VehicleBreakdowns::Reduced;\n', 1)
+for m in ['SetMinimalSize(640, 240)','starting_year = TimerGameCalendar::Year{1950}','ClearGRFConfigList(_grfconfig_newgame)','TC_WHITE']:
+    if m not in s: raise SystemExit(f'missing marker {m}')
+p.write_text(s, encoding='utf-8')
 
-old_update = """\tvoid UpdateStep()
-\t{
-\t\tBrowserTutorialClearHighlights();
-\t\tthis->SetWidgetDisabledState(WID_BTC_PREVIOUS, this->step == 0);
-\t\tconst auto &current = _browser_tutorial_level_steps[this->step];
-\t\tthis->SetWidgetDisabledState(WID_BTC_NEXT, !BrowserTutorialObjectiveComplete(current.objective));
-\t\tif (Window *target = BrowserTutorialTargetWindow(current.target); target != nullptr && current.widget != INVALID_WIDGET) target->SetWidgetHighlight(current.widget, TC_YELLOW);
-\t\tthis->SetDirty();
-\t}
-"""
-new_update = """\tvoid UpdateStep()
-\t{
-\t\tBrowserTutorialClearHighlights();
-\t\tthis->highlight_elapsed_ms = 0;
-\t\tthis->highlight_bright = true;
-\t\tthis->SetWidgetDisabledState(WID_BTC_PREVIOUS, this->step == 0);
-\t\tconst auto &current = _browser_tutorial_level_steps[this->step];
-\t\tthis->SetWidgetDisabledState(WID_BTC_NEXT, !BrowserTutorialObjectiveComplete(current.objective));
-\t\tif (Window *target = BrowserTutorialTargetWindow(current.target); target != nullptr && current.widget != INVALID_WIDGET) target->SetWidgetHighlight(current.widget, TC_WHITE);
-\t\tthis->SetDirty();
-\t}
-"""
-if old_update not in intro:
-    raise SystemExit("Objective-aware UpdateStep anchor missing")
-intro = intro.replace(old_update, new_update, 1)
-
-old_tick = """\tvoid OnRealtimeTick([[maybe_unused]] uint delta_ms) override
-\t{
-\t\tconst auto &current = _browser_tutorial_level_steps[this->step];
-\t\tthis->SetWidgetDisabledState(WID_BTC_NEXT, !BrowserTutorialObjectiveComplete(current.objective));
-\t\tif (Window *target = BrowserTutorialTargetWindow(current.target); target != nullptr && current.widget != INVALID_WIDGET) {
-\t\t\tif (!target->IsWidgetHighlighted(current.widget)) target->SetWidgetHighlight(current.widget, TC_YELLOW);
-\t\t}
-\t\tthis->SetDirty();
-\t}
-"""
-new_tick = """\tvoid OnRealtimeTick(uint delta_ms) override
-\t{
-\t\tconst auto &current = _browser_tutorial_level_steps[this->step];
-\t\tthis->SetWidgetDisabledState(WID_BTC_NEXT, !BrowserTutorialObjectiveComplete(current.objective));
-\t\tthis->highlight_elapsed_ms += delta_ms;
-\t\tif (this->highlight_elapsed_ms >= 320) {
-\t\t\tthis->highlight_elapsed_ms %= 320;
-\t\t\tthis->highlight_bright = !this->highlight_bright;
-\t\t}
-\t\tif (Window *target = BrowserTutorialTargetWindow(current.target); target != nullptr && current.widget != INVALID_WIDGET) {
-\t\t\ttarget->SetWidgetHighlight(current.widget, this->highlight_bright ? TC_WHITE : TC_YELLOW);
-\t\t}
-\t\tthis->SetDirty();
-\t}
-"""
-if old_tick not in intro:
-    raise SystemExit("Objective-aware realtime tick anchor missing")
-intro = intro.replace(old_tick, new_tick, 1)
-
-if '#include "newgrf_config.h"' not in intro:
-    anchor = '#include "company_base.h"\n'
-    if anchor not in intro:
-        raise SystemExit("company include anchor missing")
-    intro = intro.replace(anchor, anchor + '#include "newgrf_config.h"\n', 1)
-
-anchor = "\tdecltype(_settings_newgame.game_creation.map_x) map_x{};\n"
-if anchor not in intro:
-    raise SystemExit("saved-settings struct anchor missing")
-intro = intro.replace(anchor, anchor + "\tdecltype(_settings_newgame.game_creation.starting_year) starting_year{};\n\tdecltype(_settings_newgame.difficulty.max_no_competitors) max_no_competitors{};\n", 1)
-
-anchor = "static BrowserTutorialSavedSettings _browser_tutorial_saved_settings{};\nstatic bool _browser_tutorial_settings_saved = false;\n"
-if anchor not in intro:
-    raise SystemExit("saved-settings globals anchor missing")
-intro = intro.replace(anchor, "static BrowserTutorialSavedSettings _browser_tutorial_saved_settings{};\nstatic GRFConfigList _browser_tutorial_saved_newgrfs{};\nstatic bool _browser_tutorial_settings_saved = false;\n", 1)
-
-anchor = "\ts.map_x = _settings_newgame.game_creation.map_x; s.map_y = _settings_newgame.game_creation.map_y;\n"
-if anchor not in intro:
-    raise SystemExit("save function anchor missing")
-intro = intro.replace(anchor, anchor + "\ts.starting_year = _settings_newgame.game_creation.starting_year;\n\ts.max_no_competitors = _settings_newgame.difficulty.max_no_competitors;\n\tClearGRFConfigList(_browser_tutorial_saved_newgrfs);\n\tCopyGRFConfigList(_browser_tutorial_saved_newgrfs, _grfconfig_newgame, false);\n", 1)
-
-anchor = "\t_settings_newgame.game_creation.map_x = s.map_x; _settings_newgame.game_creation.map_y = s.map_y;\n"
-if anchor not in intro:
-    raise SystemExit("restore function anchor missing")
-intro = intro.replace(anchor, anchor + "\t_settings_newgame.game_creation.starting_year = s.starting_year;\n\t_settings_newgame.difficulty.max_no_competitors = s.max_no_competitors;\n", 1)
-
-anchor = "\t_settings_newgame.difficulty.town_council_tolerance = s.town_council_tolerance; _settings_newgame.difficulty.disasters = s.disasters;\n\t_browser_tutorial_settings_saved = false;\n"
-if anchor not in intro:
-    raise SystemExit("restore tail anchor missing")
-intro = intro.replace(anchor, "\t_settings_newgame.difficulty.town_council_tolerance = s.town_council_tolerance; _settings_newgame.difficulty.disasters = s.disasters;\n\tClearGRFConfigList(_grfconfig_newgame);\n\tCopyGRFConfigList(_grfconfig_newgame, _browser_tutorial_saved_newgrfs, false);\n\tClearGRFConfigList(_browser_tutorial_saved_newgrfs);\n\t_browser_tutorial_settings_saved = false;\n", 1)
-
-anchor = "\tBrowserTutorialSaveNewGameSettings();\n\t_settings_newgame.game_creation.map_x = 6; _settings_newgame.game_creation.map_y = 6;\n"
-if anchor not in intro:
-    raise SystemExit("tutorial start anchor missing")
-intro = intro.replace(anchor, "\tBrowserTutorialSaveNewGameSettings();\n\t_settings_newgame.game_creation.starting_year = TimerGameCalendar::Year{1950};\n\t_settings_newgame.difficulty.max_no_competitors = 0;\n\tClearGRFConfigList(_grfconfig_newgame);\n\t_settings_newgame.game_creation.map_x = 6; _settings_newgame.game_creation.map_y = 6;\n", 1)
-
-old = "\t_settings_newgame.difficulty.max_loan = 1000000; _settings_newgame.difficulty.vehicle_breakdowns = 0;\n"
-new = "\t_settings_newgame.difficulty.max_loan = 300000; _settings_newgame.difficulty.vehicle_breakdowns = VehicleBreakdowns::Reduced;\n"
-if old not in intro:
-    raise SystemExit("tutorial easy-difficulty anchor missing")
-intro = intro.replace(old, new, 1)
-
-for marker in ("SetMinimalSize(600, 205)", "highlight_elapsed_ms", "TC_WHITE : TC_YELLOW", "starting_year = TimerGameCalendar::Year{1950}", "ClearGRFConfigList(_grfconfig_newgame)", "VehicleBreakdowns::Reduced"):
-    if marker not in intro:
-        raise SystemExit(f"Final tutorial marker missing: {marker}")
-
-intro_path.write_text(intro, encoding="utf-8")
-print("Tutorial final polish applied: larger text area, pulsing targets, detailed hints, 1950/no-AI/no-NewGRF practice settings.")
+ru = Path('openttd/src/lang/russian.txt'); en = Path('openttd/src/lang/english.txt')
+add_details(ru, RU, 'Подсказка'); add_details(en, EN, 'Tip')
+set_string(ru, 'STR_BROWSER_TUTORIAL_COACH_HINT', '{YELLOW}Выполните условие шага и следуйте яркой подсветке. Далее включится автоматически.{BLACK}')
+set_string(en, 'STR_BROWSER_TUTORIAL_COACH_HINT', '{YELLOW}Complete the objective and follow the bright highlight. Next unlocks automatically.{BLACK}')
+print('Final tutorial polish applied.')
