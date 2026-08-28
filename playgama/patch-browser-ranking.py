@@ -35,6 +35,21 @@ def prepare_cyrillic_font_backend() -> None:
     print("Prepared Emscripten FreeType for OpenTTD Latin/Cyrillic default fonts.")
 
 
+def isolate_tutorial_competitor_setting() -> None:
+    """Keep the dedicated tutorial AI-free without matching legacy runtime rewrites."""
+    path = Path("openttd/src/intro_gui.cpp")
+    text = path.read_text(encoding="utf-8")
+    old = "_settings_newgame.difficulty.max_no_competitors = 0;"
+    new = "_settings_newgame.difficulty.max_no_competitors = static_cast<uint8_t>(0);"
+    if new not in text:
+        count = text.count(old)
+        if count != 1:
+            raise SystemExit(f"Expected one tutorial competitor assignment, got {count}")
+        text = text.replace(old, new, 1)
+        path.write_text(text, encoding="utf-8")
+    print("Isolated tutorial no-competitor setting from legacy normal-game runtime rewrites.")
+
+
 def normalize_tutorial_language_alignment() -> None:
     """Keep generated tutorial language keys aligned like native OpenTTD strings."""
     pattern = re.compile(r"^(STR_BROWSER_TUTORIAL_LEVEL_\d{2})\s*:(.*)$", re.M)
@@ -60,5 +75,6 @@ runpy.run_path(str(locate("patch-browser-tutorial-layout-normalize.py")), run_na
 runpy.run_path(str(locate("patch-browser-tutorial-ux.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-dynamic-targets.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-v2.py")), run_name="__main__")
+isolate_tutorial_competitor_setting()
 normalize_tutorial_language_alignment()
 print("Native 0-1000 ranking + objective-driven 32-step multimodal tutorial + compact dynamic guidance applied together.")
