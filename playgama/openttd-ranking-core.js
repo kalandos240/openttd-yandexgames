@@ -1,15 +1,19 @@
 /* Platform-neutral ranking core shared by browser builds.
  * Local ranking uses OpenTTD's native company performance rating (0..1000).
- * Older experimental 53-bit local tables are deliberately discarded because
- * those packed values were not meaningful to players.
+ * Every previous experimental storage/snapshot format is deliberately discarded
+ * instead of being clamped into plausible-looking scores.
  */
 (() => {
   'use strict';
   if (window.OpenTTDRankingCore) return;
 
   const MAX_SCORE = 1000;
-  const LOCAL_KEY = 'openttd.localRanking.v3';
-  const LEGACY_LOCAL_KEYS = ['openttd.localRanking.v1', 'openttd.localRanking.v2'];
+  const LOCAL_KEY = 'openttd.localRanking.v4';
+  const LEGACY_LOCAL_KEYS = [
+    'openttd.localRanking.v1',
+    'openttd.localRanking.v2',
+    'openttd.localRanking.v3',
+  ];
   const SNAPSHOT_PATH = '/home/web_user/.openttd/local-ranking.tsv';
   const LIMIT = 10;
   let lastSnapshot = '';
@@ -23,8 +27,7 @@
     return score;
   };
 
-  /* v1/v2 stored packed 53-bit values. Never reinterpret those values as the
-     new human-readable 0..1000 rating; start the local table clean instead. */
+  /* v1-v3 belong to older score/snapshot contracts. Never reinterpret them. */
   try {
     if (typeof localStorage.removeItem === 'function') {
       LEGACY_LOCAL_KEYS.forEach((key) => localStorage.removeItem(key));
@@ -51,7 +54,7 @@
 
   const writeSnapshot = () => {
     const rows = load();
-    const lines = ['version\t2'];
+    const lines = ['version\t3'];
     rows.forEach((row, index) => lines.push(`entry\t${index + 1}\t${row.score}\t${row.name}`));
     const text = lines.join('\n') + '\n';
     if (text === lastSnapshot) return true;
@@ -77,8 +80,6 @@
     const name = cleanName(companyName);
     const rows = load();
 
-    /* Keep one best record per company name so periodic score updates from a
-       long-running game do not fill the whole local table with one company. */
     const existing = rows.find((row) => row.name === name);
     if (existing) {
       if (score <= existing.score) {
@@ -94,9 +95,6 @@
     save(rows.slice(0, LIMIT));
     publishSoon();
 
-    /* Global submission never opens an authorization dialog. The optional
-       provider queues the best score until the user explicitly chooses to sign
-       in from the ranking window. */
     window.OpenTTDGlobalRanking?.submitScore?.(score);
     return true;
   };
