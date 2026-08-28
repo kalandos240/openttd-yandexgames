@@ -28,18 +28,18 @@ def main() -> None:
         raise SystemExit(f'Legacy direct-file build script is missing: {path}')
     text = path.read_text(encoding='utf-8')
 
-    single_old = r'''patch = r'''# Direct-file build: embed all files and the WebAssembly binary.
+    single_old = r"""patch = r'''# Direct-file build: embed all files and the WebAssembly binary.
 s = s.replace('--preload-file', '--embed-file')
-wasm_marker = '    target_link_libraries(WASM::WASM INTERFACE "-s WASM_BIGINT")\n'
-single_file = '    target_link_libraries(WASM::WASM INTERFACE "-s SINGLE_FILE=1")\n'
+wasm_marker = '    target_link_libraries(WASM::WASM INTERFACE \"-s WASM_BIGINT\")\\n'
+single_file = '    target_link_libraries(WASM::WASM INTERFACE \"-s SINGLE_FILE=1\")\\n'
 if single_file not in s:
     if wasm_marker not in s:
         raise SystemExit('Could not find WASM_BIGINT linker marker')
     s = s.replace(wasm_marker, wasm_marker + single_file, 1)
 cmake.write_text(s)
 '''
-'''
-    single_new = r'''patch = r'''# Platform delivery: keep JS, Wasm and preloaded data as separate files.
+"""
+    single_new = r"""patch = r'''# Platform delivery: keep JS, Wasm and preloaded data as separate files.
 # Do not convert --preload-file to --embed-file and do not enable SINGLE_FILE.
 if '--embed-file' in s:
     raise SystemExit('Unexpected embedded-file flag before platform runtime patch')
@@ -47,7 +47,7 @@ if 'SINGLE_FILE=1' in s:
     raise SystemExit('Unexpected SINGLE_FILE flag before platform runtime patch')
 cmake.write_text(s)
 '''
-'''
+"""
     if text.count(single_old) != 1:
         raise SystemExit(f'Could not locate historical SINGLE_FILE mutation block ({text.count(single_old)})')
     text = text.replace(single_old, single_new, 1)
