@@ -2,6 +2,12 @@
   "sendAnalyticsEvents": true,
   "disableLoadingLogo": true,
   "showFullLoadingLogo": false,
+  "leaderboards": [
+    {
+      "id": "companyrating",
+      "isMain": true
+    }
+  ],
   "advertisement": {
     "minimumDelayBetweenInterstitial": 120,
     "initialInterstitialDelay": 60,

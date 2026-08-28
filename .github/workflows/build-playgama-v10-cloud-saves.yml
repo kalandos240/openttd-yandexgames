@@ -6,12 +6,14 @@ on:
     branches:
       - main
       - fix/playgama-launch-moderation
+      - fix/yandex-ui-runtime-errors
     paths:
       - '.github/workflows/build-playgama-v10-cloud-saves.yml'
       - 'playgama/openttd-bundled-addons.js'
       - 'playgama/openttd-playgama-cloud-saves.js'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/playgama-bridge-config.json'
+      - 'playgama/openttd-full-viewport.js'
       - 'playgama/upgrade_playgama_v10.py'
       - 'playgama/build-license-bundle.py'
       - 'yandex/package_yandex_from_playgama.py'
@@ -24,6 +26,7 @@ on:
       - 'playgama/openttd-playgama-cloud-saves.js'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/playgama-bridge-config.json'
+      - 'playgama/openttd-full-viewport.js'
       - 'playgama/upgrade_playgama_v10.py'
       - 'yandex/package_yandex_from_playgama.py'
 
@@ -86,6 +89,10 @@ jobs:
           set -euo pipefail
           grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-v10/index.html
           ! grep -q 'bridge.playgama.com/v2/' dist-v10/index.html
+          test "$(head -c 15 dist-v10/index.html)" = '<!DOCTYPE html>'
+          test -s dist-v10/openttd-full-viewport.js
+          grep -Fq 'Module.setCanvasSize(width, height)' dist-v10/openttd-full-viewport.js
+          grep -Fq 'Module.calledRun !== true' dist-v10/openttd-full-viewport.js
           ! grep -q 'addRunDependency' dist-v10/openttd-bundled-addons.js
           ! grep -q 'removeRunDependency' dist-v10/openttd-bundled-addons.js
           grep -q 'RESTORE_STARTUP_GATE_MS = 1500' dist-v10/openttd-bundled-addons.js
@@ -97,6 +104,7 @@ jobs:
           node --check dist-v10/openttd-bundled-addons.js
           node --check dist-v10/playgama-yandex-compat.js
           node --check dist-v10/openttd-playgama-fixes.js
+          node --check dist-v10/openttd-full-viewport.js
           python3 -m json.tool dist-v10/OPENTTD-BUNDLED-ADDONS.json >/dev/null
           python3 -m json.tool dist-v10/playgama-bridge-config.json >/dev/null
 
@@ -111,7 +119,7 @@ jobs:
           root = Path('dist-v10')
           manifest = json.loads((root / 'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
           assert manifest['enabled_by_default'] is False
-          assert manifest['manifest_version'] == '2026-08-27-v10-launch-fix'
+          assert manifest['manifest_version'] == '2026-08-27-v11-ui-polish'
           assert len(manifest['items']) == 7
           for row in manifest['items']:
               assert row['asset'].endswith('.bin'), row['asset']
@@ -142,7 +150,6 @@ jobs:
           cp -a dist-v10 dist-yandex
           python3 yandex/package_yandex_from_playgama.py dist-yandex
 
-          # Active Yandex package must contain no Playgama SDK/runtime layer.
           ! grep -Eqi 'playgama|bridge\.playgama\.com' dist-yandex/index.html
           ! grep -Eqi 'playgama' dist-yandex/openttd-yandex-fixes.js
           test ! -e dist-yandex/playgama-yandex-compat.js
@@ -150,20 +157,21 @@ jobs:
           test ! -e dist-yandex/openttd-playgama-cloud-saves.js
           test ! -e dist-yandex/openttd-playgama-fixes.js
 
-          # Yandex SDK follows the official dynamic /sdk.js pattern. There is no
-          # host/domain/protocol allow-list, so package operation is not tied to
-          # one moderation URL. SDK failure cannot hold the Emscripten startup.
+          test "$(head -c 15 dist-yandex/index.html)" = '<!DOCTYPE html>'
+          test -s dist-yandex/openttd-full-viewport.js
           grep -Fq "script.src = '/sdk.js'" dist-yandex/yandex-bootstrap.js
           grep -Fq 'YaGames.init()' dist-yandex/yandex-bootstrap.js
           ! grep -Eq "location\.(host|hostname|origin)|document\.domain|location\.protocol === 'file:'" dist-yandex/yandex-bootstrap.js
           grep -Fq 'yandexGamesSDKReady' dist-yandex/openttd-runtime.js
           grep -Fq 'setTimeout((()=>A(null)),3e3)' dist-yandex/openttd-runtime.js
+          grep -Fq 'Module.calledRun !== true' dist-yandex/yandex-bridge.js
           ! grep -q 'addRunDependency' dist-yandex/openttd-bundled-addons.js
 
           node --check dist-yandex/yandex-bootstrap.js
           node --check dist-yandex/yandex-bridge.js
           node --check dist-yandex/openttd-yandex-fixes.js
           node --check dist-yandex/openttd-bundled-addons.js
+          node --check dist-yandex/openttd-full-viewport.js
 
       - name: Unit-test Yandex SDK bootstrap order
         shell: bash
@@ -172,7 +180,7 @@ jobs:
           node <<'NODE'
           const fs = require('fs');
           global.window = global;
-          global.navigator = { language: 'ru-RU' };
+          global.navigator = { language: 'ru-RU', userActivation: { hasBeenActive: false } };
           global.location = { protocol: 'https:', hostname: 'any-moderation-host.example' };
           let appended = null;
           global.document = {

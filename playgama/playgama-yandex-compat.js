@@ -54,7 +54,7 @@
   const resumeTrackedAudio = () => {
     if (pauseReasons.size || !platformAudioEnabled || document.hidden) return;
     trackedAudioContexts.forEach((context) => {
-      if (context?.state === 'suspended') context.resume?.().catch?.(() => {});
+      if (context?.state === 'suspended' && (navigator.userActivation?.hasBeenActive ?? true)) context.resume?.().catch?.(() => {});
     });
     Array.from(pausedMedia).forEach((media) => {
       pausedMedia.delete(media);
@@ -271,7 +271,10 @@
   window.YaGames = {
     init() {
       return window.playgamaBridgeReady.then((bridge) => {
-        if (!bridge) throw new Error('Playgama Bridge initialization failed');
+        if (!bridge) {
+          console.warn('[Playgama] Bridge unavailable; starting OpenTTD with offline platform fallback.');
+          return createSdk({});
+        }
         return createSdk(bridge);
       });
     }

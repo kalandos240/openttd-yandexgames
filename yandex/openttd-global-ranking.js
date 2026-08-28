@@ -1,0 +1,247 @@
+/* Global ranking bridge for the browser edition.
+ *
+ * Deliberately keeps all player-facing wording platform-neutral. The native
+ * OpenTTD UI only knows about "Local ranking" and "Global ranking". This file
+ * is injected only into the platform build that provides a leaderboard API.
+ */
+(() => {
+  'use strict';
+  if (window.OpenTTDGlobalRanking) return;
+
+  /* Exact developer-console identifier; deliberately contains no separators. */
+  const LEADERBOARD_NAME = 'companyrating';
+  const MAX_SCORE = 1000;
+  const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
+  /* v2 intentionally discards pending/submitted values from the obsolete
+     53-bit scoring scheme. */
+  const PENDING_KEY = 'openttd.globalRanking.pendingScore.v2';
+  const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v2';
+  const FETCH_FAILURE_BACKOFF_MS = 30000;
+
+  let status = 'loading';
+  let authorized = false;
+  let entries = [];
+  let lastWrite = '';
+  let submitTimer = 0;
+  let inFlightSubmit = false;
+  let inFlightFetch = null;
+  let nextFetchAllowedAt = 0;
+
+  const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
+  const clampScore = (value) => {
+    const n = typeof value === 'number' ? value : Number(String(value));
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(MAX_SCORE, Math.trunc(n)));
+  };
+  const readLeaderboardScore = (value) => {
+    const n = typeof value === 'number' ? value : Number(String(value));
+    if (!Number.isFinite(n)) return null;
+    const score = Math.trunc(n);
+    /* Legacy v1 entries used a 53-bit packed value. Do not turn those huge
+       numbers into fake 1000-point records; hide them until a valid v2 score
+       replaces them on the platform. */
+    return score >= 0 && score <= MAX_SCORE ? score : null;
+  };
+  const storageGetNumber = (key) => {
+    try { return clampScore(localStorage.getItem(key) || 0); } catch (_) { return 0; }
+  };
+  const storageSetNumber = (key, value) => {
+    try { localStorage.setItem(key, String(clampScore(value))); } catch (_) {}
+  };
+
+  const snapshotText = () => {
+    const lines = ['version\t2', 'scale\t0-1000', `status\t${status}`, `authorized\t${authorized ? 1 : 0}`];
+    for (const row of entries) {
+      lines.push(`entry\t${Math.max(1, Math.trunc(row.rank || 1))}\t${clampScore(row.score)}\t${row.isUser ? 1 : 0}\t${cleanName(row.name)}`);
+    }
+    return lines.join('\n') + '\n';
+  };
+
+  const writeSnapshot = () => {
+    const text = snapshotText();
+    if (text === lastWrite) return true;
+    try {
+      if (typeof FS === 'undefined' || typeof FS.writeFile !== 'function') return false;
+      try { FS.mkdirTree('/home/web_user/.openttd'); } catch (_) {}
+      FS.writeFile(SNAPSHOT_PATH, text, { encoding: 'utf8' });
+      lastWrite = text;
+      return true;
+    } catch (error) {
+      console.warn('[OpenTTD ranking] Could not publish ranking snapshot', error);
+      return false;
+    }
+  };
+  const publishSoon = () => {
+    if (writeSnapshot()) return;
+    setTimeout(writeSnapshot, 100);
+  };
+
+  const getSdk = async () => {
+    try {
+      const sdk = await Promise.resolve(window.yandexGamesSDKReady);
+      return sdk || window.ysdk || null;
+    } catch (_) {
+      return window.ysdk || null;
+    }
+  };
+  const getPlayer = async (sdk) => {
+    if (!sdk || typeof sdk.getPlayer !== 'function') return null;
+    try { return await sdk.getPlayer(); } catch (_) { return null; }
+  };
+  const checkAuthorized = async (sdk) => {
+    const player = await getPlayer(sdk);
+    authorized = !!(player && typeof player.isAuthorized === 'function' && player.isAuthorized());
+    return player;
+  };
+  const methodAvailable = async (sdk, method) => {
+    if (!sdk) return false;
+    if (typeof sdk.isAvailableMethod !== 'function') return true;
+    try { return (await sdk.isAvailableMethod(method)) !== false; } catch (_) { return false; }
+  };
+  const normalizeEntry = (entry, userRank) => {
+    const score = readLeaderboardScore(entry?.score);
+    if (score === null) return null;
+    const player = entry?.player || {};
+    return {
+      score,
+      isUser: Number.isFinite(userRank) && entry?.rank === userRank,
+      name: cleanName(player.publicName || player.getName?.() || 'Player'),
+    };
+  };
+
+  const requestEntries = async (force = false) => {
+    if (inFlightFetch) return inFlightFetch;
+    if (!force && Date.now() < nextFetchAllowedAt) return false;
+
+    inFlightFetch = (async () => {
+      status = 'loading';
+      publishSoon();
+      const sdk = await getSdk();
+      if (!sdk?.leaderboards || typeof sdk.leaderboards.getEntries !== 'function') {
+        status = 'offline';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+
+      await checkAuthorized(sdk);
+      try {
+        const result = await sdk.leaderboards.getEntries(LEADERBOARD_NAME, {
+          quantityTop: 10,
+          includeUser: authorized,
+          quantityAround: authorized ? 3 : 0,
+        });
+        /* Only treat userRank as meaningful after authorization. */
+        const userRank = authorized && Number.isFinite(result?.userRank) ? result.userRank : NaN;
+        entries = Array.isArray(result?.entries)
+          ? result.entries.map((entry) => normalizeEntry(entry, userRank)).filter(Boolean).slice(0, 10).map((row, index) => ({ ...row, rank: index + 1 }))
+          : [];
+        nextFetchAllowedAt = 0;
+        status = entries.length ? 'ready' : 'empty';
+        publishSoon();
+        return true;
+      } catch (error) {
+        /* Missing/not-yet-published boards return 404. Back off so one setup
+           mistake cannot flood the game console with repeated SDK failures. */
+        nextFetchAllowedAt = Date.now() + FETCH_FAILURE_BACKOFF_MS;
+        console.warn('[OpenTTD ranking] Global ranking temporarily unavailable', error);
+        status = 'error';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+    })();
+
+    try {
+      return await inFlightFetch;
+    } finally {
+      inFlightFetch = null;
+    }
+  };
+
+  const doSubmit = async () => {
+    if (inFlightSubmit) return;
+    const pending = storageGetNumber(PENDING_KEY);
+    const submitted = storageGetNumber(SUBMITTED_KEY);
+    if (pending <= submitted) return;
+
+    inFlightSubmit = true;
+    try {
+      const sdk = await getSdk();
+      if (!sdk?.leaderboards || typeof sdk.leaderboards.setScore !== 'function') return;
+      const player = await checkAuthorized(sdk);
+      if (!player || !authorized) {
+        status = 'auth-required';
+        publishSoon();
+        return;
+      }
+      if (!(await methodAvailable(sdk, 'leaderboards.setScore'))) return;
+      await sdk.leaderboards.setScore(LEADERBOARD_NAME, pending);
+      storageSetNumber(SUBMITTED_KEY, pending);
+      status = 'ready';
+      publishSoon();
+    } catch (error) {
+      console.warn('[OpenTTD ranking] Score submission failed', error);
+    } finally {
+      inFlightSubmit = false;
+    }
+  };
+
+  const submitScore = (score) => {
+    const next = clampScore(score);
+    if (next <= 0) return;
+    if (next > storageGetNumber(PENDING_KEY)) storageSetNumber(PENDING_KEY, next);
+    clearTimeout(submitTimer);
+    submitTimer = setTimeout(doSubmit, 1500);
+  };
+
+  const requestAuth = async () => {
+    const sdk = await getSdk();
+    if (!sdk) {
+      status = 'offline';
+      publishSoon();
+      return false;
+    }
+
+    const player = await checkAuthorized(sdk);
+    if (player && authorized) {
+      await doSubmit();
+      await requestEntries(true);
+      return true;
+    }
+
+    try {
+      if (!sdk.auth || typeof sdk.auth.openAuthDialog !== 'function') throw new Error('authorization unavailable');
+      await sdk.auth.openAuthDialog();
+      await checkAuthorized(sdk);
+      if (authorized) {
+        await doSubmit();
+        await requestEntries(true);
+      } else {
+        status = 'auth-required';
+        publishSoon();
+      }
+      return authorized;
+    } catch (error) {
+      console.warn('[OpenTTD ranking] Authorization was not completed', error);
+      status = 'auth-required';
+      publishSoon();
+      return false;
+    }
+  };
+
+  window.OpenTTDGlobalRanking = {
+    maxScore: MAX_SCORE,
+    leaderboardName: LEADERBOARD_NAME,
+    submitScore,
+    requestEntries,
+    requestAuth,
+    refresh: () => requestEntries(true),
+  };
+
+  publishSoon();
+  Promise.resolve(window.yandexGamesSDKReady).then(() => requestEntries()).catch(() => {
+    status = 'offline';
+    publishSoon();
+  });
+})();

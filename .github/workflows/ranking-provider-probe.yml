@@ -1,0 +1,208 @@
+name: Browser ranking provider tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/ranking-provider-probe.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/openttd-ranking-core.js'
+      - 'playgama/openttd-global-ranking.js'
+      - 'playgama/playgama-bridge-config.json'
+      - 'yandex/openttd-global-ranking.js'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check ranking providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch-browser-ranking.py playgama/patch-browser-ranking-core.py
+          node --check playgama/openttd-ranking-core.js
+          node --check playgama/openttd-global-ranking.js
+          node --check yandex/openttd-global-ranking.js
+          python3 -m json.tool playgama/playgama-bridge-config.json >/dev/null
+          grep -Fq '"id": "companyrating"' playgama/playgama-bridge-config.json
+          ! grep -Fq 'company_rating' playgama/playgama-bridge-config.json
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" playgama/openttd-global-ranking.js
+          grep -Fq "LEADERBOARD_NAME = 'companyrating'" yandex/openttd-global-ranking.js
+          grep -Fq 'FETCH_FAILURE_BACKOFF_MS = 30000' yandex/openttd-global-ranking.js
+
+      - name: Test local ranking exact 53-bit score
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const store = new Map();
+          global.localStorage = {
+            getItem: key => store.has(key) ? store.get(key) : null,
+            setItem: (key, value) => store.set(key, String(value)),
+          };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('local-ranking')) snapshot = String(data); },
+          };
+          eval(fs.readFileSync('playgama/openttd-ranking-core.js', 'utf8'));
+          OpenTTDRankingCore.submit(String(Number.MAX_SAFE_INTEGER), 'Exact Company', true);
+          OpenTTDRankingCore.requestLocalSnapshot();
+          if (!snapshot.includes(String(Number.MAX_SAFE_INTEGER))) throw new Error('53-bit score lost precision');
+          if (!snapshot.includes('Exact Company')) throw new Error('local company missing');
+          NODE
+
+      - name: Test Playgama provider auth and rank normalization
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const store = new Map();
+          global.localStorage = {
+            getItem: key => store.has(key) ? store.get(key) : null,
+            setItem: (key, value) => store.set(key, String(value)),
+          };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('global-ranking')) snapshot = String(data); },
+          };
+          let authorizeCalls = 0;
+          let setScoreCalls = 0;
+          const bridge = {
+            player: {
+              id: 'me', name: 'Player', isAuthorizationSupported: true, isAuthorized: false,
+              authorize: async () => { authorizeCalls++; bridge.player.isAuthorized = true; },
+            },
+            leaderboards: {
+              type: 'in_game',
+              getEntries: async (name) => {
+                if (name !== 'companyrating') throw new Error(`wrong leaderboard id: ${name}`);
+                return [
+                  { id: 'one', name: 'One', score: 10, rank: 0 },
+                  { id: 'two', name: 'Two', score: 9, rank: 1 },
+                ];
+              },
+              setScore: async (name) => {
+                if (name !== 'companyrating') throw new Error(`wrong leaderboard id: ${name}`);
+                setScoreCalls++;
+              },
+            },
+          };
+          global.bridge = bridge;
+          global.playgamaBridgeReady = Promise.resolve(bridge);
+          eval(fs.readFileSync('playgama/openttd-global-ranking.js', 'utf8'));
+          (async () => {
+            await new Promise(resolve => setTimeout(resolve, 20));
+            if (authorizeCalls !== 0) throw new Error('authorization opened without user action');
+            if (!snapshot.includes('entry\t1\t10\t0\tOne') || !snapshot.includes('entry\t2\t9\t0\tTwo')) {
+              throw new Error(`zero-based Bridge ranks were not normalized: ${snapshot}`);
+            }
+            OpenTTDGlobalRanking.submitScore(Number.MAX_SAFE_INTEGER);
+            await new Promise(resolve => setTimeout(resolve, 1600));
+            if (authorizeCalls !== 0) throw new Error('score submission auto-authorized');
+            if (setScoreCalls !== 0) throw new Error('unauthorized score was sent');
+            await OpenTTDGlobalRanking.requestAuth();
+            if (authorizeCalls !== 1) throw new Error('explicit sign-in did not authorize exactly once');
+            if (setScoreCalls !== 1) throw new Error('best pending score was not sent after sign-in');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+
+      - name: Test Yandex provider auth anonymous highlight and missing-board backoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          global.window = global;
+          const store = new Map();
+          global.localStorage = {
+            getItem: key => store.has(key) ? store.get(key) : null,
+            setItem: (key, value) => store.set(key, String(value)),
+          };
+          let snapshot = '';
+          global.FS = {
+            mkdirTree() {},
+            writeFile(path, data) { if (path.includes('global-ranking')) snapshot = String(data); },
+          };
+          let authCalls = 0;
+          let setScoreCalls = 0;
+          let getEntriesCalls = 0;
+          let authorized = false;
+          let failBoard = false;
+          const player = { isAuthorized: () => authorized };
+          const sdk = {
+            getPlayer: async () => player,
+            isAvailableMethod: async () => true,
+            auth: { openAuthDialog: async () => { authCalls++; authorized = true; } },
+            leaderboards: {
+              getEntries: async (name) => {
+                getEntriesCalls++;
+                if (name !== 'companyrating') throw new Error(`wrong leaderboard id: ${name}`);
+                if (failBoard) throw new Error('404');
+                return { userRank: 0, entries: [{ rank: 0, score: 10, player: { publicName: 'First' } }] };
+              },
+              setScore: async (name) => {
+                if (name !== 'companyrating') throw new Error(`wrong leaderboard id: ${name}`);
+                setScoreCalls++;
+              },
+            },
+          };
+          global.ysdk = sdk;
+          global.yandexGamesSDKReady = Promise.resolve(sdk);
+          eval(fs.readFileSync('yandex/openttd-global-ranking.js', 'utf8'));
+          (async () => {
+            await new Promise(resolve => setTimeout(resolve, 20));
+            if (authCalls !== 0) throw new Error('authorization opened during warm-up');
+            if (!snapshot.includes('entry\t1\t10\t0\tFirst')) {
+              throw new Error(`anonymous first place was incorrectly highlighted: ${snapshot}`);
+            }
+            failBoard = true;
+            await OpenTTDGlobalRanking.refresh();
+            const afterFailure = getEntriesCalls;
+            await OpenTTDGlobalRanking.requestEntries();
+            if (getEntriesCalls !== afterFailure) throw new Error('missing-board fetch was not backed off');
+
+            OpenTTDGlobalRanking.submitScore(Number.MAX_SAFE_INTEGER);
+            await new Promise(resolve => setTimeout(resolve, 1600));
+            if (authCalls !== 0) throw new Error('score submission auto-opened auth');
+            if (setScoreCalls !== 0) throw new Error('unauthorized score was sent');
+            failBoard = false;
+            await OpenTTDGlobalRanking.requestAuth();
+            if (authCalls !== 1) throw new Error('explicit sign-in did not open auth exactly once');
+            if (setScoreCalls !== 1) throw new Error('pending best score was not sent after sign-in');
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+
+      - name: Check player-facing ranking strings are platform-neutral
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          patch = Path('playgama/patch-browser-ranking-core.py').read_text(encoding='utf-8')
+          player_strings = []
+          for line in patch.splitlines():
+              if line.startswith('STR_BROWSER_RANKING_') and ':' in line:
+                  player_strings.append(line.split(':', 1)[1])
+          if not player_strings:
+              raise SystemExit('No player-facing ranking strings found in ranking core patch')
+          joined = '\n'.join(player_strings).casefold()
+          forbidden = ('yandex', 'яндекс', 'playgama', 'плейгама')
+          bad = [word for word in forbidden if word in joined]
+          if bad:
+              raise SystemExit(f'Platform branding leaked into ranking UI strings: {bad}')
+          print('Player-facing ranking strings are platform-neutral.')
+          PY

@@ -1,0 +1,139 @@
+name: OpenTTD multimodal tutorial compile probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/yandex-ui-runtime-errors
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/tutorial-compile-probe.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-ranking-core.py'
+      - 'playgama/patch-browser-ranking-v2.py'
+      - 'playgama/patch-browser-tutorial.py'
+      - 'playgama/patch-browser-tutorial-toolbar.py'
+      - 'playgama/patch-browser-tutorial-level.py'
+      - 'playgama/patch-browser-tutorial-polish.py'
+      - 'playgama/patch-browser-tutorial-quality.py'
+      - 'playgama/patch-browser-tutorial-layout-normalize.py'
+      - 'playgama/patch-browser-tutorial-ux.py'
+      - 'playgama/patch-browser-tutorial-dynamic-targets.py'
+      - 'playgama/patch-browser-tutorial-v2.py'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+
+concurrency:
+  group: tutorial-compile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout browser edition
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser build pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Install native menu ranking and tutorial patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          python3 -m py_compile \
+            playgama/patch-browser-ranking-core.py \
+            playgama/patch-browser-ranking-v2.py \
+            playgama/patch-browser-tutorial.py \
+            playgama/patch-browser-tutorial-toolbar.py \
+            playgama/patch-browser-tutorial-level.py \
+            playgama/patch-browser-tutorial-polish.py \
+            playgama/patch-browser-tutorial-quality.py \
+            playgama/patch-browser-tutorial-layout-normalize.py \
+            playgama/patch-browser-tutorial-ux.py \
+            playgama/patch-browser-tutorial-dynamic-targets.py \
+            playgama/patch-browser-tutorial-v2.py \
+            legacy/ci/patch-playgama-newgrf-main-menu.py \
+            legacy/ci/patch-browser-ranking.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) == 1:
+              text = text.replace(ai_off, '', 1)
+
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one source patch anchor, got {text.count(anchor)}')
+          addition = (
+              "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
+          )
+          text = text.replace(anchor, anchor + addition, 1)
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Compile OpenTTD 15.3 with multimodal tutorial
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          grep -Fq 'WID_SGI_TUTORIAL' openttd/src/widgets/intro_widget.h
+          grep -Fq 'struct BrowserTutorialWindow final : Window' openttd/src/intro_gui.cpp
+          grep -Fq 'struct BrowserTutorialCoachWindow final : Window' openttd/src/intro_gui.cpp
+          grep -Fq 'struct BrowserButtonGuideWindow final : Window' openttd/src/intro_gui.cpp
+          grep -Fq 'this->Close(); StartBrowserTutorialLevel();' openttd/src/intro_gui.cpp
+          grep -Fq 'StartNewGameWithoutGUI(0x4F545444U)' openttd/src/intro_gui.cpp
+          grep -Fq 'custom_town_number = 8' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.industry_density = ID_HIGH' openttd/src/intro_gui.cpp
+          grep -Fq 'difficulty.quantity_sea_lakes = 2' openttd/src/intro_gui.cpp
+          grep -Fq 'SetMinimalSize(74, 18)' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::FreightDelivered' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::ShipOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::AircraftOrdersRunning' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialObjective::TownGrowthFunded' openttd/src/intro_gui.cpp
+          grep -Fq 'IsShipDepotTile(depot->xy)' openttd/src/intro_gui.cpp
+          grep -Fq 'town->fund_buildings_months > 0' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_DT_STATION' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_AT_AIRPORT' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_TA_COMMAND_LIST' openttd/src/intro_gui.cpp
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_32' openttd/src/intro_gui.cpp
+          grep -Fq 'SetWidgetHighlight' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialGameStarted();' openttd/src/openttd.cpp
+          grep -Fq 'ShowBrowserButtonGuide();' openttd/src/toolbar_gui.cpp
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_01[[:space:]]*:1/32' openttd/src/lang/english.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_32[[:space:]]*:32/32' openttd/src/lang/english.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_01[[:space:]]*:1/32' openttd/src/lang/russian.txt
+          grep -Eq '^STR_BROWSER_TUTORIAL_LEVEL_32[[:space:]]*:32/32' openttd/src/lang/russian.txt
+          grep -Fq 'BROWSER_RANKING_MAX_SCORE = SCORE_MAX' openttd/src/highscore_gui.cpp
+          grep -Fq 'std::clamp<int32_t>(raw_performance, 0, SCORE_MAX)' openttd/src/highscore_gui.cpp
+          ! grep -Fq 'BROWSER_RANKING_VALUE_MASK' openttd/src/highscore_gui.cpp
+
+      - name: Validate rebuilt runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/tutorial-runtime
+          mkdir -p /tmp/tutorial-runtime
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/tutorial-runtime
+          test -s /tmp/tutorial-runtime/openttd-runtime.js
+          node --check /tmp/tutorial-runtime/openttd-runtime.js
+          echo 'Interactive 32-step multimodal tutorial compile probe passed.'
