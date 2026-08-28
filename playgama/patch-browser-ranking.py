@@ -35,6 +35,7 @@ runpy.run_path(str(locate("patch-browser-tutorial-v15-compat.py")), run_name="__
 runpy.run_path(str(locate("patch-browser-ranking-strict.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-font-web.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-real-objectives.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-tutorial-clean-ui.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-ai-static.py")), run_name="__main__")
 
-print("Root-cause browser fixes applied: static native AI preload, immediate AI startup, strict 0..1000 ranking, web font handling, and real tutorial objectives.")
+print("Root-cause browser fixes applied: static native AI preload, immediate AI startup, strict 0..1000 ranking, web font handling, real tutorial objectives, and viewport-safe tutorial UI.")
