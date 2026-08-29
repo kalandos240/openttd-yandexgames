@@ -1,12 +1,10 @@
-/* Ensure bundled OpenTTD AI content is installed after IDBFS restore but before main().
+/* Install bundled OpenTTD AI content after IDBFS restore but before main().
  *
- * The platform runtime defines window.yandexRestoreOpenTTDCloud() before the
- * Emscripten runtime is loaded. The OpenTTD runtime-fixes layer wraps that
- * function and synchronously installs SimpleAI plus its API compatibility
- * chain before its first await. This hook also installs the raw bundled AI
- * archives directly as a fail-safe, then intercepts the first populate=true
- * FS.syncfs() performed by OpenTTD's preRun code. Only after the local AI files
- * and startup config are present is OpenTTD's syncfs run dependency released.
+ * This hook is deliberately platform-neutral. It guarantees that SimpleAI and
+ * its library archives are scanner-visible before AI::Initialize(), then calls
+ * the existing platform restore wrapper so the OpenTTD 15.3 compatibility
+ * chain is installed synchronously before that wrapper reaches its first await.
+ * Player-selected max_no_competitors and competitors_interval are never changed.
  */
 (() => {
   'use strict';
@@ -42,10 +40,6 @@
     return bytes;
   };
 
-  /* Install the BaNaNaS archives independently from the cloud wrapper. This is
-   * intentionally redundant with the platform runtime fixes: a platform/cloud
-   * integration regression must never leave OpenTTD with AI companies but no
-   * script archive on disk when AI::Initialize() scans AI_DIR. */
   const installBundledAIArchives = (FS, personalDir) => {
     const bundle = window.__openttdClassicAIArchives;
     if (!bundle || typeof bundle !== 'object') {
@@ -84,27 +78,6 @@
     return installed;
   };
 
-  /* Cloud/player work may continue in the background. The settings OpenTTD
-   * must see before main() are local. Do not rewrite competitors_interval:
-   * the native web-port patch deliberately gives a user-selected 0 the meaning
-   * "start requested competitors immediately". */
-  const forceStartupAIConfig = (FS, personalDir) => {
-    const path = personalDir + '/openttd.cfg';
-    let config = '';
-    try { config = FS.readFile(path, { encoding: 'utf8' }); } catch (_) {}
-
-    if (/^max_no_competitors\s*=.*$/m.test(config)) {
-      config = config.replace(/^max_no_competitors\s*=.*$/m, 'max_no_competitors = 3');
-    } else if (/^\[difficulty\]\s*$/m.test(config)) {
-      config = config.replace(/^\[difficulty\]\s*$/m, '[difficulty]\nmax_no_competitors = 3');
-    } else {
-      config += (config && !config.endsWith('\n') ? '\n' : '') + '[difficulty]\nmax_no_competitors = 3\n';
-    }
-
-    FS.writeFile(path, config);
-    window.__openttdAIStartupConfigReady = true;
-  };
-
   const installSyncHook = () => {
     if (syncHookInstalled) return;
     if (typeof FS === 'undefined' || !FS || typeof FS.syncfs !== 'function') {
@@ -140,8 +113,8 @@
           /* First guarantee that the scanner-visible tar archives exist. */
           installBundledAIArchives(FS, personalDir);
 
-          /* Then run the platform wrapper, which installs the exact OpenTTD
-           * 15.3 API compatibility chain before its first await. */
+          /* The wrapper installs compat_14.nut ... compat_1.2.nut before its
+           * first await. Cloud/player work may continue after main() is released. */
           const installAndRestore = window.yandexRestoreOpenTTDCloud;
           let backgroundRestore = null;
           if (typeof installAndRestore === 'function') {
@@ -150,7 +123,6 @@
             console.error('[OpenTTD/AI] Platform AI compatibility installer is missing');
           }
 
-          forceStartupAIConfig(FS, personalDir);
           window.__openttdAIPrerunReady = true;
           window.__openttdAIPrerunState = 'ready';
           finish();
