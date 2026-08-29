@@ -466,7 +466,7 @@ jobs:
           grep -q 'enabled_by_default.*false' dist-playgama/OPENTTD-BUNDLED-ADDONS.json || true
           ! grep -q '\[newgrf\]' dist-playgama/openttd-bundled-addons.js
           grep -q "cache: 'force-cache'" dist-playgama/openttd-bundled-addons.js
-          grep -q 'INSTALL_CONCURRENCY = 2' dist-playgama/openttd-bundled-addons.js
+          grep -q 'INSTALL_CONCURRENCY = 1' dist-playgama/openttd-bundled-addons.js
           grep -q 'FS.stat(target)' dist-playgama/openttd-bundled-addons.js
 
           # Previous Playgama fixes remain present.
