@@ -444,10 +444,16 @@ jobs:
           grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
           grep -q 'openttd-bundled-addons.js' dist-playgama/index.html
 
-          # Browser config and native core must both allow competitors.
-          test "$(grep -ao 'max_no_competitors = 3' dist-playgama/openttd-runtime.js | wc -l)" -ge 3
+          # Validate real AI invariants instead of counting duplicated config literals
+          # in Emscripten output. The native gate was checked at build time above;
+          # here we ensure no late/runtime path can zero the competitor count again.
           ! grep -aq 'max_no_competitors = 0' dist-playgama/openttd-runtime.js
+          ! grep -aq 'max_no_competitors = 0' dist-playgama/yandex-bridge.js
+          ! grep -q 'sanitizeOfflineConfig' dist-playgama/yandex-bridge.js
           grep -q 'const COMPETITORS = 3' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'forcePlatformConfig' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'installClassicAI' dist-playgama/openttd-playgama-fixes.js
+          grep -q 'window.yandexRestoreOpenTTDCloud = async function' dist-playgama/openttd-playgama-fixes.js
 
           # SimpleAI + dependencies and OpenTTD API compatibility chain.
           grep -q '__openttdClassicAIArchives' dist-playgama/openttd-classic-ai.js
