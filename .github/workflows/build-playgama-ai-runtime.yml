@@ -1,5 +1,5 @@
 name: Build Playgama OpenTTD with AI and add-ons
-# Builds both portal variants from one AI-enabled, offline-content runtime.
+# Builds both portal variants from one natively AI-enabled, offline-content runtime.
 
 on:
   workflow_dispatch:
