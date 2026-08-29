@@ -47,8 +47,12 @@ def patch_index(dist: Path) -> None:
         raise SystemExit(f'Expected one Playgama Bridge tag, found {bridge_count}')
     if adapter_count != 1:
         raise SystemExit(f'Expected one Playgama adapter tag, found {adapter_count}')
-    if cloud_count != 1:
-        raise SystemExit(f'Expected one Playgama cloud tag, found {cloud_count}')
+    # Current Playgama packages route cloud/player state through the compatibility
+    # adapter and therefore do not inject the old dedicated cloud-saves script.
+    # Accept one copy only for older launch-safe bases so conversion remains
+    # backwards compatible while still rejecting duplicate active integrations.
+    if cloud_count not in (0, 1):
+        raise SystemExit(f'Expected at most one legacy Playgama cloud tag, found {cloud_count}')
     if PLAYGAMA_FIXES_TAG not in html:
         raise SystemExit('Playgama runtime-fixes script tag is missing')
     html = html.replace(PLAYGAMA_FIXES_TAG, YANDEX_FIXES_TAG, 1)
