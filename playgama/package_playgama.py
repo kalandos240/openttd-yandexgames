@@ -85,6 +85,9 @@ def patch_runtime(runtime_path: Path) -> None:
     old = b'max_no_competitors = 0'
     new = b'max_no_competitors = 3'
     count = data.count(old)
+    if count == 0 and data.count(new) >= 3:
+        # Fresh AI-enabled runtimes already contain the correct defaults.
+        return
     if count != 3:
         raise SystemExit(f'Expected exactly 3 disabled-AI startup literals, found {count}')
     data = data.replace(old, new)
