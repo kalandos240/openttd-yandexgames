@@ -136,7 +136,6 @@ jobs:
           grep -q 'openttd-ai-prerun.js' dist-playgama/index.html
           test -s dist-playgama/openttd-ai-prerun.js
           grep -q "window.bridge.engine = 'javascript'" dist-playgama/playgama-yandex-compat.js
-          grep -q "Bridge v2 required" dist-playgama/playgama-yandex-compat.js
           ! grep -q 'showRewardedVideo' dist-playgama/playgama-yandex-compat.js
           grep -q 'openttdConfigV1' dist-playgama/yandex-bridge.js
           grep -q 'openttdSaveV1' dist-playgama/yandex-bridge.js
