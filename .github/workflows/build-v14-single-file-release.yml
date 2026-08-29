@@ -6,6 +6,8 @@ on:
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/build-v14-single-file-release.yml'
+      - 'playgama/patch-direct-file-launch.py'
+      - 'playgama/smoke-direct-file.cjs'
   workflow_dispatch:
 
 permissions:
@@ -63,7 +65,9 @@ jobs:
             playgama/patch-browser-ai-runtime-v2.py \
             playgama/patch-browser-startup-watchdog.py \
             playgama/patch-browser-build-performance.py \
-            playgama/install-classic-ai-package.py
+            playgama/install-classic-ai-package.py \
+            playgama/patch-direct-file-launch.py
+          node --check playgama/smoke-direct-file.cjs
 
           python3 - <<'PY'
           from pathlib import Path
@@ -115,13 +119,13 @@ jobs:
           mkdir -p /tmp/v14-native
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/v14-native
 
-          # Validate the produced bytes, not fragile source formatting.
-          test -s /tmp/v14-native/openttd.js
+          # Validate the actual generated single-file runtime.
+          test -s /tmp/v14-native/openttd-runtime.js
           test ! -e /tmp/v14-native/openttd.wasm
           test ! -e /tmp/v14-native/openttd.data
-          test "$(stat -c%s /tmp/v14-native/openttd.js)" -gt 20000000
-          node --check /tmp/v14-native/openttd.js
-          ! grep -Fq 'Preparing game data...' /tmp/v14-native/openttd.js
+          test "$(stat -c%s /tmp/v14-native/openttd-runtime.js)" -gt 20000000
+          node --check /tmp/v14-native/openttd-runtime.js
+          ! grep -Fq 'Preparing game data...' /tmp/v14-native/openttd-runtime.js
 
       - name: Assemble current Playgama package
         env:
@@ -161,11 +165,11 @@ jobs:
             --manifest /tmp/classic-ai/OPENTTD-CLASSIC-AI-MANIFEST.json
 
           unzip -q legacy/OpenTTD-YandexGames-Direct.zip -d /tmp/rebuilt-runtime
-          test -s /tmp/rebuilt-runtime/openttd.js
+          test -s /tmp/rebuilt-runtime/openttd-runtime.js
           test ! -e /tmp/rebuilt-runtime/openttd.wasm
           test ! -e /tmp/rebuilt-runtime/openttd.data
           rm -f dist-v14/openttd.wasm dist-v14/openttd.data
-          cp /tmp/rebuilt-runtime/openttd.js dist-v14/openttd-runtime.js
+          cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
 
           node --check dist-v14/openttd-runtime.js
           node --check dist-v14/openttd-classic-ai.js
@@ -181,15 +185,28 @@ jobs:
           ! grep -Fq "'max_no_competitors = 3'" dist-v14/yandex-bridge.js
           ! grep -Fq "'competitors_interval = 0'" dist-v14/yandex-bridge.js
 
-      - name: Create Playgama ZIP
+          # Replace parser-active Playgama CDN loading with a local bootstrap.
+          # Hosted Playgama still gets its Bridge; file:// launch performs no
+          # HTTP(S) request and falls back immediately to the embedded game.
+          python3 playgama/patch-direct-file-launch.py prepare-playgama dist-v14
+          node --check dist-v14/platform-bridge-loader.js
+
+      - name: Create Playgama candidate ZIP
         shell: bash
         run: |
           set -euo pipefail
+          # Preserve a converter-compatible copy before removing its temporary marker.
+          rm -rf /tmp/yandex-base
+          cp -a dist-v14 /tmp/yandex-base
+          python3 playgama/patch-direct-file-launch.py finalize-playgama dist-v14
+
           test -s dist-v14/index.html
           test -s dist-v14/openttd-runtime.js
           test ! -e dist-v14/openttd.wasm
           test ! -e dist-v14/openttd.data
           test -s dist-v14/openttd-classic-ai.js
+          test -s dist-v14/platform-bridge-loader.js
+          ! grep -Fq 'openttd-yandex-converter-marker' dist-v14/index.html
           (cd dist-v14 && zip -9 -X -r ../openttd-playgama-v14-single-file-fixed.zip .)
           unzip -t openttd-playgama-v14-single-file-fixed.zip
           sha256sum openttd-playgama-v14-single-file-fixed.zip > openttd-playgama-v14-single-file-fixed.zip.sha256
@@ -199,8 +216,9 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist-yandex-v14
-          cp -a dist-v14 dist-yandex-v14
+          cp -a /tmp/yandex-base dist-yandex-v14
           python3 yandex/package_yandex_from_playgama.py dist-yandex-v14
+          python3 playgama/patch-direct-file-launch.py finalize-yandex dist-yandex-v14
 
           test -s dist-yandex-v14/index.html
           test -s dist-yandex-v14/openttd-runtime.js
@@ -209,12 +227,16 @@ jobs:
           test -s dist-yandex-v14/openttd-classic-ai.js
           test -s dist-yandex-v14/openttd-yandex-fixes.js
           test -s dist-yandex-v14/yandex-bridge.js
+          test ! -e dist-yandex-v14/platform-bridge-loader.js
           node --check dist-yandex-v14/openttd-runtime.js
           node --check dist-yandex-v14/openttd-ranking-core.js
           node --check dist-yandex-v14/openttd-yandex-fixes.js
           node --check dist-yandex-v14/yandex-bridge.js
+          node --check dist-yandex-v14/yandex-bootstrap.js
           grep -Fq '/sdk.js' dist-yandex-v14/yandex-bootstrap.js
+          grep -Fq "location.protocol === 'file:'" dist-yandex-v14/yandex-bootstrap.js
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
+          ! grep -Fq 'platform-bridge-loader.js' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
           test "$(stat -c%s dist-yandex-v14/openttd-runtime.js)" -gt 20000000
           ! grep -Fq 'Preparing game data...' dist-yandex-v14/openttd-runtime.js
@@ -223,7 +245,7 @@ jobs:
           ! grep -Fq "'max_no_competitors = 3'" dist-yandex-v14/yandex-bridge.js
           ! grep -Fq "'competitors_interval = 0'" dist-yandex-v14/yandex-bridge.js
 
-      - name: Create Yandex Games ZIP
+      - name: Create Yandex Games candidate ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -231,20 +253,103 @@ jobs:
           unzip -t openttd-yandexgames-v14-single-file-fixed.zip
           sha256sum openttd-yandexgames-v14-single-file-fixed.zip > openttd-yandexgames-v14-single-file-fixed.zip.sha256
 
-      - name: Upload Playgama archive
+      - name: Upload Playgama smoke candidate
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-playgama-v14-single-file-fixed
+          name: candidate-openttd-playgama-v14-single-file-fixed
           path: |
             openttd-playgama-v14-single-file-fixed.zip
             openttd-playgama-v14-single-file-fixed.zip.sha256
           if-no-files-found: error
 
-      - name: Upload Yandex Games archive
+      - name: Upload Yandex Games smoke candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-openttd-yandexgames-v14-single-file-fixed
+          path: |
+            openttd-yandexgames-v14-single-file-fixed.zip
+            openttd-yandexgames-v14-single-file-fixed.zip.sha256
+          if-no-files-found: error
+
+  smoke-test:
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout smoke test
+        uses: actions/checkout@v4
+
+      - name: Download Playgama candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-openttd-playgama-v14-single-file-fixed
+          path: candidate-playgama
+
+      - name: Download Yandex Games candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-openttd-yandexgames-v14-single-file-fixed
+          path: candidate-yandex
+
+      - name: Verify candidate checksums and unpack
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd candidate-playgama && sha256sum -c openttd-playgama-v14-single-file-fixed.zip.sha256)
+          (cd candidate-yandex && sha256sum -c openttd-yandexgames-v14-single-file-fixed.zip.sha256)
+          rm -rf /tmp/smoke-playgama /tmp/smoke-yandex
+          mkdir -p /tmp/smoke-playgama /tmp/smoke-yandex
+          unzip -q candidate-playgama/openttd-playgama-v14-single-file-fixed.zip -d /tmp/smoke-playgama
+          unzip -q candidate-yandex/openttd-yandexgames-v14-single-file-fixed.zip -d /tmp/smoke-yandex
+          test -s /tmp/smoke-playgama/openttd-runtime.js
+          test -s /tmp/smoke-yandex/openttd-runtime.js
+          test ! -e /tmp/smoke-playgama/openttd.wasm
+          test ! -e /tmp/smoke-playgama/openttd.data
+          test ! -e /tmp/smoke-yandex/openttd.wasm
+          test ! -e /tmp/smoke-yandex/openttd.data
+
+      - name: Install browser test driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v google-chrome-stable || command -v google-chrome || command -v chromium || command -v chromium-browser
+          npm install --no-save --ignore-scripts playwright-core@1.55.0
+
+      - name: Launch Playgama directly from file
+        shell: bash
+        run: |
+          set -euo pipefail
+          node playgama/smoke-direct-file.cjs /tmp/smoke-playgama Playgama "$PWD/smoke-playgama.png"
+
+      - name: Launch Yandex Games directly from file
+        shell: bash
+        run: |
+          set -euo pipefail
+          node playgama/smoke-direct-file.cjs /tmp/smoke-yandex YandexGames "$PWD/smoke-yandex.png"
+
+      - name: Upload tested Playgama archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v14-single-file-fixed
+          path: |
+            candidate-playgama/openttd-playgama-v14-single-file-fixed.zip
+            candidate-playgama/openttd-playgama-v14-single-file-fixed.zip.sha256
+          if-no-files-found: error
+
+      - name: Upload tested Yandex Games archive
         uses: actions/upload-artifact@v4
         with:
           name: openttd-yandexgames-v14-single-file-fixed
           path: |
-            openttd-yandexgames-v14-single-file-fixed.zip
-            openttd-yandexgames-v14-single-file-fixed.zip.sha256
+            candidate-yandex/openttd-yandexgames-v14-single-file-fixed.zip
+            candidate-yandex/openttd-yandexgames-v14-single-file-fixed.zip.sha256
+          if-no-files-found: error
+
+      - name: Upload launch-test screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-direct-file-smoke-evidence
+          path: |
+            smoke-playgama.png
+            smoke-yandex.png
           if-no-files-found: error
