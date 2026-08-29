@@ -32,12 +32,13 @@ jobs:
           ref: ${{ env.LEGACY_BUILD_REF }}
           path: legacy
 
-      - name: Remove Yandex-only native AI hard-disable
+      - name: Remove every legacy AI hard-disable
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           p = Path('legacy/ci/build-yandex-release.sh')
           text = p.read_text(encoding='utf-8')
@@ -47,11 +48,50 @@ jobs:
           text = text.replace(needle, '', 1)
           p.write_text(text, encoding='utf-8')
           print('Removed patch-yandex-ai-offline.py from the release source hook.')
+
+          # The legacy offline cleanup also rewrites openttd.cfg to zero competitors
+          # in releaseStartup(), after the bundled AI installer has already selected
+          # three competitors.  That late rewrite creates companies whose AI never
+          # starts. Remove the complete config sanitizer, not merely its native gate.
+          p = Path('legacy/ci/patch-yandex-runtime-cleanup.py')
+          text = p.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r'''\n    # Old local/cloud configuration.*?'''
+              r'''    text = replace_once\(text, old_release, new_release, 'offline AI startup config'\)\n''',
+              re.S,
+          )
+          text, count = pattern.subn('', text, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one late AI config sanitizer, found {count}')
+          p.write_text(text, encoding='utf-8')
+
+          # Cloud restore/backup must preserve the selected competitor count too.
+          p = Path('legacy/ci/yandex-bridge.js')
+          text = p.read_text(encoding='utf-8')
+          # patch-yandex-runtime-cleanup.py has not run yet, so the bridge is still
+          # the clean version. The assertions below protect against future drift.
+          if 'sanitizeOfflineConfig' in text or 'max_no_competitors = 0' in text:
+              raise SystemExit('Unexpected AI-zero sanitizer already present in yandex-bridge.js')
+
+          # Prevent the cleanup patch from adding its cloud config sanitizer later.
+          cleanup = Path('legacy/ci/patch-yandex-runtime-cleanup.py')
+          text = cleanup.read_text(encoding='utf-8')
+          start = text.find("    old_read = '''  function readConfig(FS, personalDir) {")
+          end_marker = "    text = replace_once(text, old_write, new_write, 'cloud config restore sanitizer')\n"
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('Could not find legacy cloud AI sanitizer block')
+          end += len(end_marker)
+          text = text[:start] + text[end:]
+          cleanup.write_text(text, encoding='utf-8')
+          print('Removed native, startup and cloud AI-zero sanitizers.')
           PY
           grep -q "python3 ci/patch-yandex-ai-offline.py" legacy/ci/build-yandex-release.sh && {
             echo 'The filename may remain in py_compile validation, but must not be in source_hook:'
             grep -n "patch-yandex-ai-offline.py" legacy/ci/build-yandex-release.sh
           } || true
+          ! grep -q 'offline AI startup config' legacy/ci/patch-yandex-runtime-cleanup.py
+          ! grep -q 'cloud config restore sanitizer' legacy/ci/patch-yandex-runtime-cleanup.py
 
       - name: Build OpenTTD 15.3 WebAssembly runtime with native AI enabled
         working-directory: legacy
@@ -159,8 +199,14 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import json
+          import socket
           import tarfile
           from openttdlab import download_from_bananas
+
+          # BaNaNaS' legacy TCP catalogue can occasionally take longer than its
+          # old client default on GitHub runners. Do not fail a deterministic
+          # release merely because the catalogue needs a few more seconds.
+          socket.setdefaulttimeout(60)
 
           catalog = [
               {
@@ -371,8 +417,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
-          ! grep -q 'bridge.playgama.com/v1/' dist-playgama/index.html
+          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-playgama/index.html
+          ! grep -q 'bridge.playgama.com/v2/' dist-playgama/index.html
           grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
           grep -q 'openttd-classic-ai.js' dist-playgama/index.html
           grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
@@ -473,6 +519,55 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
+      - name: Build and audit autonomous Yandex package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -a dist-playgama dist-yandex
+          python3 port/yandex/package_yandex_from_playgama.py dist-yandex
+
+          # The only permitted runtime network dependency is Yandex's own SDK.
+          # AI, libraries, base sets and optional add-ons must all be local.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('dist-yandex')
+          active = []
+          for path in root.rglob('*'):
+              if not path.is_file() or path.suffix.lower() not in {'.html', '.js', '.json', '.css'}:
+                  continue
+              text = path.read_text(encoding='utf-8', errors='ignore')
+              for url in re.findall(r'https?://[^\s"\'<>`)]+', text):
+                  active.append((path.relative_to(root).as_posix(), url.rstrip('.,;')))
+
+          # Legal/source notices may contain upstream links, but executable files
+          # may not depend on third-party hosts. /sdk.js is relative and official.
+          forbidden = [(path, url) for path, url in active if not path.endswith('.json')]
+          if forbidden:
+              raise SystemExit(f'External runtime URLs remain: {forbidden[:20]}')
+
+          required = [
+              'openttd-runtime.js', 'openttd.wasm', 'openttd.data',
+              'openttd-classic-ai.js', 'OPENTTD-CLASSIC-AI-MANIFEST.json',
+              'openttd-bundled-addons.js', 'OPENTTD-BUNDLED-ADDONS.json',
+          ]
+          for name in required:
+              path = root / name
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f'Missing autonomous runtime asset: {name}')
+
+          index = (root / 'index.html').read_text(encoding='utf-8')
+          assert "script.src = '/sdk.js'" not in index  # loader lives in local bootstrap
+          bootstrap = (root / 'yandex-bootstrap.js').read_text(encoding='utf-8')
+          assert "script.src = '/sdk.js'" in bootstrap
+          assert 'playgama' not in index.lower()
+          PY
+
+          (cd dist-yandex && zip -9 -X -r ../openttd-yandex-ai-fixed.zip .)
+          unzip -t openttd-yandex-ai-fixed.zip
+          sha256sum openttd-yandex-ai-fixed.zip
+
       - name: Create optimized Playgama v6 ZIP
         shell: bash
         run: |
@@ -487,5 +582,13 @@ jobs:
         with:
           name: openttd-playgama-v6-addons-optimized
           path: openttd-playgama-v6-addons-optimized.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload autonomous Yandex AI-fixed build
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandex-ai-fixed
+          path: openttd-yandex-ai-fixed.zip
           if-no-files-found: error
           retention-days: 90
