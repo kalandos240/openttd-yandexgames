@@ -66,6 +66,12 @@ Bundled add-ons are game content and are **not copied into cloud-save payloads**
 
 The cloud-save implementation uses chunked A/B generations with metadata-last commits and CRC32/size verification. This keeps optional content from inflating cloud-save data and prevents a partially uploaded new generation from invalidating the previous complete one.
 
+### AI-enabled dual-package compatibility
+
+The current `build-playgama-ai-runtime.yml` pipeline uses `playgama-yandex-compat.js` for the Playgama platform bridge and does **not** require the older dedicated `openttd-playgama-cloud-saves.js` script tag. When the verified Playgama package is converted to the autonomous Yandex package, the converter therefore accepts the legacy cloud script as optional: zero copies is the normal current layout, while one copy is removed for backwards-compatible conversion of an older launch-safe base. Duplicate active cloud integrations remain a hard error.
+
+This contract keeps the Yandex conversion strict about the active Playgama Bridge and adapter while avoiding a false packaging failure caused by a cloud module that the current AI-enabled Playgama build no longer injects.
+
 ## Licensing
 
 Every bundled package retains its upstream license and notices. The Playgama build generates a combined `PLAYGAMA-ALL-LICENSES.md` plus `NOTICE.txt`, `SOURCE_CODE.txt` and the `licenses/` directory. The Playgama-facing legal files are normalized so obsolete platform branding from earlier package stages is not exposed.
@@ -83,5 +89,7 @@ The authoritative current workflow is **`Build Playgama v10 cloud saves`** (`.gi
 - Bridge v2/runtime integration;
 - JavaScript/JSON syntax;
 - and the Playgama unpacked-package size ceiling.
+
+The AI-enabled dual-package branch additionally uses `.github/workflows/build-playgama-ai-runtime.yml` to validate the bundled AI/runtime state and build both Playgama and autonomous Yandex artifacts from the same tested browser runtime.
 
 Older v6–v8 workflows remain historical build stages; **v10 is the current publication target**.
