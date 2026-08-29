@@ -1,0 +1,260 @@
+name: Release OpenTTD v14 platform-verified hotfix
+
+on:
+  push:
+    branches:
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/release-v14-platform-verified.yml'
+      - 'ci/patch-platform-runtime-startup.py'
+      - 'ci/platform-hosted-smoke.mjs'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_YA_ARTIFACT_ID: '9705650527'
+      BASE_PG_ARTIFACT_ID: '9705649667'
+    steps:
+      - name: Checkout verification and runtime hotfix
+        uses: actions/checkout@v4
+
+      - name: Download exact split-runtime bases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/base/ya /tmp/base/pg /tmp/prod/ya /tmp/prod/pg /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_YA_ARTIFACT_ID}/zip" \
+            -o /tmp/base/ya-artifact.zip
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_PG_ARTIFACT_ID}/zip" \
+            -o /tmp/base/pg-artifact.zip
+          unzip -q /tmp/base/ya-artifact.zip -d /tmp/base/ya
+          unzip -q /tmp/base/pg-artifact.zip -d /tmp/base/pg
+          YA_ZIP="$(find /tmp/base/ya -maxdepth 1 -type f -name 'openttd-yandexgames-v14-root-fixes.zip' -print -quit)"
+          PG_ZIP="$(find /tmp/base/pg -maxdepth 1 -type f -name 'openttd-playgama-v14-root-fixes.zip' -print -quit)"
+          test -s "$YA_ZIP"
+          test -s "$PG_ZIP"
+          unzip -q "$YA_ZIP" -d /tmp/prod/ya
+          unzip -q "$PG_ZIP" -d /tmp/prod/pg
+
+      - name: Apply hosted startup fix to both production packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in /tmp/prod/ya /tmp/prod/pg; do
+            test -s "$d/openttd-runtime.js"
+            test -s "$d/openttd.wasm"
+            test -s "$d/openttd.data"
+            python3 ci/patch-platform-runtime-startup.py "$d/openttd-runtime.js"
+            node --check "$d/openttd-runtime.js"
+            grep -Fq 'Preparing game data...' "$d/openttd-runtime.js"
+            grep -Fq 'OpenTTD IndexedDB mount failed; continuing without persistent storage.' "$d/openttd-runtime.js"
+            grep -Fq 'browserPendingRunDependencies' "$d/openttd-runtime.js"
+            ! grep -Fq 'data:application/octet-stream;base64,AGFzb' "$d/openttd-runtime.js"
+          done
+
+      - name: Build exact production ZIPs before testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/prod/ya && zip -q -r -9 /tmp/out/openttd-yandexgames-v14-platform-verified.zip .)
+          (cd /tmp/prod/pg && zip -q -r -9 /tmp/out/openttd-playgama-v14-platform-verified.zip .)
+          unzip -t /tmp/out/openttd-yandexgames-v14-platform-verified.zip >/dev/null
+          unzip -t /tmp/out/openttd-playgama-v14-platform-verified.zip >/dev/null
+          (cd /tmp/out && sha256sum openttd-yandexgames-v14-platform-verified.zip > openttd-yandexgames-v14-platform-verified.zip.sha256)
+          (cd /tmp/out && sha256sum openttd-playgama-v14-platform-verified.zip > openttd-playgama-v14-platform-verified.zip.sha256)
+
+      - name: Prepare isolated platform test copies and SDK mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/test/ya /tmp/test/pg
+          unzip -q /tmp/out/openttd-yandexgames-v14-platform-verified.zip -d /tmp/test/ya
+          unzip -q /tmp/out/openttd-playgama-v14-platform-verified.zip -d /tmp/test/pg
+
+          cat > /tmp/test/ya/sdk.js <<'JS'
+          (() => {
+            const listeners = new Map();
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) {
+                const out = {};
+                for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key];
+                return out;
+              },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; },
+              getUniqueID() { return 'hosted-smoke-user'; },
+              getName() { return 'Hosted Smoke'; },
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'hosted-smoke' } },
+              features: {
+                LoadingAPI: { ready() { document.documentElement.dataset.yandexLoadingReady = '1'; return Promise.resolve(true); } },
+                GameplayAPI: {
+                  start() { document.documentElement.dataset.yandexGameplay = 'started'; return Promise.resolve(true); },
+                  stop() { document.documentElement.dataset.yandexGameplay = 'stopped'; return Promise.resolve(true); },
+                },
+              },
+              EVENTS: {
+                ACCOUNT_SELECTION_DIALOG_OPENED: 'account_selection_dialog_opened',
+                ACCOUNT_SELECTION_DIALOG_CLOSED: 'account_selection_dialog_closed',
+              },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: {
+                async getLeaderboardEntries() { return { entries: [] }; },
+                async setLeaderboardScore() { return true; },
+              },
+              async getPlayer() { return player; },
+              on(name, callback) {
+                if (!listeners.has(name)) listeners.set(name, new Set());
+                listeners.get(name).add(callback);
+              },
+              off(name, callback) { listeners.get(name)?.delete(callback); },
+            };
+            window.YaGames = { async init() { document.documentElement.dataset.yandexSdk = 'ready'; return ysdk; } };
+          })();
+          JS
+
+          cat > /tmp/test/pg/platform-mock.js <<'JS'
+          (() => {
+            const storageData = new Map();
+            const listeners = new Map();
+            const on = (name, fn) => {
+              if (!listeners.has(name)) listeners.set(name, new Set());
+              listeners.get(name).add(fn);
+            };
+            const off = (name, fn) => listeners.get(name)?.delete(fn);
+            window.bridge = {
+              version: 'hosted-smoke',
+              engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' },
+              STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { document.documentElement.dataset.playgamaSdk = 'initialized'; return true; },
+              platform: {
+                language: 'en', id: 'playgama-hosted-smoke', isAudioEnabled: true, on, off,
+                async sendMessage(message) { document.documentElement.dataset.playgamaMessage = String(message || ''); return true; },
+              },
+              storage: {
+                async isSupported() { return true; }, async isAvailable() { return true; },
+                async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); },
+                async set(key, value) {
+                  if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value));
+                  else storageData.set(String(key), value);
+                  return true;
+                },
+              },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on, off, showInterstitial() {} },
+              player: { id: 'hosted-smoke-player', async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } },
+            };
+          })();
+          JS
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('/tmp/test/pg/index.html')
+          text = p.read_text(encoding='utf-8')
+          text, count = re.subn(
+              r'<script\s+src=["\']https://bridge\.playgama\.com/[^"\']+["\']></script>',
+              '<script src="platform-mock.js"></script>',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'Expected one Playgama Bridge CDN tag, got {count}')
+          p.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          mkdir -p /tmp/smoke-node
+          cd /tmp/smoke-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+
+      - name: Hosted Chromium - Yandex Games
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/test/ya
+          python3 -m http.server 8123 --bind 127.0.0.1 >/tmp/yandex-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8123/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/smoke-node
+          node smoke.mjs yandex http://127.0.0.1:8123/index.html /tmp/yandex-smoke.json
+          grep -Fq '"passed": true' /tmp/yandex-smoke.json
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Hosted Chromium - Playgama
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/test/pg
+          python3 -m http.server 8124 --bind 127.0.0.1 >/tmp/playgama-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8124/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/smoke-node
+          node smoke.mjs playgama http://127.0.0.1:8124/index.html /tmp/playgama-smoke.json
+          grep -Fq '"passed": true' /tmp/playgama-smoke.json
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Upload browser reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-platform-verified-browser-reports
+          if-no-files-found: ignore
+          path: |
+            /tmp/yandex-smoke.json
+            /tmp/yandex-smoke.png
+            /tmp/yandex-http.log
+            /tmp/playgama-smoke.json
+            /tmp/playgama-smoke.png
+            /tmp/playgama-http.log
+
+      - name: Upload Yandex Games verified archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-v14-platform-verified
+          compression-level: 0
+          path: |
+            /tmp/out/openttd-yandexgames-v14-platform-verified.zip
+            /tmp/out/openttd-yandexgames-v14-platform-verified.zip.sha256
+
+      - name: Upload Playgama verified archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v14-platform-verified
+          compression-level: 0
+          path: |
+            /tmp/out/openttd-playgama-v14-platform-verified.zip
+            /tmp/out/openttd-playgama-v14-platform-verified.zip.sha256
