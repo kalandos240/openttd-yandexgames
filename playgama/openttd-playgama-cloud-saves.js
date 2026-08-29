@@ -383,6 +383,40 @@
     return { state: 'uploaded', bytes: bytes.length, chunks: chunks.length, slot: targetSlot };
   }
 
+  function persistRestoredStateAfterStartup(FS) {
+    const persist = () => {
+      const module = window.Module;
+      if (!module || module.calledRun !== true) {
+        setTimeout(persist, 100);
+        return;
+      }
+      const flush = () => {
+        try {
+          if (typeof FS.syncfs !== 'function') return;
+          FS.syncfs(false, (error) => {
+            if (error) console.warn('[Playgama/OpenTTD] Deferred cloud restore persistence failed.', error);
+          });
+        } catch (error) {
+          console.warn('[Playgama/OpenTTD] Deferred cloud restore persistence threw.', error);
+        }
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(flush, { timeout: 5000 });
+      } else {
+        setTimeout(flush, 500);
+      }
+    };
+
+    const module = window.Module;
+    if (module && module.calledRun === true) {
+      setTimeout(persist, 0);
+    } else if (module && Array.isArray(module.postRun)) {
+      module.postRun.push(persist);
+    } else {
+      setTimeout(persist, 0);
+    }
+  }
+
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
     const info = await Promise.race([
       resolveStorageInfo(),
@@ -406,8 +440,11 @@
         restored = restoreLegacySave(FS, personalDir, legacy);
       }
 
-      if (restored && typeof FS.syncfs === 'function') {
-        await new Promise((resolve) => FS.syncfs(false, () => resolve()));
+      if (restored) {
+        // The restored bytes are already visible in MEMFS. Persist them only
+        // after OpenTTD entered main so a cold IDBFS populate is never followed
+        // immediately by another database transaction during startup.
+        persistRestoredStateAfterStartup(FS);
       }
       window.__openttdPlaygamaCloudStatus = {
         available: true,
