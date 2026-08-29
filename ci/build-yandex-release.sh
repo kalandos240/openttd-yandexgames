@@ -19,6 +19,7 @@ source_hook = (
     'python3 ci/patch-yandex-offline.py source\n'
     'python3 ci/patch-yandex-no-help.py\n'
     'python3 ci/patch-yandex-gameplay-state.py\n'
+    'python3 ci/patch-ai-zero-interval.py\n'
     'python3 ci/patch-yandex-runtime-cleanup.py source\n'
     'python3 ci/patch-yandex-ai-offline.py\n'
 )
@@ -127,6 +128,7 @@ python3 -m py_compile \
   ci/patch-yandex-no-help.py \
   ci/patch-yandex-gameplay-state.py \
   ci/patch-yandex-sdk-events.py \
+  ci/patch-ai-zero-interval.py \
   ci/patch-yandex-runtime-cleanup.py \
   ci/patch-yandex-ai-offline.py
 python3 ci/patch-yandex-sdk-events.py
