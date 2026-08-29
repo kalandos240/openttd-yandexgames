@@ -7,6 +7,7 @@ gate before openttd-runtime.js, and removes executable third-party network URLs.
 """
 from __future__ import annotations
 
+# Full-feature AI/Yandex integration revision; this file is also the v14 CI trigger.
 import argparse
 import re
 import shutil
