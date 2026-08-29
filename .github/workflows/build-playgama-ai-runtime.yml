@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/build-playgama-ai-runtime.yml'
       - 'playgama/**'
+      - 'yandex/**'
       - 'docs/PLAYGAMA_ADDONS.md'
 
 permissions:
@@ -568,8 +569,11 @@ jobs:
           if forbidden:
               raise SystemExit(f'External runtime URLs remain: {forbidden[:20]}')
 
+          # Emscripten SINGLE_FILE embeds the WebAssembly module and all preloaded
+          # data directly in openttd-runtime.js. Separate openttd.wasm/openttd.data
+          # files are therefore intentionally absent from this browser release.
           required = [
-              'openttd-runtime.js', 'openttd.wasm', 'openttd.data',
+              'openttd-runtime.js',
               'openttd-classic-ai.js', 'OPENTTD-CLASSIC-AI-MANIFEST.json',
               'openttd-bundled-addons.js', 'OPENTTD-BUNDLED-ADDONS.json',
           ]
@@ -577,6 +581,10 @@ jobs:
               path = root / name
               if not path.is_file() or path.stat().st_size == 0:
                   raise SystemExit(f'Missing autonomous runtime asset: {name}')
+
+          runtime = (root / 'openttd-runtime.js').read_text(encoding='utf-8', errors='ignore')
+          if 'wasmBinaryFile' not in runtime or 'data:application/octet-stream;base64,' not in runtime:
+              raise SystemExit('Expected Emscripten SINGLE_FILE WebAssembly payload in openttd-runtime.js')
 
           index = (root / 'index.html').read_text(encoding='utf-8')
           assert "script.src = '/sdk.js'" not in index  # loader lives in local bootstrap
