@@ -38,11 +38,15 @@ Playgama-specific QA/runtime fixes in this package:
 - three computer competitors are enabled and a bundled GPLv2 SimpleAI package,
   with its required pathfinder libraries, is installed into OpenTTD's personal
   AI directory after IDBFS restore and before OpenTTD main() starts. SimpleAI
-  intentionally follows the style of the classic OpenTTD/Transport Tycoon AI.
+  intentionally follows the style of the classic OpenTTD/Transport Tycoon AI;
+- this web build gives a user-selected 0-minute competitors interval the explicit
+  meaning "start the requested AI competitors immediately". Upstream OpenTTD
+  15.3 otherwise short-circuits the competitor timer when this value is zero.
 
-The only intentional modification inside openttd-runtime.js is changing the
-three web-port startup defaults from max_no_competitors = 0 to
-max_no_competitors = 3. No gameplay code is otherwise rewritten.
+The OpenTTD source build retains the normal single-player AI gate and applies the
+zero-interval startup fix before WebAssembly compilation. A packaging compatibility
+shim also upgrades old web-runtime max_no_competitors = 0 literals when such
+legacy literals are present; fresh native-AI runtimes need no binary rewrite.
 
 Rewarded ads are disabled because this port has no rewarded-ad mechanic. Banner
 ads are disabled. Interstitial ads remain enabled and are requested only at safe
