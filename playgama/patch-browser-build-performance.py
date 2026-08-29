@@ -94,9 +94,12 @@ def main() -> None:
     # Remove the legacy late AI-zero rewrites before build-yandex-release.sh runs.
     remove_legacy_ai_sanitizers(path)
 
-    # The direct-file build mutates a temporary copy of build-final.sh. Record
-    # effective flags only after the generated artifact proves those flags took
-    # effect. These comments cannot alter the already-built runtime.
+    # The direct-file build mutates a temporary copy of build-final.sh. Validate
+    # the artifact that is actually delivered after that generated build has
+    # completed. SINGLE_FILE=1 may legitimately leave no intermediate
+    # openttd/build/openttd.js: patch-yandex-runtime-cleanup.py extracts the
+    # executable single-file payload into dist/openttd-runtime.js. Requiring the
+    # optional intermediate file caused a false failure after a successful build.
     direct = path.with_name('build-direct-file.sh')
     if direct.is_file():
         d = direct.read_text(encoding='utf-8')
@@ -105,9 +108,11 @@ def main() -> None:
             raise SystemExit('Could not find direct-file build execution anchor')
         record = r'''bash /tmp/build-direct-file-base.sh
 
-# Record effective delivery invariants only after the artifact proves them.
-test -s openttd/build/openttd.js
-test "$(stat -c%s openttd/build/openttd.js)" -gt 20000000
+# Validate the effective SINGLE_FILE delivery, not an optional intermediate .js.
+test -s dist/openttd-runtime.js
+test "$(stat -c%s dist/openttd-runtime.js)" -gt 20000000
+test ! -e dist/openttd.wasm
+test ! -e dist/openttd.data
 test ! -e openttd/build/openttd.wasm
 test ! -e openttd/build/openttd.data
 {
@@ -116,7 +121,7 @@ test ! -e openttd/build/openttd.data
   grep -Fq -- '--embed-file' openttd/CMakeLists.txt || printf '# Effective browser delivery invariant: --embed-file\n' >> openttd/CMakeLists.txt
 }
 '''
-        if 'Effective browser delivery invariant: SINGLE_FILE=1' not in d:
+        if 'Validate the effective SINGLE_FILE delivery' not in d:
             d = d.replace(anchor, record, 1)
             direct.write_text(d, encoding='utf-8')
 
