@@ -5,9 +5,9 @@
  * function and synchronously installs SimpleAI plus its API compatibility
  * chain before its first await. This hook intercepts the first populate=true
  * FS.syncfs() performed by OpenTTD's preRun code, invokes that wrapper after
- * IDBFS is available, and then immediately releases startup. Cloud/player I/O
- * is deliberately allowed to finish in the background and can never gate
- * OpenTTD main().
+ * IDBFS is available, applies the local competitor invariant, and then
+ * immediately releases startup. Cloud/player I/O is deliberately allowed to
+ * finish in the background and can never gate OpenTTD main().
  */
 (() => {
   'use strict';
@@ -27,6 +27,28 @@
   const nativePush = Array.prototype.push;
   let syncHookInstalled = false;
   let initialPopulateHandled = false;
+
+  /* The cloud restore wrapper deliberately performs network/player work in the
+   * background. Do not let that async boundary delay the one setting OpenTTD
+   * must see before main(): the number of computer competitors. In particular,
+   * do not touch competitor_start_time here; a user-selected value of 0 must
+   * survive exactly as configured in the New Game settings. */
+  const forceStartupAIConfig = (FS, personalDir) => {
+    const path = personalDir + '/openttd.cfg';
+    let config = '';
+    try { config = FS.readFile(path, { encoding: 'utf8' }); } catch (_) {}
+
+    if (/^max_no_competitors\s*=.*$/m.test(config)) {
+      config = config.replace(/^max_no_competitors\s*=.*$/m, 'max_no_competitors = 3');
+    } else if (/^\[difficulty\]\s*$/m.test(config)) {
+      config = config.replace(/^\[difficulty\]\s*$/m, '[difficulty]\nmax_no_competitors = 3');
+    } else {
+      config += (config && !config.endsWith('\n') ? '\n' : '') + '[difficulty]\nmax_no_competitors = 3\n';
+    }
+
+    FS.writeFile(path, config);
+    window.__openttdAIStartupConfigReady = true;
+  };
 
   const installSyncHook = () => {
     if (syncHookInstalled) return;
@@ -68,10 +90,12 @@
         try {
           /* Calling an async function executes synchronously up to its first
            * await. The runtime-fixes wrapper installs SimpleAI and every compat
-           * script before awaiting cloud restore, so the files are guaranteed
-           * to exist here before we release OpenTTD's syncfs run dependency.
-           */
-          const backgroundRestore = installAndRestore(FS, '/home/web_user/.openttd');
+           * script before awaiting cloud restore. Apply the local competitor
+           * invariant in the same JS turn, before OpenTTD's syncfs run
+           * dependency is released. */
+          const personalDir = '/home/web_user/.openttd';
+          const backgroundRestore = installAndRestore(FS, personalDir);
+          forceStartupAIConfig(FS, personalDir);
           window.__openttdAIPrerunReady = true;
           window.__openttdAIPrerunState = 'ready';
           finish();
