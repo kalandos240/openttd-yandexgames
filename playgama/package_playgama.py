@@ -10,6 +10,11 @@ BRIDGE = f'<script src="{BRIDGE_URL}"></script>'
 ADAPTER = '<script src="playgama-yandex-compat.js"></script>'
 AI_BUNDLE = '<script src="openttd-classic-ai.js"></script>'
 FIXES = '<script src="openttd-playgama-fixes.js"></script>'
+AI_PRERUN = '<script src="openttd-ai-prerun.js"></script>'
+RUNTIME_TAG_RE = re.compile(
+    r'<script\b(?=[^>]*\bsrc=["\']openttd-runtime\.js["\'])[^>]*></script>',
+    re.I,
+)
 
 NOTICE = f"""Playgama integration
 ====================
@@ -32,8 +37,8 @@ Playgama-specific QA/runtime fixes in this package:
 - browser music playback is retried after accidental autoplay/focus suspension;
 - three computer competitors are enabled and a bundled GPLv2 SimpleAI package,
   with its required pathfinder libraries, is installed into OpenTTD's personal
-  AI directory before the game starts. SimpleAI intentionally follows the style
-  of the classic OpenTTD/Transport Tycoon AI.
+  AI directory after IDBFS restore and before OpenTTD main() starts. SimpleAI
+  intentionally follows the style of the classic OpenTTD/Transport Tycoon AI.
 
 The only intentional modification inside openttd-runtime.js is changing the
 three web-port startup defaults from max_no_competitors = 0 to
@@ -68,14 +73,23 @@ def patch_html(html: str) -> str:
             else:
                 raise SystemExit('No supported Playgama SDK insertion point in index.html')
 
-    # AI data and OpenTTD-specific runtime fixes must be available before the
-    # large generated runtime executes. yandex-bridge.js is the stable anchor in
-    # the pinned build and already runs after SDK bootstrapping.
+    # AI data and OpenTTD-specific runtime fixes are loaded with the platform
+    # bridge. They define the installer that the preRun gate invokes later.
     if 'openttd-classic-ai.js' not in html or 'openttd-playgama-fixes.js' not in html:
         anchor = '<script src="yandex-bridge.js"></script>'
         if anchor not in html:
             raise SystemExit('yandex-bridge.js insertion point is missing')
         html = html.replace(anchor, anchor + AI_BUNDLE + FIXES, 1)
+
+    # The shell script immediately before openttd-runtime.js creates `Module`.
+    # Put the startup gate at this exact boundary: it can decorate Module.preRun
+    # before Emscripten's pre.js appends the IDBFS startup callback, while the AI
+    # installer above is already present on window.
+    if 'openttd-ai-prerun.js' not in html:
+        runtime_match = RUNTIME_TAG_RE.search(html)
+        if runtime_match is None:
+            raise SystemExit('openttd-runtime.js script insertion point is missing')
+        html = html[:runtime_match.start()] + AI_PRERUN + html[runtime_match.start():]
 
     return html
 
@@ -110,18 +124,23 @@ def main() -> None:
     dist = args.dist.resolve()
     index = dist / 'index.html'
     runtime = dist / 'openttd-runtime.js'
+    ai_prerun_source = Path(__file__).with_name('openttd-ai-prerun.js')
     if not index.is_file():
         raise SystemExit('index.html must be in package root')
     if not runtime.is_file():
         raise SystemExit('openttd-runtime.js must be in package root')
+    if not ai_prerun_source.is_file():
+        raise SystemExit('openttd-ai-prerun.js is missing next to the packager')
 
     html = patch_html(index.read_text(encoding='utf-8'))
     if 'bridge.playgama.com/v2/' in html:
         raise SystemExit('Invalid Playgama Bridge v2 reference remains')
     if BRIDGE not in html or ADAPTER not in html:
         raise SystemExit('Playgama Bridge bootstrap missing')
-    if AI_BUNDLE not in html or FIXES not in html:
-        raise SystemExit('OpenTTD Playgama AI/fix scripts were not inserted')
+    if AI_BUNDLE not in html or FIXES not in html or AI_PRERUN not in html:
+        raise SystemExit('OpenTTD Playgama AI startup scripts were not inserted')
+    if html.index(AI_PRERUN) > html.index('openttd-runtime.js'):
+        raise SystemExit('AI preRun gate must load before openttd-runtime.js')
     index.write_text(html, encoding='utf-8')
 
     patch_runtime(runtime)
@@ -130,6 +149,7 @@ def main() -> None:
     shutil.copy2(args.config, dist / 'playgama-bridge-config.json')
     shutil.copy2(args.fixes, dist / 'openttd-playgama-fixes.js')
     shutil.copy2(args.ai_bundle, dist / 'openttd-classic-ai.js')
+    shutil.copy2(ai_prerun_source, dist / 'openttd-ai-prerun.js')
     (dist / 'PLAYGAMA-INTEGRATION.txt').write_text(NOTICE, encoding='utf-8')
 
     bad = []
