@@ -82,6 +82,8 @@ def patch_yandex_bootstrap(dist: Path) -> None:
     if count not in (0, 1):
         raise SystemExit('Unexpected Yandex file-protocol guard count')
 
+    # /sdk.js is intentionally NOT a packaged file. On Yandex Games it is the
+    # official same-origin platform endpoint supplied by the host environment.
     if "script.src = '/sdk.js'" not in text:
         raise SystemExit('Yandex bootstrap does not use the required relative /sdk.js loader')
     if 'YaGames.init()' not in text:
@@ -197,7 +199,7 @@ def write_platform_notice(dist: Path) -> None:
     (dist / 'YANDEX-INTEGRATION.txt').write_text(
         'OpenTTD 15.3 - Yandex Games autonomous edition\n'
         '==============================================\n'
-        '- Active platform SDK: local relative /sdk.js loader.\n'
+        '- Active platform SDK: official same-origin /sdk.js endpoint supplied by Yandex Games.\n'
         '- YaGames.init() runs only after the SDK loader succeeds.\n'
         '- No Playgama runtime or third-party gameplay/content endpoint is executable.\n'
         '- OpenTTD startup is not blocked indefinitely by SDK, cloud or optional add-on requests.\n'
@@ -217,7 +219,6 @@ def main() -> None:
     for required in (
         'index.html',
         'openttd-runtime.js',
-        'sdk.js',
         'yandex-bootstrap.js',
         'yandex-bridge.js',
         'openttd-playgama-fixes.js',
