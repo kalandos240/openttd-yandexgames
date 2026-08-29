@@ -1,10 +1,13 @@
 /* Ensure bundled OpenTTD AI content is installed after IDBFS restore but before main().
  *
  * The platform runtime defines window.yandexRestoreOpenTTDCloud() before the
- * Emscripten runtime is loaded. openttd-playgama-fixes.js wraps that function
- * with the SimpleAI + compatibility installer. This hook intercepts the first
- * populate=true FS.syncfs() performed by OpenTTD's preRun code and delays its
- * completion callback until the installer/restore wrapper has finished.
+ * Emscripten runtime is loaded. The OpenTTD runtime-fixes layer wraps that
+ * function and synchronously installs SimpleAI plus its API compatibility
+ * chain before its first await. This hook intercepts the first populate=true
+ * FS.syncfs() performed by OpenTTD's preRun code, invokes that wrapper after
+ * IDBFS is available, and then immediately releases startup. Cloud/player I/O
+ * is deliberately allowed to finish in the background and can never gate
+ * OpenTTD main().
  */
 (() => {
   'use strict';
@@ -63,18 +66,19 @@
 
         window.__openttdAIPrerunState = 'installing';
         try {
-          Promise.resolve(installAndRestore(FS, '/home/web_user/.openttd')).then(
-            () => {
-              window.__openttdAIPrerunReady = true;
-              window.__openttdAIPrerunState = 'ready';
-              finish();
-            },
-            (error) => {
-              window.__openttdAIPrerunState = 'install-error';
-              console.error('[OpenTTD/AI] Bundled AI startup installation failed', error);
-              finish();
-            },
-          );
+          /* Calling an async function executes synchronously up to its first
+           * await. The runtime-fixes wrapper installs SimpleAI and every compat
+           * script before awaiting cloud restore, so the files are guaranteed
+           * to exist here before we release OpenTTD's syncfs run dependency.
+           */
+          const backgroundRestore = installAndRestore(FS, '/home/web_user/.openttd');
+          window.__openttdAIPrerunReady = true;
+          window.__openttdAIPrerunState = 'ready';
+          finish();
+
+          Promise.resolve(backgroundRestore).catch((error) => {
+            console.warn('[OpenTTD/AI] Background platform restore failed after local AI installation', error);
+          });
         } catch (error) {
           window.__openttdAIPrerunState = 'install-error';
           console.error('[OpenTTD/AI] Bundled AI startup installation threw', error);
