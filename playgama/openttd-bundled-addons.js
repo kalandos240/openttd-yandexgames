@@ -16,6 +16,8 @@
   const INSTALL_CONCURRENCY = 1;
   const FETCH_TIMEOUT_MS = 8000;
   const RESTORE_STARTUP_GATE_MS = 1500;
+  const POST_START_DELAY_MS = 1200;
+  const POST_START_IDLE_TIMEOUT_MS = 5000;
 
   let manifestPromise = null;
 
@@ -177,22 +179,81 @@
     return results;
   };
 
+  let bundledContentScheduled = false;
+  let bundledContentStarted = false;
+
+  const startBundledContent = (FS, personalDir) => {
+    if (bundledContentStarted) return window.__openttdBundledContentReady || Promise.resolve([]);
+    bundledContentStarted = true;
+    window.__openttdBundledAddonsState = 'installing-after-main';
+    const contentTask = installBundledContent(FS, personalDir)
+      .then((results) => {
+        window.__openttdBundledAddonsState = 'ready';
+        return results;
+      })
+      .catch((error) => {
+        window.__openttdBundledAddonsState = 'failed';
+        window.__openttdBundledAddonsFatalError = String(error);
+        console.warn('[Playgama/OpenTTD] Optional content install failed; gameplay is not blocked', error);
+        return [];
+      });
+    window.__openttdBundledContentReady = contentTask;
+    return contentTask;
+  };
+
+  const scheduleBundledContentAfterStartup = (FS, personalDir) => {
+    if (bundledContentScheduled) return;
+    bundledContentScheduled = true;
+    window.__openttdBundledAddonsState = 'waiting-for-main';
+
+    const waitForMain = () => {
+      const module = window.Module;
+      if (!module || module.calledRun !== true) {
+        setTimeout(waitForMain, 100);
+        return;
+      }
+
+      const startWhenIdle = () => {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(
+            () => startBundledContent(FS, personalDir),
+            { timeout: POST_START_IDLE_TIMEOUT_MS },
+          );
+        } else {
+          setTimeout(() => startBundledContent(FS, personalDir), 0);
+        }
+      };
+
+      // Let the first menu frames render before decompressing/writing ~20 MiB
+      // of optional NewGRF data. This work is intentionally outside the
+      // Emscripten run-dependency / initial IDBFS populate critical path.
+      setTimeout(startWhenIdle, POST_START_DELAY_MS);
+    };
+
+    const module = window.Module;
+    if (module && module.calledRun === true) {
+      waitForMain();
+    } else if (module && Array.isArray(module.postRun)) {
+      module.postRun.push(waitForMain);
+    } else {
+      setTimeout(waitForMain, 0);
+    }
+  };
+
   const previousRestore = window.yandexRestoreOpenTTDCloud;
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
+    // Only remember/schedule optional content during preRun. Never start its
+    // fetch/decompression/IDBFS writes before OpenTTD has actually entered main.
+    scheduleBundledContentAfterStartup(FS, personalDir);
+
     const restoreTask = (async () => {
       if (typeof previousRestore !== 'function') return;
       try { await previousRestore(FS, personalDir); }
       catch (error) { console.warn('[Playgama/OpenTTD] Cloud restore failed; continuing locally', error); }
     })();
 
-    const contentTask = installBundledContent(FS, personalDir).catch((error) => {
-      window.__openttdBundledAddonsFatalError = String(error);
-      console.warn('[Playgama/OpenTTD] Optional content install failed; gameplay is not blocked', error);
-    });
-    window.__openttdBundledContentReady = contentTask;
-
     // Cloud state gets a short opportunity to restore before main(). Optional
-    // content never participates in this gate. This guarantees a bounded launch.
+    // content is post-main-only and therefore cannot delay a cold start.
     await Promise.race([
       restoreTask,
       new Promise((resolve) => setTimeout(resolve, RESTORE_STARTUP_GATE_MS)),
