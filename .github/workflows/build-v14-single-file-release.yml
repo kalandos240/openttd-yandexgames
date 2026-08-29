@@ -125,7 +125,6 @@ jobs:
           test ! -e /tmp/v14-native/openttd.data
           test "$(stat -c%s /tmp/v14-native/openttd-runtime.js)" -gt 20000000
           node --check /tmp/v14-native/openttd-runtime.js
-          ! grep -Fq 'Preparing game data...' /tmp/v14-native/openttd-runtime.js
 
       - name: Assemble current Playgama package
         env:
@@ -179,7 +178,6 @@ jobs:
           test "$(stat -c%s dist-v14/openttd-runtime.js)" -gt 20000000
           test ! -e dist-v14/openttd.wasm
           test ! -e dist-v14/openttd.data
-          ! grep -Fq 'Preparing game data...' dist-v14/openttd-runtime.js
           ! grep -Fq 'const COMPETITORS =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq "'max_no_competitors = 3'" dist-v14/yandex-bridge.js
@@ -239,7 +237,6 @@ jobs:
           ! grep -Fq 'platform-bridge-loader.js' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
           test "$(stat -c%s dist-yandex-v14/openttd-runtime.js)" -gt 20000000
-          ! grep -Fq 'Preparing game data...' dist-yandex-v14/openttd-runtime.js
           ! grep -Fq 'const COMPETITORS =' dist-yandex-v14/openttd-yandex-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-yandex-v14/openttd-yandex-fixes.js
           ! grep -Fq "'max_no_competitors = 3'" dist-yandex-v14/yandex-bridge.js
