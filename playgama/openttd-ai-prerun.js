@@ -43,7 +43,7 @@
   };
 
   /* Install the BaNaNaS archives independently from the cloud wrapper. This is
-   * intentionally redundant with openttd-playgama-fixes.js: a platform/cloud
+   * intentionally redundant with the platform runtime fixes: a platform/cloud
    * integration regression must never leave OpenTTD with AI companies but no
    * script archive on disk when AI::Initialize() scans AI_DIR. */
   const installBundledAIArchives = (FS, personalDir) => {
