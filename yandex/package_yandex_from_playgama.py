@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 PLAYGAMA_BRIDGE_RE = re.compile(
-    r'<script\s+src=["\']https://bridge\.playgama\.com/[^"\']+/playgama-bridge\.js["\']\s*></script>',
+    r'<script\s+src=["\']https://bridge\.playgama\.com/(?:v1|v2)/(?:stable|latest)/playgama-bridge\.js["\']\s*></script>',
     re.I,
 )
 PLAYGAMA_ADAPTER_RE = re.compile(
