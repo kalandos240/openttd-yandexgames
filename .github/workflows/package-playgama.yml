@@ -115,7 +115,7 @@ jobs:
           PY
           node --check playgama/openttd-classic-ai.generated.js
 
-      - name: Install Playgama Bridge v2 integration and QA fixes
+      - name: Install Playgama stable integration and QA fixes
         run: |
           set -euo pipefail
           python3 playgama/package_playgama.py dist-playgama \
@@ -128,11 +128,13 @@ jobs:
       - name: Validate Playgama v3 package
         run: |
           set -euo pipefail
-          grep -q 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
-          ! grep -q 'bridge.playgama.com/v1/' dist-playgama/index.html
+          grep -q 'https://bridge.playgama.com/v1/stable/playgama-bridge.js' dist-playgama/index.html
+          ! grep -q 'bridge.playgama.com/v2/' dist-playgama/index.html
           grep -q 'playgama-yandex-compat.js' dist-playgama/index.html
           grep -q 'openttd-classic-ai.js' dist-playgama/index.html
           grep -q 'openttd-playgama-fixes.js' dist-playgama/index.html
+          grep -q 'openttd-ai-prerun.js' dist-playgama/index.html
+          test -s dist-playgama/openttd-ai-prerun.js
           grep -q "window.bridge.engine = 'javascript'" dist-playgama/playgama-yandex-compat.js
           grep -q "Bridge v2 required" dist-playgama/playgama-yandex-compat.js
           ! grep -q 'showRewardedVideo' dist-playgama/playgama-yandex-compat.js
@@ -154,10 +156,13 @@ jobs:
           grep -q 'aspect-ratio: 16 / 9' dist-playgama/openttd-playgama-fixes.js
           grep -q '__openttdClassicAIArchives' dist-playgama/openttd-classic-ai.js
           grep -q 'ai/534d504c' dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json
+          grep -q '__openttdAIArchivesReady' dist-playgama/openttd-ai-prerun.js
+          grep -q '__openttdAIPrerunReady' dist-playgama/openttd-ai-prerun.js
 
           node --check dist-playgama/playgama-yandex-compat.js
           node --check dist-playgama/openttd-playgama-fixes.js
           node --check dist-playgama/openttd-classic-ai.js
+          node --check dist-playgama/openttd-ai-prerun.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
           python3 -m json.tool dist-playgama/OPENTTD-CLASSIC-AI-MANIFEST.json >/dev/null
           python3 - <<'PY'
