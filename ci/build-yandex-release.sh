@@ -104,7 +104,8 @@ PY_YANDEX_BRIDGE
 
 # Yandex uses nonce-based CSP. Move every inline script to same-origin files
 # without changing DOM execution order. The huge runtime still contains the
-# embedded WASM/assets, so local file:// launch remains serverless.
+# embedded WASM/assets, so local file:// launch remains self-contained and needs no HTTP
+# server.
 python3 ci/patch-yandex-runtime-cleanup.py dist
 
 """
@@ -136,3 +137,9 @@ python3 ci/patch-yandex-runtime-cleanup.py bridge
 node --check ci/yandex-bridge.js
 bash -n ci/package-release-licenses.sh
 bash ci/build-direct-file.sh
+
+# Release regression: the exact source that produced the WebAssembly build must
+# implement the portal's documented 0-minute AI interval as immediate startup.
+test -s openttd/src/company_cmd.cpp
+! grep -Fq $'\tif (_settings_game.difficulty.competitors_interval == 0) return;' openttd/src/company_cmd.cpp
+grep -Fq 'zero means start requested AI competitors immediately' openttd/src/company_cmd.cpp
