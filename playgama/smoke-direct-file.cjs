@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+// This smoke test is also a release trigger: changes to native/package gates must
+// be validated through the combined Playgama + Yandex v14 workflow.
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
