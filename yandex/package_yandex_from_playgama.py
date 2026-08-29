@@ -122,6 +122,28 @@ def make_yandex_fixes(dist: Path) -> None:
     (dist / 'openttd-yandex-fixes.js').write_text(text, encoding='utf-8')
 
 
+def patch_bundled_addons_for_yandex(dist: Path) -> None:
+    """Keep the shared local add-on installer platform-neutral in Yandex."""
+    path = dist / 'openttd-bundled-addons.js'
+    if not path.is_file():
+        return
+
+    text = path.read_text(encoding='utf-8')
+    replacements = {
+        'Optional bundled OpenTTD add-ons for the Playgama build.':
+            'Optional bundled OpenTTD add-ons for the Yandex Games build.',
+        'PLAYGAMA-ALL-LICENSES.md': 'NOTICE.txt',
+        'PLAYGAMA-LICENSES.md': 'YANDEX-LICENSES.md',
+        '[Playgama/OpenTTD]': '[Yandex/OpenTTD]',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    if re.search(r'playgama', text, re.I):
+        raise SystemExit('Playgama-specific reference remains in Yandex bundled-addons runtime')
+    path.write_text(text, encoding='utf-8')
+
+
 def make_runtime_autonomous(dist: Path) -> None:
     """Remove executable third-party network endpoints from the Yandex package.
 
@@ -228,6 +250,7 @@ def main() -> None:
 
     patch_yandex_bootstrap(dist)
     make_yandex_fixes(dist)
+    patch_bundled_addons_for_yandex(dist)
     patch_index(dist)
 
     for name in REMOVE_FILES:
