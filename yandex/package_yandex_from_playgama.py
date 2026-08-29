@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the verified launch-safe Playgama OpenTTD package into a Yandex Games package.
-
-The game/runtime/content base is preserved. Only the platform layer is swapped:
-Playgama Bridge/adapter/cloud glue is removed, Yandex bootstrap/bridge is kept,
-and the shared runtime fixes are de-Playgama'd for the Yandex build.
-"""
+"""Convert the verified Playgama OpenTTD package into an autonomous Yandex build."""
 from __future__ import annotations
 
 import argparse
@@ -35,6 +30,17 @@ REMOVE_FILES = (
     'PLAYGAMA-V7-CHANGES.txt',
 )
 
+# Executable Yandex-package files must not contain absolute network endpoints.
+# JSON manifests are deliberately excluded: their source/license URLs are inert
+# attribution metadata and are never fetched by the game runtime.
+EXECUTABLE_SUFFIXES = {'.html', '.js', '.css'}
+EXTERNAL_URL_RE = re.compile(r'(?i)\b(?:https?|wss?)://[^\s"\'<>`)]*')
+KNOWN_EXTERNAL_HOSTS = (
+    'bananas-server.openttd.org',
+    'content.openttd.org',
+    'bridge.playgama.com',
+)
+
 
 def patch_index(dist: Path) -> None:
     path = dist / 'index.html'
@@ -47,20 +53,12 @@ def patch_index(dist: Path) -> None:
         raise SystemExit(f'Expected one Playgama Bridge tag, found {bridge_count}')
     if adapter_count != 1:
         raise SystemExit(f'Expected one Playgama adapter tag, found {adapter_count}')
-    # Current Playgama packages route cloud/player state through the compatibility
-    # adapter and therefore do not inject the old dedicated cloud-saves script.
-    # Accept one copy only for older launch-safe bases so conversion remains
-    # backwards compatible while still rejecting duplicate active integrations.
     if cloud_count not in (0, 1):
         raise SystemExit(f'Expected at most one legacy Playgama cloud tag, found {cloud_count}')
     if PLAYGAMA_FIXES_TAG not in html:
         raise SystemExit('Playgama runtime-fixes script tag is missing')
     html = html.replace(PLAYGAMA_FIXES_TAG, YANDEX_FIXES_TAG, 1)
 
-    # yandex-bootstrap.js dynamically loads /sdk.js using the documented
-    # Yandex-hosted archive pattern and calls YaGames.init() only after the SDK
-    # script loads. OpenTTD itself has a bounded startup wait, so an SDK network
-    # problem cannot keep main() on Loading... indefinitely.
     for required in ('yandex-bootstrap.js', 'yandex-bridge.js', 'openttd-yandex-fixes.js'):
         if required not in html:
             raise SystemExit(f'Missing required Yandex script in index.html: {required}')
@@ -74,10 +72,6 @@ def patch_yandex_bootstrap(dist: Path) -> None:
     path = dist / 'yandex-bootstrap.js'
     text = path.read_text(encoding='utf-8')
 
-    # The old direct-file build skipped SDK initialization on file://. For the
-    # moderation fix there must be no URL/protocol allow-list at all: every URL
-    # attempts the official relative /sdk.js loader, and a failed SDK request is
-    # caught while the OpenTTD runtime continues after its bounded startup wait.
     text, count = re.subn(
         r"^\s*if \(location\.protocol === 'file:'\) return null;\s*\n",
         '',
@@ -105,13 +99,12 @@ def make_yandex_fixes(dist: Path) -> None:
 
     # Remove the direct Playgama Bridge event binding. Yandex pause/resume,
     # GameplayAPI and advertising events are handled by yandex-bridge.js.
-    pattern = re.compile(
-        r"\n  const bindBridge = \(bridge\) => \{.*?\n  Promise\.resolve\(window\.playgamaBridgeReady\)\.then\(bindBridge\)\.catch\(\(\) => \{\}\);\n",
-        re.S,
-    )
-    text, count = pattern.subn('\n', text, count=1)
-    if count != 1:
-        raise SystemExit('Could not remove direct Playgama Bridge binding from runtime fixes')
+    start = text.find('\n  const bindBridge = (bridge) => {')
+    end_marker = '\n  Promise.resolve(window.playgamaBridgeReady).then(bindBridge).catch(() => {});\n'
+    end = text.find(end_marker, start)
+    if start < 0 or end < 0:
+        raise SystemExit('Could not locate direct Playgama Bridge binding in runtime fixes')
+    text = text[:start] + '\n' + text[end + len(end_marker):]
 
     replacements = {
         'OpenTTD-specific Playgama QA/runtime fixes.': 'OpenTTD-specific Yandex Games QA/runtime fixes.',
@@ -124,17 +117,89 @@ def make_yandex_fixes(dist: Path) -> None:
 
     if re.search(r'playgama', text, re.I):
         raise SystemExit('Playgama-specific reference remains in Yandex runtime fixes')
-    target = dist / 'openttd-yandex-fixes.js'
-    target.write_text(text, encoding='utf-8')
+    (dist / 'openttd-yandex-fixes.js').write_text(text, encoding='utf-8')
+
+
+def make_runtime_autonomous(dist: Path) -> None:
+    """Remove executable third-party network endpoints from the Yandex package.
+
+    OpenTTD's Emscripten pre.js contains a BaNaNaS WebSocket proxy and even an
+    inert GitHub URL in a compatibility comment. The old CI audit rejected the
+    comment but missed the real wss:// endpoint. Strip both classes here and
+    then perform a protocol+hostname rescan so the produced package, not merely
+    the source tree, proves that it is autonomous.
+    """
+    rewrites: list[str] = []
+
+    for path in sorted(dist.rglob('*')):
+        if not path.is_file() or path.suffix.lower() not in EXECUTABLE_SUFFIXES:
+            continue
+        rel = path.relative_to(dist).as_posix()
+        text = path.read_text(encoding='utf-8', errors='ignore')
+        original = text
+
+        # Disable OpenTTD's generic HTTPS->WSS fallback as well as its explicit
+        # BaNaNaS proxy URL. A relative /sdk.js remains untouched.
+        for token in ("return 'wss://';", 'return "wss://";'):
+            if token in text:
+                text = text.replace(token, 'return null;')
+                rewrites.append(f'{rel}: disabled generic WebSocket fallback')
+
+        def replace_url(match: re.Match[str]) -> str:
+            value = match.group(0)
+            rewrites.append(f'{rel}: {value} -> about:blank')
+            return 'about:blank'
+
+        text = EXTERNAL_URL_RE.sub(replace_url, text)
+
+        for host in KNOWN_EXTERNAL_HOSTS:
+            if host in text:
+                text = text.replace(host, 'offline.invalid')
+                rewrites.append(f'{rel}: {host} -> offline.invalid')
+
+        # The native browser glue can open URLs supplied by the game. The
+        # autonomous portal build must not navigate to arbitrary third parties.
+        if "window.open(url_string, '_blank');" in text:
+            text = text.replace(
+                "window.open(url_string, '_blank');",
+                "console.info('[OpenTTD] External URL opening disabled in autonomous Yandex build.');",
+            )
+            rewrites.append(f'{rel}: disabled window.open(url_string)')
+
+        if text != original:
+            path.write_text(text, encoding='utf-8')
+
+    leftovers: list[str] = []
+    for path in sorted(dist.rglob('*')):
+        if not path.is_file() or path.suffix.lower() not in EXECUTABLE_SUFFIXES:
+            continue
+        rel = path.relative_to(dist).as_posix()
+        text = path.read_text(encoding='utf-8', errors='ignore')
+        for match in EXTERNAL_URL_RE.finditer(text):
+            leftovers.append(f'{rel}: {match.group(0)}')
+        for host in KNOWN_EXTERNAL_HOSTS:
+            if host in text:
+                leftovers.append(f'{rel}: hostname {host}')
+        if re.search(r"return\s+['\"]wss?://['\"]\s*;", text, re.I):
+            leftovers.append(f'{rel}: generic WebSocket fallback')
+
+    (dist / 'YANDEX-URL-REWRITE.txt').write_text(
+        '\n'.join(rewrites) + ('\n' if rewrites else ''), encoding='utf-8'
+    )
+    if leftovers:
+        raise SystemExit(
+            'External runtime network references remain in autonomous Yandex package:\n'
+            + '\n'.join(leftovers)
+        )
 
 
 def write_platform_notice(dist: Path) -> None:
     (dist / 'YANDEX-INTEGRATION.txt').write_text(
-        'OpenTTD 15.3 - Yandex Games launch-safe edition\n'
-        '================================================\n'
-        '- Active platform SDK: Yandex Games SDK loaded dynamically from /sdk.js.\n'
+        'OpenTTD 15.3 - Yandex Games autonomous edition\n'
+        '==============================================\n'
+        '- Active platform SDK: local relative /sdk.js loader.\n'
         '- YaGames.init() runs only after the SDK loader succeeds.\n'
-        '- There is no host/domain/protocol allow-list in the Yandex bootstrap.\n'
+        '- No Playgama runtime or third-party gameplay/content endpoint is executable.\n'
         '- OpenTTD startup is not blocked indefinitely by SDK, cloud or optional add-on requests.\n'
         '- LoadingAPI.ready() is sent after the WebAssembly runtime reaches postRun.\n'
         '- GameplayAPI, pause/resume, interstitial ads and Yandex player data are handled by yandex-bridge.js.\n'
@@ -152,6 +217,7 @@ def main() -> None:
     for required in (
         'index.html',
         'openttd-runtime.js',
+        'sdk.js',
         'yandex-bootstrap.js',
         'yandex-bridge.js',
         'openttd-playgama-fixes.js',
@@ -168,11 +234,9 @@ def main() -> None:
         if path.exists():
             path.unlink()
 
+    make_runtime_autonomous(dist)
     write_platform_notice(dist)
 
-    # Hard fail if any active Playgama SDK/runtime file survived. Textual legal
-    # notices for third-party content may still describe provenance; they are
-    # not executed and do not affect platform selection.
     forbidden = (
         'playgama-yandex-compat.js',
         'playgama-bridge-config.json',
@@ -183,7 +247,7 @@ def main() -> None:
         if (dist / name).exists():
             raise SystemExit(f'Forbidden Playgama runtime file remains: {name}')
 
-    print('Yandex Games package created from launch-safe Playgama base:', dist)
+    print('Autonomous Yandex Games package created:', dist)
 
 
 if __name__ == '__main__':
