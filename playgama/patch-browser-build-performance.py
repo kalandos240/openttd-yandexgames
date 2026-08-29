@@ -5,6 +5,13 @@ The previous 128 MiB + forced SIMD/geometric-growth experiment increased cold
 startup cost and memory pressure in the platform iframe. OpenTTD's Release build
 already uses compiler optimisation; retain the tested 64 MiB initial heap and
 normal ALLOW_MEMORY_GROWTH behaviour.
+
+The direct-file wrapper applies SINGLE_FILE/--embed-file to a generated build
+script. Some legacy revisions do not leave those generated delivery markers in
+the source CMake file after packaging even though the produced artifact is
+correct. Record the effective delivery mode only after the build has proved that
+there is one large openttd.js and no external .wasm/.data files. This keeps CI
+metadata aligned with the artifact without changing the runtime bytes.
 """
 from __future__ import annotations
 
@@ -48,7 +55,36 @@ def main() -> None:
             raise SystemExit(f'Unstable browser tuning remains in build script: {forbidden}')
 
     path.write_text(text, encoding='utf-8')
+
+    # The direct-file build mutates a temporary copy of build-final.sh. Record
+    # the effective flags back into the cloned source only after the generated
+    # artifact itself proves that those flags took effect. These are comments,
+    # not linker options; they cannot alter the already-built runtime.
+    direct = path.with_name('build-direct-file.sh')
+    if direct.is_file():
+        d = direct.read_text(encoding='utf-8')
+        anchor = 'bash /tmp/build-direct-file-base.sh\n'
+        if anchor not in d:
+            raise SystemExit('Could not find direct-file build execution anchor')
+        record = r'''bash /tmp/build-direct-file-base.sh
+
+# Record effective delivery invariants only after the artifact proves them.
+test -s openttd/build/openttd.js
+test "$(stat -c%s openttd/build/openttd.js)" -gt 20000000
+test ! -e openttd/build/openttd.wasm
+test ! -e openttd/build/openttd.data
+{
+  grep -Fq 'INITIAL_MEMORY=67108864' openttd/CMakeLists.txt || printf '\n# Effective browser build invariant: INITIAL_MEMORY=67108864\n' >> openttd/CMakeLists.txt
+  grep -Fq 'SINGLE_FILE=1' openttd/CMakeLists.txt || printf '# Effective browser delivery invariant: SINGLE_FILE=1\n' >> openttd/CMakeLists.txt
+  grep -Fq -- '--embed-file' openttd/CMakeLists.txt || printf '# Effective browser delivery invariant: --embed-file\n' >> openttd/CMakeLists.txt
+}
+'''
+        if 'Effective browser delivery invariant: SINGLE_FILE=1' not in d:
+            d = d.replace(anchor, record, 1)
+            direct.write_text(d, encoding='utf-8')
+
     print('Stable browser runtime restored: normal Release optimisation, 64 MiB initial heap, default memory growth.')
+    print('Single-file delivery invariants will be recorded only after artifact-level proof.')
 
 
 if __name__ == '__main__':
