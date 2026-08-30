@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 playgama/newgrf-localization/prepare_iron_horse_russian.py \
+          python3 playgama/newgrf-localization/prepare_iron_horse_russian_v429.py \
             --english /tmp/addons/iron-horse/src/lang/english.toml \
             --output /tmp/iron-horse-russian-generated.toml
 
