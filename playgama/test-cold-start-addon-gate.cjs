@@ -24,14 +24,34 @@ global.openttd_syncfs = (callback) => {
   persisted += 1;
   if (callback) callback(null);
 };
+
+// Keep the regression test runnable in both the GitHub host (new Node) and the
+// pinned Emscripten 3.1.57 container (Node 16, which has no global Response).
+const mockResponse = (body, { json = false } = {}) => {
+  const bytes = json
+    ? Buffer.from(JSON.stringify(body), 'utf8')
+    : Buffer.from(body);
+  return {
+    ok: true,
+    status: 200,
+    async json() {
+      if (json) return body;
+      return JSON.parse(bytes.toString('utf8'));
+    },
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    },
+  };
+};
+
 global.fetch = async (url) => {
   const value = String(url);
   fetched.push(value);
   if (value.endsWith('/PLAYGAMA-ALL-LICENSES.md')) {
-    return new Response(new Uint8Array(2048), { status: 200 });
+    return mockResponse(new Uint8Array(2048));
   }
   if (value.endsWith('/OPENTTD-BUNDLED-ADDONS.json')) {
-    return new Response(JSON.stringify({
+    return mockResponse({
       manifest_version: 1,
       enabled_by_default: false,
       items: [
@@ -54,16 +74,13 @@ global.fetch = async (url) => {
           installed_bytes: 3,
         },
       ],
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
+    }, { json: true });
   }
   if (value.endsWith('/addons/test.grf')) {
-    return new Response(Uint8Array.from([1, 2, 3, 4]), { status: 200 });
+    return mockResponse(Uint8Array.from([1, 2, 3, 4]));
   }
   if (value.endsWith('/addons/test-base.tar')) {
-    return new Response(Uint8Array.from([5, 6, 7]), { status: 200 });
+    return mockResponse(Uint8Array.from([5, 6, 7]));
   }
   throw new Error(`Unexpected cold-start fetch: ${value}`);
 };
