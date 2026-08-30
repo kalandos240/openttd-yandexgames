@@ -47,12 +47,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 playgama/newgrf-localization/prepare_firs_russian.py \
+          python3 playgama/newgrf-localization/prepare_firs_russian_v520.py \
             --english /tmp/addons/firs/src/grf/lang/english.toml \
             --historical-russian /tmp/firs-russian-base.toml \
             --output /tmp/firs-russian-generated.toml
 
-          # The generated table must parse and must use the Russian NewGRF id.
           python3 - <<'PY'
           import tomllib
           with open('/tmp/firs-russian-generated.toml', 'rb') as fh:
