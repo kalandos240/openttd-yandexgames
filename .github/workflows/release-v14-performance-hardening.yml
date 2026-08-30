@@ -1,0 +1,285 @@
+name: Release OpenTTD v14 performance-hardened
+
+on:
+  push:
+    branches:
+      - fix/v14-profiler-performance
+    paths:
+      - '.github/workflows/release-v14-performance-hardening.yml'
+      - 'ci/patch-v14-performance-package.py'
+      - 'ci/platform-hosted-smoke.mjs'
+      - 'playgama/patch-browser-game-speed-selector.py'
+      - 'playgama/openttd-ranking-core.js'
+      - 'playgama/openttd-global-ranking.js'
+      - 'yandex/openttd-global-ranking.js'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  harden-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+    steps:
+      - name: Checkout performance hardening
+        uses: actions/checkout@v4
+
+      - name: Download exact platform-verified v14 packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/prod /tmp/test /tmp/out
+          mkdir -p /tmp/base/ya /tmp/base/pg /tmp/prod/ya /tmp/prod/pg /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VERIFIED_YA_ARTIFACT_ID}/zip" \
+            -o /tmp/base/ya-artifact.zip
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VERIFIED_PG_ARTIFACT_ID}/zip" \
+            -o /tmp/base/pg-artifact.zip
+          unzip -q /tmp/base/ya-artifact.zip -d /tmp/base/ya
+          unzip -q /tmp/base/pg-artifact.zip -d /tmp/base/pg
+          YA_ZIP="$(find /tmp/base/ya -maxdepth 1 -type f -name 'openttd-yandexgames-v14-platform-verified.zip' -print -quit)"
+          PG_ZIP="$(find /tmp/base/pg -maxdepth 1 -type f -name 'openttd-playgama-v14-platform-verified.zip' -print -quit)"
+          test -s "$YA_ZIP"
+          test -s "$PG_ZIP"
+          unzip -q "$YA_ZIP" -d /tmp/prod/ya
+          unzip -q "$PG_ZIP" -d /tmp/prod/pg
+          for d in /tmp/prod/ya /tmp/prod/pg; do
+            test -s "$d/index.html"
+            test -s "$d/openttd-runtime.js"
+            test -s "$d/openttd.wasm"
+            test -s "$d/openttd.data"
+          done
+
+      - name: Apply deterministic performance fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-v14-performance-package.py playgama/patch-browser-game-speed-selector.py
+          python3 ci/patch-v14-performance-package.py /tmp/prod/ya --platform yandex
+          python3 ci/patch-v14-performance-package.py /tmp/prod/pg --platform playgama
+
+          node --check /tmp/prod/ya/openttd-runtime.js
+          node --check /tmp/prod/pg/openttd-runtime.js
+          node --check /tmp/prod/ya/openttd-ranking-core.js
+          node --check /tmp/prod/pg/openttd-ranking-core.js
+          node --check /tmp/prod/ya/openttd-global-ranking.js
+          node --check /tmp/prod/pg/openttd-global-ranking.js
+          node --check /tmp/prod/ya/yandex-bridge.js
+          node --check /tmp/prod/pg/playgama-yandex-compat.js
+          node --check /tmp/prod/pg/platform-bridge-loader.js
+
+      - name: Static performance and autonomy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in /tmp/prod/ya /tmp/prod/pg; do
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq 'texSubImage2D' "$d/openttd-runtime.js"
+            grep -Fq 'Canvas2D fallback' "$d/openttd-runtime.js"
+            grep -Fq 'Module.calledRun === true' "$d/openttd-ranking-core.js"
+            grep -Fq "typeof HEAP8 !== 'undefined'" "$d/openttd-ranking-core.js"
+            grep -Fq 'const MAX_SCORE = 1000' "$d/openttd-global-ranking.js"
+            ! grep -Fq 'Fast forward x4' "$d/openttd-runtime.js"
+            ! grep -Fq 'Fast forward x8' "$d/openttd-runtime.js"
+            ! grep -Fq 'Ускорение ×4' "$d/openttd-runtime.js"
+            ! grep -Fq 'Ускорение ×8' "$d/openttd-runtime.js"
+          done
+
+          grep -Fq '__openttdCloudDedupV2' /tmp/prod/ya/yandex-bridge.js
+          grep -Fq 'Object.keys(payload).length' /tmp/prod/ya/yandex-bridge.js
+          grep -Fq "script.src = '/sdk.js'" /tmp/prod/ya/yandex-bootstrap.js
+          ! grep -Eiq 'https?://[^"[:space:]]+' /tmp/prod/ya/index.html
+
+          ! grep -Fq 'bridge.playgama.com' /tmp/prod/pg/index.html
+          grep -Fq 'https://bridge.playgama.com/v1.31.0/playgama-bridge.js' /tmp/prod/pg/platform-bridge-loader.js
+          grep -Fq 'script.async = true' /tmp/prod/pg/platform-bridge-loader.js
+          grep -Fq '__openttdPlatformStartupIndependent' /tmp/prod/pg/openttd-runtime.js
+          grep -Fq 'await window.playgamaBridgeScriptReady' /tmp/prod/pg/playgama-yandex-compat.js
+
+      - name: Build exact performance-fixed ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/prod/ya && zip -q -r -9 /tmp/out/openttd-yandexgames-v14-performance-fixed.zip .)
+          (cd /tmp/prod/pg && zip -q -r -9 /tmp/out/openttd-playgama-v14-performance-fixed.zip .)
+          unzip -t /tmp/out/openttd-yandexgames-v14-performance-fixed.zip >/dev/null
+          unzip -t /tmp/out/openttd-playgama-v14-performance-fixed.zip >/dev/null
+          (cd /tmp/out && sha256sum openttd-yandexgames-v14-performance-fixed.zip > openttd-yandexgames-v14-performance-fixed.zip.sha256)
+          (cd /tmp/out && sha256sum openttd-playgama-v14-performance-fixed.zip > openttd-playgama-v14-performance-fixed.zip.sha256)
+
+      - name: Prepare isolated hosted smoke copies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/test/ya /tmp/test/pg
+          unzip -q /tmp/out/openttd-yandexgames-v14-performance-fixed.zip -d /tmp/test/ya
+          unzip -q /tmp/out/openttd-playgama-v14-performance-fixed.zip -d /tmp/test/pg
+
+          cat > /tmp/test/ya/sdk.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'perf-smoke-user'; }, getName() { return 'Perf Smoke'; },
+              isAuthorized() { return true; },
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'perf-smoke' } },
+              features: {
+                LoadingAPI: { ready() { document.documentElement.dataset.yandexLoadingReady = '1'; return Promise.resolve(true); } },
+                GameplayAPI: { start() { document.documentElement.dataset.yandexGameplay = 'started'; return Promise.resolve(true); }, stop() { document.documentElement.dataset.yandexGameplay = 'stopped'; return Promise.resolve(true); } },
+              },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; },
+              isAvailableMethod() { return Promise.resolve(true); },
+              on() {}, off() {},
+            };
+            window.YaGames = { async init() { document.documentElement.dataset.yandexSdk = 'ready'; return ysdk; } };
+          })();
+          JS
+
+          cat > /tmp/test/pg/platform-bridge-loader.js <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = {
+              version: 'perf-smoke', engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' },
+              STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { document.documentElement.dataset.playgamaSdk = 'initialized'; return true; },
+              platform: { language: 'en', id: 'playgama-perf-smoke', isAudioEnabled: true, on() {}, off() {}, async sendMessage(message) { document.documentElement.dataset.playgamaMessage = String(message || ''); return true; } },
+              storage: {
+                async isSupported() { return true; }, async isAvailable() { return true; },
+                async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); },
+                async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; },
+              },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} },
+              player: { id: 'perf-smoke-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } },
+            };
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+          })();
+          JS
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          mkdir -p /tmp/smoke-node
+          cd /tmp/smoke-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+
+      - name: Hosted Chromium - Yandex Games, external network blocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/test/ya
+          python3 -m http.server 8133 --bind 127.0.0.1 >/tmp/yandex-perf-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8133/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/smoke-node
+          node smoke.mjs yandex http://127.0.0.1:8133/index.html /tmp/yandex-performance-smoke.json
+          grep -Fq '"passed": true' /tmp/yandex-performance-smoke.json
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Hosted Chromium - Playgama, external network blocked
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/test/pg
+          python3 -m http.server 8134 --bind 127.0.0.1 >/tmp/playgama-perf-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8134/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/smoke-node
+          node smoke.mjs playgama http://127.0.0.1:8134/index.html /tmp/playgama-performance-smoke.json
+          grep -Fq '"passed": true' /tmp/playgama-performance-smoke.json
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Verify WebGL fast path can initialize when browser exposes WebGL
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/test/ya
+          python3 -m http.server 8135 --bind 127.0.0.1 >/tmp/webgl-http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8135/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/smoke-node
+          cat > webgl-probe.mjs <<'JS'
+          import puppeteer from 'puppeteer-core';
+          const browser = await puppeteer.launch({ executablePath: process.env.CHROME_BIN, headless: true, args: ['--no-sandbox','--disable-dev-shm-usage','--use-angle=swiftshader','--enable-webgl','--ignore-gpu-blocklist','--autoplay-policy=no-user-gesture-required'] });
+          const page = await browser.newPage();
+          await page.setViewport({width:1280,height:720,deviceScaleFactor:1});
+          await page.goto('http://127.0.0.1:8135/index.html', {waitUntil:'domcontentloaded',timeout:60000});
+          await page.waitForFunction(() => window.Module?.calledRun === true, {timeout:60000,polling:100});
+          await new Promise(r => setTimeout(r, 3000));
+          const result = await page.evaluate(() => ({ webglAvailable: !!document.getElementById('canvas')?.getContext('webgl'), presenter: !!window.Module?.SDL2?.__openttdWebGLPresenter, calledRun: !!window.Module?.calledRun }));
+          console.log(JSON.stringify(result));
+          if (!result.calledRun) process.exitCode = 1;
+          if (result.webglAvailable && !result.presenter) process.exitCode = 1;
+          await browser.close();
+          JS
+          node webgl-probe.mjs | tee /tmp/webgl-performance-probe.json
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-performance-browser-reports
+          if-no-files-found: ignore
+          path: |
+            /tmp/yandex-performance-smoke.json
+            /tmp/yandex-performance-smoke.png
+            /tmp/yandex-perf-http.log
+            /tmp/playgama-performance-smoke.json
+            /tmp/playgama-performance-smoke.png
+            /tmp/playgama-perf-http.log
+            /tmp/webgl-performance-probe.json
+            /tmp/webgl-http.log
+
+      - name: Upload Yandex Games performance-fixed archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-yandexgames-v14-performance-fixed
+          compression-level: 0
+          path: |
+            /tmp/out/openttd-yandexgames-v14-performance-fixed.zip
+            /tmp/out/openttd-yandexgames-v14-performance-fixed.zip.sha256
+
+      - name: Upload Playgama performance-fixed archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-playgama-v14-performance-fixed
+          compression-level: 0
+          path: |
+            /tmp/out/openttd-playgama-v14-performance-fixed.zip
+            /tmp/out/openttd-playgama-v14-performance-fixed.zip.sha256
