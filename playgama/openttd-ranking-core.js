@@ -17,6 +17,7 @@
   const SNAPSHOT_PATH = '/home/web_user/.openttd/local-ranking.tsv';
   const LIMIT = 10;
   let lastSnapshot = '';
+  let publishRetryTimer = 0;
 
   const cleanName = (value) => String(value || 'Company').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Company';
   const normalizeScore = (value) => {
@@ -52,14 +53,24 @@
     try { localStorage.setItem(LOCAL_KEY, JSON.stringify(rows.slice(0, LIMIT))); } catch (_) {}
   };
 
+  const runtimeFsReady = () => {
+    try {
+      if (!window.Module || window.Module.calledRun !== true) return false;
+      if (typeof HEAP8 === 'undefined' || !HEAP8 || !HEAP8.buffer) return false;
+      return typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
+    } catch (_) {
+      return false;
+    }
+  };
+
   const writeSnapshot = () => {
     const rows = load();
     const lines = ['version\t3'];
     rows.forEach((row, index) => lines.push(`entry\t${index + 1}\t${row.score}\t${row.name}`));
     const text = lines.join('\n') + '\n';
     if (text === lastSnapshot) return true;
+    if (!runtimeFsReady()) return false;
     try {
-      if (typeof FS === 'undefined' || typeof FS.writeFile !== 'function') return false;
       try { FS.mkdirTree('/home/web_user/.openttd'); } catch (_) {}
       FS.writeFile(SNAPSHOT_PATH, text, { encoding: 'utf8' });
       lastSnapshot = text;
@@ -71,7 +82,10 @@
   };
 
   const publishSoon = () => {
-    if (!writeSnapshot()) setTimeout(writeSnapshot, 100);
+    clearTimeout(publishRetryTimer);
+    publishRetryTimer = 0;
+    if (writeSnapshot()) return;
+    publishRetryTimer = setTimeout(publishSoon, 250);
   };
 
   const submit = (scoreValue, companyName, eligible = true) => {
