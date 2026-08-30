@@ -23,6 +23,10 @@ def patch_loader(path: Path) -> None:
         "Optional bundled OpenTTD add-ons for the browser build.",
     )
     text = text.replace(
+        "Optional bundled OpenTTD add-ons for the Playgama build.",
+        "Optional bundled OpenTTD add-ons for the browser build.",
+    )
+    text = text.replace(
         "const LICENSE_BUNDLE_URL = './PLAYGAMA-ALL-LICENSES.md';",
         "const LICENSE_BUNDLE_URL = './THIRD-PARTY-LICENSES.md';",
     )
@@ -30,10 +34,18 @@ def patch_loader(path: Path) -> None:
         "const LICENSE_TARGET = '/docs/PLAYGAMA-LICENSES.md';",
         "const LICENSE_TARGET = '/docs/THIRD-PARTY-LICENSES.md';",
     )
+    text = text.replace(
+        "const LICENSE_TARGET_NAME = 'PLAYGAMA-LICENSES.md';",
+        "const LICENSE_TARGET_NAME = 'THIRD-PARTY-LICENSES.md';",
+    )
+    text = text.replace("[Playgama/OpenTTD]", "[OpenTTD/Web]")
+
     if re.search(r"playgama", text, re.I):
         raise SystemExit("Playgama reference remains in Yandex bundled-addons runtime")
-    if NEW_LICENSE_NAME not in text or "/docs/THIRD-PARTY-LICENSES.md" not in text:
-        raise SystemExit("Neutral Yandex license path was not installed in bundled-addons runtime")
+    if NEW_LICENSE_NAME not in text:
+        raise SystemExit("Neutral Yandex license bundle path was not installed")
+    if "THIRD-PARTY-LICENSES.md" not in text:
+        raise SystemExit("Neutral Yandex installed-license target was not installed")
     path.write_text(text, encoding="utf-8")
 
 
