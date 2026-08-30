@@ -1,0 +1,44 @@
+name: Cold-start regression gates
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/cold-start-regression.yml'
+      - 'playgama/openttd-ai-prerun.js'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/test-cold-start-addon-gate.cjs'
+      - 'playgama/test-cold-start-idbfs-migration.cjs'
+
+permissions:
+  contents: read
+
+jobs:
+  cold-start:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check startup scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check playgama/openttd-ai-prerun.js
+          node --check playgama/openttd-bundled-addons.js
+          node --check playgama/test-cold-start-addon-gate.cjs
+          node --check playgama/test-cold-start-idbfs-migration.cjs
+
+      - name: Prove optional content stays post-main and outside IDBFS
+        run: node playgama/test-cold-start-addon-gate.cjs
+
+      - name: Prove legacy static blobs are purged before populate
+        run: node playgama/test-cold-start-idbfs-migration.cjs
