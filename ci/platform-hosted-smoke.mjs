@@ -78,9 +78,20 @@ try {
     };
   }, platform);
 
-  for (const path of ['/openttd-runtime.js', '/openttd.wasm', '/openttd.data']) {
-    if (responses.get(path) !== 200) throw new Error(`required resource ${path} did not return HTTP 200; got ${responses.get(path)}`);
+  if (responses.get('/openttd-runtime.js') !== 200) {
+    throw new Error(`required resource /openttd-runtime.js did not return HTTP 200; got ${responses.get('/openttd-runtime.js')}`);
   }
+
+  // OpenTTD Web supports both split Emscripten packages and SINGLE_FILE builds.
+  // If either external binary is requested, require both to load successfully.
+  // If neither is requested, wasm/data are embedded in openttd-runtime.js.
+  const splitBinaryObserved = responses.has('/openttd.wasm') || responses.has('/openttd.data');
+  if (splitBinaryObserved) {
+    for (const path of ['/openttd.wasm', '/openttd.data']) {
+      if (responses.get(path) !== 200) throw new Error(`required split resource ${path} did not return HTTP 200; got ${responses.get(path)}`);
+    }
+  }
+
   if (!result.calledRun) throw new Error('Emscripten Module.calledRun is false');
   if (result.canvasWidth <= 0 || result.canvasHeight <= 0 || result.canvasDisplay === 'none') throw new Error(`canvas is not running: ${JSON.stringify(result)}`);
   if (result.boxError) throw new Error(`OpenTTD crash box is visible: ${JSON.stringify(result)}`);
