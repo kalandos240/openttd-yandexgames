@@ -69,6 +69,25 @@ def main() -> None:
     diag = 'setTimeout(function(){if(typeof runDependencies!=="undefined"&&runDependencies>0&&typeof browserPendingRunDependencies!=="undefined")console.warn("OpenTTD startup still waiting for run dependencies:",runDependencies,Array.from(browserPendingRunDependencies))},15000);'
     text = replace_once(text, diag_anchor, diag + diag_anchor, 'startup dependency diagnostics anchor')
 
+    # Firefox profiler data from the hosted game shows the SDL2 software
+    # framebuffer spending a large fraction of CPU time in a full HEAP32 copy
+    # plus Canvas2D alpha premultiplication for every presentation. Simulation
+    # and presentation share the browser main thread, so rendering every frame
+    # makes x4/x8 fast-forward CPU-bound. Keep x1 untouched, but cap presentation
+    # while fast-forward is active. Native OpenTTD continues to execute all game
+    # ticks and input events; only redundant visual uploads are skipped.
+    framebuffer_marker = 'var w=$0;var h=$1;var pixels=$2;if(!Module["SDL2"])Module["SDL2"]={};var SDL2=Module["SDL2"];'
+    framebuffer_throttle = framebuffer_marker + (
+        'var openttdSpeed=typeof window!=="undefined"?Number(window.__openttdGameSpeed||100):100;'
+        'if(openttdSpeed>100){'
+        'var openttdNow=typeof performance!=="undefined"&&performance.now?performance.now():Date.now();'
+        'var openttdInterval=openttdSpeed>=800?66.6667:openttdSpeed>=400?50:33.3333;'
+        'if(SDL2.__openttdLastPresent&&openttdNow-SDL2.__openttdLastPresent<openttdInterval)return;'
+        'SDL2.__openttdLastPresent=openttdNow;'
+        '}'
+    )
+    text = replace_once(text, framebuffer_marker, framebuffer_throttle, 'SDL2 software framebuffer presenter')
+
     for required in (
         'Preparing game data...',
         'OpenTTD data stream retry after failure',
@@ -76,12 +95,15 @@ def main() -> None:
         'initial filesystem sync threw',
         'browserPendingRunDependencies',
         'OpenTTD startup still waiting for run dependencies:',
+        '__openttdGameSpeed',
+        '__openttdLastPresent',
+        'openttdSpeed>=800?66.6667:openttdSpeed>=400?50:33.3333',
     ):
         if required not in text:
             raise SystemExit(f'Runtime hardening marker is missing: {required}')
 
     path.write_text(text, encoding='utf-8')
-    print('Hosted platform startup hardened:', path)
+    print('Hosted platform startup/performance hardened:', path)
 
 
 if __name__ == '__main__':
