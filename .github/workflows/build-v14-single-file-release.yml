@@ -8,6 +8,12 @@ on:
       - '.github/workflows/build-v14-single-file-release.yml'
       - 'playgama/patch-direct-file-launch.py'
       - 'playgama/smoke-direct-file.cjs'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-game-speed-selector.py'
+      - 'playgama/openttd-ai-prerun.js'
+      - 'playgama/openttd-bundled-addons.js'
+      - 'playgama/package_optional_addons.py'
+      - 'playgama/newgrf-localization/**'
   workflow_dispatch:
 
 permissions:
@@ -16,17 +22,18 @@ permissions:
 
 env:
   V8_ARTIFACT_ID: '9306987648'
+  LOCALIZED_NEWGRF_ARTIFACT_ID: '9723687566'
   LEGACY_BUILD_REF: fix/direct-file-launch
 
 jobs:
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 95
+    timeout-minutes: 110
     container:
       image: emscripten/emsdk:3.1.57
 
     steps:
-      - name: Checkout root-fix sources
+      - name: Checkout full-feature integration sources
         uses: actions/checkout@v4
 
       - name: Checkout tested single-file browser pipeline
@@ -61,13 +68,19 @@ jobs:
             playgama/patch-browser-tutorial-v15-compat.py \
             playgama/patch-browser-tutorial-real-objectives.py \
             playgama/patch-browser-tutorial-clean-ui.py \
-            playgama/patch-browser-ai-static.py \
-            playgama/patch-browser-ai-runtime-v2.py \
+            playgama/patch-browser-game-speed-selector.py \
             playgama/patch-browser-startup-watchdog.py \
             playgama/patch-browser-build-performance.py \
             playgama/install-classic-ai-package.py \
+            playgama/package_optional_addons.py \
             playgama/patch-direct-file-launch.py
           node --check playgama/smoke-direct-file.cjs
+          node --check playgama/openttd-ai-prerun.js
+          node --check playgama/openttd-bundled-addons.js
+          node --check playgama/test-cold-start-addon-gate.cjs
+          node --check playgama/test-persistent-bundled-content-migration.cjs
+          node playgama/test-cold-start-addon-gate.cjs
+          node playgama/test-persistent-bundled-content-migration.cjs
 
           python3 - <<'PY'
           from pathlib import Path
@@ -115,6 +128,14 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
+          # Native feature regression gates on the source that actually built.
+          grep -Fq 'MenuClickGameSpeed' openttd/src/toolbar_gui.cpp
+          grep -Fq '_game_speed = 200' openttd/src/toolbar_gui.cpp
+          grep -Fq '_game_speed = 400' openttd/src/toolbar_gui.cpp
+          grep -Fq '_game_speed = 800' openttd/src/toolbar_gui.cpp
+          grep -Fq 'STR_GAME_SPEED_X8' openttd/src/lang/english.txt
+          grep -Fq 'Ускорение ×8' openttd/src/lang/russian.txt
+
           rm -rf /tmp/v14-native
           mkdir -p /tmp/v14-native
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/v14-native
@@ -126,7 +147,7 @@ jobs:
           test "$(stat -c%s /tmp/v14-native/openttd-runtime.js)" -gt 20000000
           node --check /tmp/v14-native/openttd-runtime.js
 
-      - name: Assemble current Playgama package
+      - name: Assemble package with localized bundled NewGRFs
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -138,19 +159,68 @@ jobs:
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
             -o /tmp/v8-artifact.zip
 
-          rm -rf /tmp/v8-artifact dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai
-          mkdir -p /tmp/v8-artifact dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${LOCALIZED_NEWGRF_ARTIFACT_ID}/zip" \
+            -o /tmp/localized-newgrf-artifact.zip
+
+          rm -rf /tmp/v8-artifact /tmp/localized-newgrf dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai /tmp/final-addons-work
+          mkdir -p /tmp/v8-artifact /tmp/localized-newgrf dist-v14 /tmp/rebuilt-runtime /tmp/classic-ai /tmp/final-addons-work
           unzip -q /tmp/v8-artifact.zip -d /tmp/v8-artifact
+          unzip -q /tmp/localized-newgrf-artifact.zip -d /tmp/localized-newgrf
+
           inner="$(find /tmp/v8-artifact -type f -name 'openttd-playgama-v8-addons-licenses.zip' -print -quit)"
           test -s "$inner"
           unzip -q "$inner" -d dist-v14
+
+          firs="$(find /tmp/localized-newgrf -type f -name 'firs-5.2.0-russian.grf' -print -quit)"
+          iron="$(find /tmp/localized-newgrf -type f -name 'iron-horse-4.29.0-russian.grf' -print -quit)"
+          early="$(find /tmp/localized-newgrf -type f -name 'early-vehicle-set-russian.grf' -print -quit)"
+          test -s "$firs"
+          test -s "$iron"
+          test -s "$early"
+          printf '%s  %s\n' '5dddc9b2921102ad555907512550f47fc5087f0347960095fe0d270d9112cb1e' "$firs" | sha256sum -c -
+          printf '%s  %s\n' '5116e34970dd37af83402ae05ddb1abc130556f365d6be9f0b32be0fbb45733b' "$iron" | sha256sum -c -
+          printf '%s  %s\n' '4bd73c2d7a0ea293fa33f96b7f08749256e48816c9d46e0ddd8430c67308a5da' "$early" | sha256sum -c -
+
+          cp "$firs" /tmp/final-addons-work/firs-5.2.0.grf
+          cp "$iron" /tmp/final-addons-work/iron-horse-4.29.0.grf
+          cp "$early" /tmp/final-addons-work/early-vehicle-set-0.0.2.grf
+          python3 playgama/package_optional_addons.py --work-dir /tmp/final-addons-work
+
+          # Replace the old English bundled payload entirely before the upgrade
+          # script normalizes .gz assets to neutral .bin delivery names.
+          rm -rf dist-v14/addons
+          cp -a /tmp/final-addons-work/addons dist-v14/addons
+          cp /tmp/final-addons-work/OPENTTD-BUNDLED-ADDONS.json dist-v14/OPENTTD-BUNDLED-ADDONS.json
+          cp /tmp/final-addons-work/THIRD-PARTY-ADDONS.md dist-v14/THIRD-PARTY-ADDONS.md
 
           python3 playgama/upgrade_playgama_v10.py dist-v14 \
             --loader playgama/openttd-bundled-addons.js \
             --cloud-saves playgama/openttd-playgama-cloud-saves.js \
             --adapter playgama/playgama-yandex-compat.js
           cp playgama/playgama-bridge-config.json dist-v14/playgama-bridge-config.json
-          python3 playgama/build-license-bundle.py dist-v14 --repo-license LICENSE
+
+          # Prove the manifest now describes the localized source-built binaries.
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('dist-v14/OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8'))
+          rows = {row['content_id']: row for row in manifest['items']}
+          expected = {
+              'newgrf/f1250009': '5dddc9b2921102ad555907512550f47fc5087f0347960095fe0d270d9112cb1e',
+              'newgrf/43411223': '5116e34970dd37af83402ae05ddb1abc130556f365d6be9f0b32be0fbb45733b',
+              'newgrf/474c0501': '4bd73c2d7a0ea293fa33f96b7f08749256e48816c9d46e0ddd8430c67308a5da',
+          }
+          for cid, digest in expected.items():
+              row = rows[cid]
+              if row.get('sha256') != digest:
+                  raise SystemExit(f'Localized NewGRF hash mismatch for {cid}: {row.get("sha256")}')
+              if not row.get('built_from_source'):
+                  raise SystemExit(f'Localized NewGRF lost source-build provenance: {cid}')
+          print('Localized bundled NewGRF manifest verified.')
+          PY
 
       - name: Install SimpleAI and single-file native runtime
         shell: bash
@@ -170,14 +240,25 @@ jobs:
           rm -f dist-v14/openttd.wasm dist-v14/openttd.data
           cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
 
+          # Build legal bundle only after the final AI and localized add-on
+          # manifests are both in place.
+          python3 playgama/build-license-bundle.py dist-v14 --repo-license LICENSE
+
           node --check dist-v14/openttd-runtime.js
           node --check dist-v14/openttd-classic-ai.js
           node --check dist-v14/openttd-ranking-core.js
           node --check dist-v14/openttd-playgama-fixes.js
+          node --check dist-v14/openttd-bundled-addons.js
           node --check dist-v14/yandex-bridge.js
           test "$(stat -c%s dist-v14/openttd-runtime.js)" -gt 20000000
           test ! -e dist-v14/openttd.wasm
           test ! -e dist-v14/openttd.data
+          test -s dist-v14/openttd-full-viewport.js
+          test -s dist-v14/openttd-ranking-core.js
+          test -s dist-v14/openttd-global-ranking.js
+          grep -Fq 'openttd.localRanking.v4' dist-v14/openttd-ranking-core.js
+          grep -Fq "return '/newgrf'" dist-v14/openttd-bundled-addons.js
+          ! grep -Fq "personalDir + '/newgrf'" dist-v14/openttd-bundled-addons.js
           ! grep -Fq 'const COMPETITORS =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq "'max_no_competitors = 3'" dist-v14/yandex-bridge.js
@@ -188,6 +269,8 @@ jobs:
           # HTTP(S) request and falls back immediately to the embedded game.
           python3 playgama/patch-direct-file-launch.py prepare-playgama dist-v14
           node --check dist-v14/platform-bridge-loader.js
+          node --check dist-v14/openttd-ai-prerun.js
+          grep -Fq 'BUNDLED_STATIC_CONTENT_PATHS' dist-v14/openttd-ai-prerun.js
 
       - name: Create Playgama candidate ZIP
         shell: bash
@@ -204,6 +287,7 @@ jobs:
           test ! -e dist-v14/openttd.data
           test -s dist-v14/openttd-classic-ai.js
           test -s dist-v14/platform-bridge-loader.js
+          test -s dist-v14/openttd-ai-prerun.js
           ! grep -Fq 'openttd-yandex-converter-marker' dist-v14/index.html
           (cd dist-v14 && zip -9 -X -r ../openttd-playgama-v14-single-file-fixed.zip .)
           unzip -t openttd-playgama-v14-single-file-fixed.zip
@@ -223,16 +307,25 @@ jobs:
           test ! -e dist-yandex-v14/openttd.wasm
           test ! -e dist-yandex-v14/openttd.data
           test -s dist-yandex-v14/openttd-classic-ai.js
+          test -s dist-yandex-v14/openttd-ai-prerun.js
           test -s dist-yandex-v14/openttd-yandex-fixes.js
           test -s dist-yandex-v14/yandex-bridge.js
+          test -s dist-yandex-v14/openttd-full-viewport.js
+          test -s dist-yandex-v14/openttd-ranking-core.js
+          test -s dist-yandex-v14/openttd-global-ranking.js
           test ! -e dist-yandex-v14/platform-bridge-loader.js
           node --check dist-yandex-v14/openttd-runtime.js
           node --check dist-yandex-v14/openttd-ranking-core.js
           node --check dist-yandex-v14/openttd-yandex-fixes.js
           node --check dist-yandex-v14/yandex-bridge.js
           node --check dist-yandex-v14/yandex-bootstrap.js
+          node --check dist-yandex-v14/openttd-ai-prerun.js
           grep -Fq '/sdk.js' dist-yandex-v14/yandex-bootstrap.js
           grep -Fq "location.protocol === 'file:'" dist-yandex-v14/yandex-bootstrap.js
+          grep -Fq "const LEADERBOARD_NAME = 'companyrating';" dist-yandex-v14/openttd-global-ranking.js
+          grep -Fq 'openttd.localRanking.v4' dist-yandex-v14/openttd-ranking-core.js
+          grep -Fq 'BUNDLED_STATIC_CONTENT_PATHS' dist-yandex-v14/openttd-ai-prerun.js
+          grep -Fq "return '/newgrf'" dist-yandex-v14/openttd-bundled-addons.js
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
           ! grep -Fq 'platform-bridge-loader.js' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
@@ -304,6 +397,13 @@ jobs:
           test ! -e /tmp/smoke-playgama/openttd.data
           test ! -e /tmp/smoke-yandex/openttd.wasm
           test ! -e /tmp/smoke-yandex/openttd.data
+          test -s /tmp/smoke-yandex/openttd-ai-prerun.js
+          test -s /tmp/smoke-yandex/openttd-full-viewport.js
+          test -s /tmp/smoke-yandex/openttd-ranking-core.js
+          test -s /tmp/smoke-yandex/openttd-global-ranking.js
+          grep -Fq "const LEADERBOARD_NAME = 'companyrating';" /tmp/smoke-yandex/openttd-global-ranking.js
+          grep -Fq 'openttd.localRanking.v4' /tmp/smoke-yandex/openttd-ranking-core.js
+          grep -Fq 'BUNDLED_STATIC_CONTENT_PATHS' /tmp/smoke-yandex/openttd-ai-prerun.js
 
       - name: Install browser test driver
         shell: bash
