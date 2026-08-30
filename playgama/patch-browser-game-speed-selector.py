@@ -2,11 +2,11 @@
 """Add a native OpenTTD game-speed selector to the existing fast-forward button.
 
 OpenTTD 15.3 represents simulation speed as a percentage in `_game_speed`.
-100 is normal speed, so 200/400/800 are exact x2/x4/x8 tick rates.  The patch
-keeps the stock toolbar button, pause semantics, networking restriction and
-OpenTTD draw loop; it only replaces the binary fast-forward toggle with a
-native dropdown. Both native diagnostics and the final release workflow compile
-this patch before any Playgama/Yandex package can be published.
+100 is normal speed, so 200/400/800 are exact x2/x4/x8 tick rates. The browser
+build also publishes the selected native speed to JavaScript so the Emscripten
+software-framebuffer presenter can reduce expensive full-canvas copies while
+fast-forward is active. Both native diagnostics and the final release workflow
+compile this patch before any Playgama/Yandex package can be published.
 """
 from pathlib import Path
 
@@ -20,6 +20,16 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 src = Path("openttd/src/toolbar_gui.cpp")
 text = src.read_text(encoding="utf-8")
+
+include_anchor = '#include "safeguards.h"\n'
+emscripten_include = '''#ifdef __EMSCRIPTEN__
+#\tinclude <emscripten.h>
+#endif
+
+#include "safeguards.h"
+'''
+if '#\tinclude <emscripten.h>' not in text:
+    text = replace_once(text, include_anchor, emscripten_include, "Emscripten include")
 
 old_click = '''/**
  * Toggle fast forward mode.
@@ -54,12 +64,23 @@ static int CurrentGameSpeedMenuEntry()
 \t}
 }
 
+/** Tell the browser presentation layer which native simulation speed is active. */
+static void PublishBrowserGameSpeed()
+{
+#ifdef __EMSCRIPTEN__
+\tEM_ASM({
+\t\twindow.__openttdGameSpeed = $0;
+\t}, _game_speed);
+#endif
+}
+
 /**
  * Open the native simulation-speed selector.
  *
  * OpenTTD's video driver calculates the game-tick interval from `_game_speed`,
- * where 100 is normal speed.  Using 200/400/800 therefore provides exact
- * x2/x4/x8 simulation speeds without changing rendering or browser timers.
+ * where 100 is normal speed. Using 200/400/800 therefore provides exact
+ * x2/x4/x8 simulation targets. The browser presentation layer may render less
+ * often at higher speeds, while simulation ticks and input remain native.
  *
  * @return #CBF_NONE
  */
@@ -91,6 +112,7 @@ static CallBackFunction MenuClickGameSpeed(int index)
 \t\tdefault: return CBF_NONE;
 \t}
 
+\tPublishBrowserGameSpeed();
 \tMarkWholeScreenDirty();
 \tSndClickBeep();
 \treturn CBF_NONE;
@@ -113,7 +135,13 @@ new_table = '''static MenuClickedProc * const _menu_clicked_procs[] = {
 if "MenuClickGameSpeed,   // 1" not in text:
     text = replace_once(text, old_table, new_table, "toolbar dropdown callback table")
 
-for marker in ("case 200: return GSME_X2;", "case 400: return GSME_X4;", "case 800: return GSME_X8;"):
+for marker in (
+    "case 200: return GSME_X2;",
+    "case 400: return GSME_X4;",
+    "case 800: return GSME_X8;",
+    "window.__openttdGameSpeed = $0;",
+    "PublishBrowserGameSpeed();",
+):
     if marker not in text:
         raise SystemExit(f"Native speed selector marker missing after patch: {marker}")
 
@@ -135,4 +163,4 @@ if "STR_GAME_SPEED_X2" not in russian_text:
 english.write_text(english_text, encoding="utf-8")
 russian.write_text(russian_text, encoding="utf-8")
 
-print("Native OpenTTD speed selector installed: x1, x2, x4, x8 on the stock fast-forward button.")
+print("Native OpenTTD speed selector installed: x1, x2, x4, x8 with browser render-speed signal.")
