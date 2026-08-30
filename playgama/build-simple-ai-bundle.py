@@ -5,16 +5,22 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import socket
+import time
 from pathlib import Path
 
 from openttdlab import download_from_bananas
 
+SIMPLE_AI_CONTENT_ID = 'ai/534d504c'
+SIMPLE_AI_V14_MD5_PREFIX = 'b3137bbd'
+DOWNLOAD_ATTEMPTS = 3
 
-def build() -> tuple[dict[str, str], list[dict[str, object]]]:
+
+def build_once() -> tuple[dict[str, str], list[dict[str, object]]]:
     payload: dict[str, str] = {}
     manifest: list[dict[str, object]] = []
 
-    with download_from_bananas('ai/534d504c') as files:
+    with download_from_bananas(SIMPLE_AI_CONTENT_ID) as files:
         for item in files:
             if len(item) == 5:
                 content_id, filename, license_name, md5, get_data = item
@@ -26,6 +32,7 @@ def build() -> tuple[dict[str, str], list[dict[str, object]]]:
 
             content_id = str(content_id)
             filename = str(filename)
+            md5 = str(md5)
             with get_data() as chunks:
                 data = b''.join(chunks)
             if not data:
@@ -48,16 +55,41 @@ def build() -> tuple[dict[str, str], list[dict[str, object]]]:
                 'content_id': content_id,
                 'filename': filename,
                 'license': str(license_name),
-                'md5': str(md5),
+                'md5': md5,
                 'bytes': len(data),
                 'install_path': relative,
             })
 
-    if not any(row['content_id'] == 'ai/534d504c' for row in manifest):
-        raise RuntimeError('SimpleAI was not returned by BaNaNaS')
+    simple_ai = [row for row in manifest if row['content_id'] == SIMPLE_AI_CONTENT_ID]
+    if len(simple_ai) != 1:
+        raise RuntimeError(f'Expected exactly one SimpleAI payload, got {simple_ai!r}')
+    if not str(simple_ai[0]['md5']).lower().startswith(SIMPLE_AI_V14_MD5_PREFIX):
+        raise RuntimeError(
+            'BaNaNaS returned an unexpected SimpleAI revision: '
+            f"{simple_ai[0]['md5']} (expected v14 prefix {SIMPLE_AI_V14_MD5_PREFIX})"
+        )
     if len(manifest) < 3:
         raise RuntimeError(f'Expected SimpleAI plus dependencies, got {manifest!r}')
     return payload, manifest
+
+
+def build() -> tuple[dict[str, str], list[dict[str, object]]]:
+    """Download the pinned AI with bounded retries for transient BaNaNaS failures."""
+    socket.setdefaulttimeout(60)
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            return build_once()
+        except Exception as exc:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = attempt * 3
+            print(
+                f'SimpleAI BaNaNaS attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed: {exc}; '
+                f'retrying in {delay}s',
+                flush=True,
+            )
+            time.sleep(delay)
+    raise AssertionError('unreachable')
 
 
 def main() -> None:
