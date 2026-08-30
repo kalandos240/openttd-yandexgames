@@ -61,6 +61,14 @@ jobs:
           print('FIRS strict Russian coverage OK:', len(data) - 1, 'strings')
           PY
 
+      - name: Generate strict Russian Iron Horse table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 playgama/newgrf-localization/prepare_iron_horse_russian.py \
+            --english /tmp/addons/iron-horse/src/lang/english.toml \
+            --output /tmp/iron-horse-russian-generated.toml
+
       - name: Audit language coverage
         shell: bash
         run: |
@@ -85,9 +93,11 @@ jobs:
           print(f'FIRS generated Russian sections: {len(firs_ru)}/{len(firs_en)}')
 
           iron_en = sections_without_pragma(load_toml('/tmp/addons/iron-horse/src/lang/english.toml'))
-          print(f'IRON_HORSE English sections requiring Russian review: {len(iron_en)}')
-          for item in sorted(iron_en):
-              print('IRON_HORSE_SECTION', item)
+          iron_ru = sections_without_pragma(load_toml('/tmp/iron-horse-russian-generated.toml'))
+          assert set(iron_en) == set(iron_ru), 'Generated Iron Horse Russian section coverage is incomplete'
+          for section in iron_en:
+              assert set(iron_en[section]) == set(iron_ru[section]), f'Iron Horse field mismatch: {section}'
+          print(f'IRON_HORSE generated Russian sections: {len(iron_ru)}/{len(iron_en)}')
 
           def read_lng_keys(path: str):
               keys = []
