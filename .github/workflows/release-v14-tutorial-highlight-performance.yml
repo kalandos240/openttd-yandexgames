@@ -1,0 +1,232 @@
+name: Release v14 tutorial-highlight performance build
+
+on:
+  push:
+    branches:
+      - fix/v14-profiler-performance
+    paths:
+      - '.github/workflows/release-v14-tutorial-highlight-performance.yml'
+      - 'ci/patch-v14-webgl-runtime.py'
+      - 'ci/patch-v14-performance-package.py'
+      - 'ci/platform-hosted-smoke.mjs'
+      - 'yandex/neutralize_yandex_runtime.py'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  assemble-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      NATIVE_RUN_ID: '33339882359'
+      NATIVE_ARTIFACT_NAME: 'openttd-v14-tutorial-highlight-native-runtime'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+    steps:
+      - name: Checkout exact hardening sources
+        uses: actions/checkout@v4
+        with:
+          ref: fix/v14-profiler-performance
+
+      - name: Wait for and download verified tutorial runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 100); do
+            state="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}")"
+            status="$(jq -r '.status' <<<"$state")"
+            conclusion="$(jq -r '.conclusion // ""' <<<"$state")"
+            if [[ "$status" == completed ]]; then
+              [[ "$conclusion" == success ]] || { echo "Native tutorial runtime failed: $conclusion" >&2; exit 1; }
+              break
+            fi
+            sleep 12
+          done
+
+          state="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}")"
+          [[ "$(jq -r '.status' <<<"$state")" == completed ]]
+          [[ "$(jq -r '.conclusion' <<<"$state")" == success ]]
+
+          artifacts="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}/artifacts?per_page=100")"
+          native_id="$(jq -r --arg n "$NATIVE_ARTIFACT_NAME" '.artifacts[] | select(.name == $n and .expired == false) | .id' <<<"$artifacts" | head -n1)"
+          [[ "$native_id" =~ ^[0-9]+$ ]] || { echo 'Verified native artifact missing' >&2; exit 1; }
+
+          rm -rf /tmp/finalv14
+          mkdir -p /tmp/finalv14/native-artifact /tmp/finalv14/native /tmp/finalv14/base/ya /tmp/finalv14/base/pg /tmp/finalv14/prod/ya /tmp/finalv14/prod/pg /tmp/finalv14/out
+          curl -fL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${native_id}/zip" -o /tmp/finalv14/native-artifact.zip
+          unzip -q /tmp/finalv14/native-artifact.zip -d /tmp/finalv14/native-artifact
+          native_zip="$(find /tmp/finalv14/native-artifact -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          test -s "$native_zip"
+          unzip -q "$native_zip" -d /tmp/finalv14/native
+          test -s /tmp/finalv14/native/openttd-runtime.js
+          test ! -e /tmp/finalv14/native/openttd.wasm
+          test ! -e /tmp/finalv14/native/openttd.data
+          node --check /tmp/finalv14/native/openttd-runtime.js
+
+      - name: Download exact platform-verified bases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VERIFIED_YA_ARTIFACT_ID}/zip" -o /tmp/finalv14/base/ya-artifact.zip
+          curl -fL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${VERIFIED_PG_ARTIFACT_ID}/zip" -o /tmp/finalv14/base/pg-artifact.zip
+          unzip -q /tmp/finalv14/base/ya-artifact.zip -d /tmp/finalv14/base/ya
+          unzip -q /tmp/finalv14/base/pg-artifact.zip -d /tmp/finalv14/base/pg
+          YA_ZIP="$(find /tmp/finalv14/base/ya -type f -name 'openttd-yandexgames-v14-platform-verified.zip' -print -quit)"
+          PG_ZIP="$(find /tmp/finalv14/base/pg -type f -name 'openttd-playgama-v14-platform-verified.zip' -print -quit)"
+          test -s "$YA_ZIP"
+          test -s "$PG_ZIP"
+          unzip -q "$YA_ZIP" -d /tmp/finalv14/prod/ya
+          unzip -q "$PG_ZIP" -d /tmp/finalv14/prod/pg
+          test -s /tmp/finalv14/prod/ya/index.html
+          test -s /tmp/finalv14/prod/pg/index.html
+
+      - name: Install new native runtime and reapply performance hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-v14-webgl-runtime.py ci/patch-v14-performance-package.py yandex/neutralize_yandex_runtime.py
+          for d in /tmp/finalv14/prod/ya /tmp/finalv14/prod/pg; do
+            cp /tmp/finalv14/native/openttd-runtime.js "$d/openttd-runtime.js"
+            rm -f "$d/openttd.wasm" "$d/openttd.data"
+            python3 ci/patch-v14-webgl-runtime.py "$d/openttd-runtime.js"
+          done
+          python3 ci/patch-v14-performance-package.py /tmp/finalv14/prod/ya --platform yandex
+          python3 ci/patch-v14-performance-package.py /tmp/finalv14/prod/pg --platform playgama
+          python3 yandex/neutralize_yandex_runtime.py /tmp/finalv14/prod/ya
+
+          node --check /tmp/finalv14/prod/ya/openttd-runtime.js
+          node --check /tmp/finalv14/prod/pg/openttd-runtime.js
+          node --check /tmp/finalv14/prod/ya/openttd-bundled-addons.js
+          node --check /tmp/finalv14/prod/ya/yandex-bridge.js
+          node --check /tmp/finalv14/prod/pg/platform-bridge-loader.js
+
+      - name: Static regression and autonomy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in /tmp/finalv14/prod/ya /tmp/finalv14/prod/pg; do
+            test -s "$d/openttd-runtime.js"
+            test ! -e "$d/openttd.wasm"
+            test ! -e "$d/openttd.data"
+            test "$(stat -c%s "$d/openttd-runtime.js")" -gt 20000000
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq 'texSubImage2D' "$d/openttd-runtime.js"
+            grep -Fq 'Canvas2D fallback' "$d/openttd-runtime.js"
+            ! grep -Fq 'Fast forward x4' "$d/openttd-runtime.js"
+            ! grep -Fq 'Fast forward x8' "$d/openttd-runtime.js"
+            ! grep -Fq 'Ускорение ×4' "$d/openttd-runtime.js"
+            ! grep -Fq 'Ускорение ×8' "$d/openttd-runtime.js"
+            grep -Fq 'Module.calledRun === true' "$d/openttd-ranking-core.js"
+            grep -Fq "typeof HEAP8 !== 'undefined'" "$d/openttd-ranking-core.js"
+            grep -Fq 'const MAX_SCORE = 1000' "$d/openttd-global-ranking.js"
+          done
+
+          grep -Fq '__openttdCloudDedupV2' /tmp/finalv14/prod/ya/yandex-bridge.js
+          grep -Fq 'Object.keys(payload).length' /tmp/finalv14/prod/ya/yandex-bridge.js
+          grep -Fq "script.src = '/sdk.js'" /tmp/finalv14/prod/ya/yandex-bootstrap.js
+          ! grep -Eiq 'https?://[^"[:space:]]+' /tmp/finalv14/prod/ya/index.html
+          test -s /tmp/finalv14/prod/ya/THIRD-PARTY-LICENSES.md
+          test ! -e /tmp/finalv14/prod/ya/PLAYGAMA-ALL-LICENSES.md
+          ! grep -Eiq 'playgama' /tmp/finalv14/prod/ya/openttd-bundled-addons.js
+
+          ! grep -Fq 'bridge.playgama.com' /tmp/finalv14/prod/pg/index.html
+          grep -Fq 'https://bridge.playgama.com/v1.31.0/playgama-bridge.js' /tmp/finalv14/prod/pg/platform-bridge-loader.js
+          grep -Fq 'script.async = true' /tmp/finalv14/prod/pg/platform-bridge-loader.js
+
+      - name: Build candidate ZIPs
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/finalv14/prod/ya && zip -q -r -9 /tmp/finalv14/out/openttd-yandexgames-v14-tutorial-highlight-performance.zip .)
+          (cd /tmp/finalv14/prod/pg && zip -q -r -9 /tmp/finalv14/out/openttd-playgama-v14-tutorial-highlight-performance.zip .)
+          unzip -tq /tmp/finalv14/out/openttd-yandexgames-v14-tutorial-highlight-performance.zip
+          unzip -tq /tmp/finalv14/out/openttd-playgama-v14-tutorial-highlight-performance.zip
+          (cd /tmp/finalv14/out && sha256sum *.zip > SHA256SUMS.txt)
+
+      - name: Prepare isolated hosted smoke copies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/finalv14/test/ya /tmp/finalv14/test/pg
+          unzip -q /tmp/finalv14/out/openttd-yandexgames-v14-tutorial-highlight-performance.zip -d /tmp/finalv14/test/ya
+          unzip -q /tmp/finalv14/out/openttd-playgama-v14-tutorial-highlight-performance.zip -d /tmp/finalv14/test/pg
+          cat > /tmp/finalv14/test/ya/sdk.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = { async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; }, async setData(value) { Object.assign(data, value || {}); return true; }, getMode() { return 'full'; }, getUniqueID() { return 'final-smoke-user'; }, getName() { return 'Final Smoke'; }, isAuthorized() { return true; } };
+            const ysdk = { environment: { i18n: { lang: 'en' }, app: { id: 'final-smoke' } }, features: { LoadingAPI: { ready() { return Promise.resolve(true); } }, GameplayAPI: { start() { return Promise.resolve(true); }, stop() { return Promise.resolve(true); } } }, adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } }, leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } }, async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {} };
+            window.YaGames = { async init() { document.documentElement.dataset.yandexSdk = 'ready'; return ysdk; } };
+          })();
+          JS
+          cat > /tmp/finalv14/test/pg/platform-bridge-loader.js <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = { version: 'final-smoke', engine: 'javascript', PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' }, EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' }, INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' }, STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' }, async initialize() { return true; }, platform: { language: 'en', id: 'playgama-final-smoke', isAudioEnabled: true, on() {}, off() {}, async sendMessage() { return true; } }, storage: { async isSupported() { return true; }, async isAvailable() { return true; }, async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); }, async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; } }, advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} }, player: { id: 'final-smoke-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } }, leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } } };
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+          })();
+          JS
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          mkdir -p /tmp/finalv14/smoke-node
+          cd /tmp/finalv14/smoke-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+
+      - name: Hosted Chromium smoke - Yandex
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/finalv14/test/ya
+          python3 -m http.server 8143 --bind 127.0.0.1 >/tmp/final-ya-http.log 2>&1 &
+          pid=$!; trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8143/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/finalv14/smoke-node
+          node smoke.mjs yandex http://127.0.0.1:8143/index.html /tmp/finalv14/out/yandex-smoke.json
+          grep -Fq '"passed": true' /tmp/finalv14/out/yandex-smoke.json
+
+      - name: Hosted Chromium smoke - Playgama
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/finalv14/test/pg
+          python3 -m http.server 8144 --bind 127.0.0.1 >/tmp/final-pg-http.log 2>&1 &
+          pid=$!; trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8144/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/finalv14/smoke-node
+          node smoke.mjs playgama http://127.0.0.1:8144/index.html /tmp/finalv14/out/playgama-smoke.json
+          grep -Fq '"passed": true' /tmp/finalv14/out/playgama-smoke.json
+
+      - name: Upload final verified archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-tutorial-highlight-performance-final
+          compression-level: 0
+          path: |
+            /tmp/finalv14/out/openttd-yandexgames-v14-tutorial-highlight-performance.zip
+            /tmp/finalv14/out/openttd-playgama-v14-tutorial-highlight-performance.zip
+            /tmp/finalv14/out/SHA256SUMS.txt
+            /tmp/finalv14/out/yandex-smoke.json
+            /tmp/finalv14/out/playgama-smoke.json
+          if-no-files-found: error
