@@ -61,7 +61,7 @@ jobs:
             --historical-russian /tmp/localized-newgrf/firs-russian-base.toml \
             --output /tmp/localized-newgrf/firs/src/grf/lang/russian.toml
 
-          python3 playgama/newgrf-localization/prepare_iron_horse_russian.py \
+          python3 playgama/newgrf-localization/prepare_iron_horse_russian_v429.py \
             --english /tmp/localized-newgrf/iron-horse/src/lang/english.toml \
             --output /tmp/localized-newgrf/iron-horse/src/lang/russian.toml
 
