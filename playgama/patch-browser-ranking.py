@@ -36,11 +36,12 @@ runpy.run_path(str(locate("patch-browser-tutorial-v15-compat.py")), run_name="__
 
 # Root-cause repairs run last so compatibility/polish patches cannot restore
 # permissive ranking parsing, proxy tutorial objectives, desktop font noise, or
-# the old binary-only fast-forward control.
+# tutorial targets that point at the wrong construction toolbar.
 runpy.run_path(str(locate("patch-browser-ranking-strict.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-font-web.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-real-objectives.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-tutorial-clean-ui.py")), run_name="__main__")
+runpy.run_path(str(locate("patch-browser-tutorial-highlights.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-game-speed-selector.py")), run_name="__main__")
 runpy.run_path(str(locate("patch-browser-startup-watchdog.py")), run_name="__main__")
 
@@ -48,4 +49,4 @@ runpy.run_path(str(locate("patch-browser-startup-watchdog.py")), run_name="__mai
 # Those were the older browser-AI implementation. The current release enables
 # the normal OpenTTD AI gate natively, patches competitors_interval=0 natively,
 # and installs SimpleAI/dependencies before main() through openttd-ai-prerun.js.
-print("Full browser feature stack applied: tutorial, local/global ranking, native x2/x4/x8 speed selector, NewGRF/UI compatibility, web fonts and startup watchdog; legacy AI source patches intentionally skipped.")
+print("Full browser feature stack applied: tutorial with complete native highlights, local/global ranking, vanilla fast-forward guard, NewGRF/UI compatibility, web fonts and startup watchdog; legacy AI source patches intentionally skipped.")
