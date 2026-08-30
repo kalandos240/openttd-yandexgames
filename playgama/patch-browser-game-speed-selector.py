@@ -5,8 +5,8 @@ OpenTTD 15.3 represents simulation speed as a percentage in `_game_speed`.
 100 is normal speed, so 200/400/800 are exact x2/x4/x8 tick rates.  The patch
 keeps the stock toolbar button, pause semantics, networking restriction and
 OpenTTD draw loop; it only replaces the binary fast-forward toggle with a
-native dropdown. The release workflow regression gate is intentionally kept
-alongside this patch so every speed-control change receives a fresh native build.
+native dropdown. Both native diagnostics and the final release workflow compile
+this patch before any Playgama/Yandex package can be published.
 """
 from pathlib import Path
 
