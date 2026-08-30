@@ -1,0 +1,119 @@
+name: Build localized bundled NewGRFs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/global-ranking-tutorial
+    paths:
+      - '.github/workflows/build-localized-newgrf.yml'
+      - 'playgama/newgrf-localization/**'
+
+permissions:
+  contents: read
+
+env:
+  IRON_HORSE_COMMIT: 'ec0523c6f80459ec40cb4488e9a23e5aaa3705c3'
+  FIRS_COMMIT: '8844b7da36e919690322dcd69ffd9977e4e9a9c4'
+  FIRS_RUSSIAN_BASE_COMMIT: 'f72116eb31d8823b1dd4e0c30319aefa66b11936'
+  EARLY_COMMIT: 'ae1a35b127cf089bce697afee1bc7cb6a0608b2a'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout integration
+        uses: actions/checkout@v4
+
+      - name: Install NewGRF build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make zip unzip xz-utils graphviz grfcodec python3-pip
+          python3 -m pip install --break-system-packages --disable-pip-version-check --no-cache-dir \
+            'nml==0.9.0' chameleon markdown pillow
+
+      - name: Fetch exact pinned sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/localized-newgrf
+          mkdir -p /tmp/localized-newgrf
+
+          git clone https://github.com/andythenorth/firs.git /tmp/localized-newgrf/firs
+          git -C /tmp/localized-newgrf/firs checkout "${FIRS_COMMIT}"
+          git -C /tmp/localized-newgrf/firs show "${FIRS_RUSSIAN_BASE_COMMIT}:src/grf/lang/russian.toml" > /tmp/localized-newgrf/firs-russian-base.toml
+
+          git clone https://github.com/andythenorth/iron-horse.git /tmp/localized-newgrf/iron-horse
+          git -C /tmp/localized-newgrf/iron-horse checkout "${IRON_HORSE_COMMIT}"
+
+          git clone https://github.com/DonaldDuck313/OpenTTD-NewGRFs.git /tmp/localized-newgrf/early
+          git -C /tmp/localized-newgrf/early checkout "${EARLY_COMMIT}"
+
+      - name: Generate and inject Russian language tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 playgama/newgrf-localization/prepare_firs_russian_v520.py \
+            --english /tmp/localized-newgrf/firs/src/grf/lang/english.toml \
+            --historical-russian /tmp/localized-newgrf/firs-russian-base.toml \
+            --output /tmp/localized-newgrf/firs/src/grf/lang/russian.toml
+
+          python3 playgama/newgrf-localization/prepare_iron_horse_russian.py \
+            --english /tmp/localized-newgrf/iron-horse/src/lang/english.toml \
+            --output /tmp/localized-newgrf/iron-horse/src/lang/russian.toml
+
+          cp playgama/newgrf-localization/early-vehicle-set/russian.lng \
+            /tmp/localized-newgrf/early/EarlyVehicleSet/lang/russian.lng
+
+      - name: Build FIRS
+        working-directory: /tmp/localized-newgrf/firs
+        shell: bash
+        run: |
+          set -euo pipefail
+          make grf
+          test -s generated/firs.grf
+          cp generated/firs.grf /tmp/localized-newgrf/firs-5.2.0-russian.grf
+
+      - name: Build Iron Horse
+        working-directory: /tmp/localized-newgrf/iron-horse
+        shell: bash
+        run: |
+          set -euo pipefail
+          make grf GRF=horse PW=2 SD=True
+          test -s generated/iron-horse.grf
+          cp generated/iron-horse.grf /tmp/localized-newgrf/iron-horse-4.29.0-russian.grf
+
+      - name: Build Early Vehicle Set
+        working-directory: /tmp/localized-newgrf/early/EarlyVehicleSet
+        shell: bash
+        run: |
+          set -euo pipefail
+          nmlc -c --grf=EarlyVehicleSet.grf EarlyVehicleSet.nml
+          test -s EarlyVehicleSet.grf
+          cp EarlyVehicleSet.grf /tmp/localized-newgrf/early-vehicle-set-russian.grf
+
+      - name: Verify binary outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum \
+            /tmp/localized-newgrf/firs-5.2.0-russian.grf \
+            /tmp/localized-newgrf/iron-horse-4.29.0-russian.grf \
+            /tmp/localized-newgrf/early-vehicle-set-russian.grf \
+            | tee /tmp/localized-newgrf/SHA256SUMS.txt
+          ls -lh /tmp/localized-newgrf/*.grf
+
+      - name: Upload localized GRF binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: localized-newgrf-binaries
+          path: |
+            /tmp/localized-newgrf/firs-5.2.0-russian.grf
+            /tmp/localized-newgrf/iron-horse-4.29.0-russian.grf
+            /tmp/localized-newgrf/early-vehicle-set-russian.grf
+            /tmp/localized-newgrf/SHA256SUMS.txt
+          retention-days: 14
