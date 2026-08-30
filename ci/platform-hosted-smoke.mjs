@@ -108,3 +108,5 @@ fs.writeFileSync(output, JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));
 await browser.close();
 if (failure) process.exit(1);
+
+// v14 platform-verified release trigger: 2026-08-30
