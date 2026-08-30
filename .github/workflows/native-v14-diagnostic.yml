@@ -7,6 +7,8 @@ on:
       - feature/global-ranking-tutorial
     paths:
       - '.github/workflows/native-v14-diagnostic.yml'
+      - 'playgama/patch-browser-ranking.py'
+      - 'playgama/patch-browser-game-speed-selector.py'
 
 permissions:
   contents: read
@@ -57,6 +59,7 @@ jobs:
             playgama/patch-browser-tutorial-v15-compat.py \
             playgama/patch-browser-tutorial-real-objectives.py \
             playgama/patch-browser-tutorial-clean-ui.py \
+            playgama/patch-browser-game-speed-selector.py \
             playgama/patch-browser-startup-watchdog.py \
             playgama/patch-browser-build-performance.py
 
