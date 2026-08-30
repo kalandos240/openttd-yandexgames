@@ -8,7 +8,7 @@
   if (window.OpenTTDGlobalRanking) return;
 
   const LEADERBOARD_NAME = 'companyrating';
-  const MAX_SCORE = Number.MAX_SAFE_INTEGER;
+  const MAX_SCORE = 1000;
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
   const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
@@ -18,6 +18,7 @@
   let entries = [];
   let lastWrite = '';
   let submitTimer = 0;
+  let publishRetryTimer = 0;
   let inFlightSubmit = false;
 
   const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
@@ -56,11 +57,21 @@
     return lines.join('\n') + '\n';
   };
 
+  const runtimeFsReady = () => {
+    try {
+      if (!window.Module || window.Module.calledRun !== true) return false;
+      if (typeof HEAP8 === 'undefined' || !HEAP8 || !HEAP8.buffer) return false;
+      return typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
+    } catch (_) {
+      return false;
+    }
+  };
+
   const writeSnapshot = () => {
     const text = snapshotText();
     if (text === lastWrite) return true;
+    if (!runtimeFsReady()) return false;
     try {
-      if (typeof FS === 'undefined' || typeof FS.writeFile !== 'function') return false;
       try { FS.mkdirTree('/home/web_user/.openttd'); } catch (_) {}
       FS.writeFile(SNAPSHOT_PATH, text, { encoding: 'utf8' });
       lastWrite = text;
@@ -71,7 +82,10 @@
     }
   };
   const publishSoon = () => {
-    if (!writeSnapshot()) setTimeout(writeSnapshot, 100);
+    clearTimeout(publishRetryTimer);
+    publishRetryTimer = 0;
+    if (writeSnapshot()) return;
+    publishRetryTimer = setTimeout(publishSoon, 250);
   };
 
   const requestEntries = async () => {
