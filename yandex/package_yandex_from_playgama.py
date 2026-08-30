@@ -105,7 +105,7 @@ def patch_yandex_bootstrap(dist: Path) -> None:
 
 
 def patch_yandex_bridge(dist: Path) -> None:
-    """Avoid calling lazy Emscripten exports before wasmExports is populated."""
+    """Make the legacy Yandex bridge safe for Emscripten cold startup."""
     path = dist / 'yandex-bridge.js'
     text = path.read_text(encoding='utf-8')
 
@@ -146,8 +146,39 @@ def patch_yandex_bridge(dist: Path) -> None:
         raise SystemExit('Could not locate Yandex AudioContext resume block')
     text = text.replace(old_resume, new_resume, 1)
 
+    # The old bridge restored cloud bytes into MEMFS and immediately opened a
+    # second IndexedDB write transaction while the first Emscripten IDBFS
+    # populate / runtime startup was still hot. The restored bytes are already
+    # visible to OpenTTD, so only their persistence is moved after main().
+    old_persist = '    if (dirty) await persistFs(FS);'
+    new_persist = '''    if (dirty) {
+      const persistAfterStartup = () => {
+        const module = window.Module;
+        if (!module || module.calledRun !== true) {
+          setTimeout(persistAfterStartup, 100);
+          return;
+        }
+        const flush = () => {
+          persistFs(FS).catch((error) => {
+            console.warn('[Yandex/OpenTTD] Deferred cloud restore persistence failed', error);
+          });
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(flush, { timeout: 5000 });
+        } else {
+          setTimeout(flush, 500);
+        }
+      };
+      persistAfterStartup();
+    }'''
+    if text.count(old_persist) != 1:
+        raise SystemExit('Could not locate Yandex early cloud IDBFS persistence block')
+    text = text.replace(old_persist, new_persist, 1)
+
     if 'Module.calledRun !== true' not in text:
         raise SystemExit('Yandex pause bridge runtime-ready guard is missing')
+    if old_persist in text or 'persistAfterStartup' not in text:
+        raise SystemExit('Yandex cloud persistence was not moved out of cold startup')
     path.write_text(text, encoding='utf-8')
 
 
@@ -191,10 +222,11 @@ def write_platform_notice(dist: Path) -> None:
         '- Active SDK is loaded dynamically from /sdk.js.\n'
         '- There is no host/domain/protocol allow-list in the bootstrap.\n'
         '- Startup is not blocked indefinitely by SDK, cloud or optional add-on requests.\n'
+        '- Restored cloud bytes are persisted to IDBFS only after OpenTTD enters main.\n'
         '- Native pause calls wait until Emscripten reports Module.calledRun.\n'
         '- The game canvas fills the complete platform viewport.\n'
         '- The page uses standards-mode HTML with a valid <!DOCTYPE html>.\n'
-        '- A platform-neutral local/global ranking UI is backed by company_rating.\n',
+        '- A platform-neutral local/global ranking UI is backed by companyrating.\n',
         encoding='utf-8',
     )
 
