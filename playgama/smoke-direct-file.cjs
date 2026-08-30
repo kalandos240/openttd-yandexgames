@@ -47,6 +47,9 @@ function preflightPackage(dist, label) {
     if (count !== 1) failures.push(`index.html must reference ${name} exactly once (found ${count})`);
   }
 
+  const classicAI = readText(path.join(dist, 'openttd-classic-ai.js'));
+  if (!/ai\/534d504c/.test(classicAI)) failures.push('bundled SimpleAI content id ai/534d504c is missing');
+
   const prerun = readText(path.join(dist, 'openttd-ai-prerun.js'));
   if (!/preRun/.test(prerun)) failures.push('AI preRun installer marker is missing');
   if (/max_no_competitors\s*=|competitors_interval\s*=/.test(prerun)) {
