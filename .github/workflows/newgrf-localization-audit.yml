@@ -30,6 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/addons
           mkdir -p /tmp/addons
 
           git clone --filter=blob:none https://github.com/andythenorth/firs.git /tmp/addons/firs
@@ -42,13 +43,31 @@ jobs:
           git clone --filter=blob:none https://github.com/DonaldDuck313/OpenTTD-NewGRFs.git /tmp/addons/early
           git -C /tmp/addons/early checkout "${EARLY_COMMIT}"
 
+      - name: Generate strict Russian FIRS table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 playgama/newgrf-localization/prepare_firs_russian.py \
+            --english /tmp/addons/firs/src/grf/lang/english.toml \
+            --historical-russian /tmp/firs-russian-base.toml \
+            --output /tmp/firs-russian-generated.toml
+
+          # The generated table must parse and must use the Russian NewGRF id.
+          python3 - <<'PY'
+          import tomllib
+          with open('/tmp/firs-russian-generated.toml', 'rb') as fh:
+              data = tomllib.load(fh)
+          assert data['GLOBAL_PRAGMA']['grflangid'] == '0x07'
+          assert len(data) > 500
+          print('FIRS strict Russian coverage OK:', len(data) - 1, 'strings')
+          PY
+
       - name: Audit language coverage
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from __future__ import annotations
-          import re
           import tomllib
           from pathlib import Path
 
@@ -60,26 +79,11 @@ jobs:
               return {k: v for k, v in data.items() if k != 'GLOBAL_PRAGMA'}
 
           firs_en = sections_without_pragma(load_toml('/tmp/addons/firs/src/grf/lang/english.toml'))
-          firs_ru = sections_without_pragma(load_toml('/tmp/firs-russian-base.toml'))
-          missing_sections = sorted(set(firs_en) - set(firs_ru))
-          common = sorted(set(firs_en) & set(firs_ru))
-          missing_fields = []
-          for section in common:
-              en_value = firs_en[section]
-              ru_value = firs_ru[section]
-              if isinstance(en_value, dict) and isinstance(ru_value, dict):
-                  for field in en_value:
-                      if field not in ru_value:
-                          missing_fields.append(f'{section}.{field}')
-
-          print(f'FIRS English sections: {len(firs_en)}')
-          print(f'FIRS historical Russian sections: {len(firs_ru)}')
-          print(f'FIRS missing sections: {len(missing_sections)}')
-          for item in missing_sections:
-              print('FIRS_MISSING_SECTION', item)
-          print(f'FIRS missing variant fields: {len(missing_fields)}')
-          for item in missing_fields:
-              print('FIRS_MISSING_FIELD', item)
+          firs_ru = sections_without_pragma(load_toml('/tmp/firs-russian-generated.toml'))
+          assert set(firs_en) == set(firs_ru), 'Generated FIRS Russian section coverage is incomplete'
+          for section in firs_en:
+              assert set(firs_en[section]) == set(firs_ru[section]), f'FIRS field mismatch: {section}'
+          print(f'FIRS generated Russian sections: {len(firs_ru)}/{len(firs_en)}')
 
           iron_en = sections_without_pragma(load_toml('/tmp/addons/iron-horse/src/lang/english.toml'))
           print(f'IRON_HORSE English sections requiring Russian review: {len(iron_en)}')
