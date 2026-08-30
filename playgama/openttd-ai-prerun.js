@@ -1,10 +1,10 @@
 /* Install bundled OpenTTD AI content after IDBFS restore but before main().
  *
  * This hook is deliberately platform-neutral. It guarantees that SimpleAI and
- * its library archives are scanner-visible before AI::Initialize(), then calls
- * the existing platform restore wrapper so the OpenTTD 15.3 compatibility
- * chain is installed synchronously before that wrapper reaches its first await.
- * Player-selected max_no_competitors and competitors_interval are never changed.
+ * its library archives are scanner-visible before AI::Initialize(). It also
+ * performs a targeted migration of OLD bundled NewGRF/base-graphics files that
+ * earlier builds incorrectly persisted in IDBFS. Only known immutable package
+ * filenames are removed; saves, settings and user-created data are untouched.
  */
 (() => {
   'use strict';
@@ -25,6 +25,22 @@
   let syncHookInstalled = false;
   let initialPopulateHandled = false;
 
+  const LEGACY_STATIC_FILENAMES = new Set([
+    'early-vehicle-set-0.0.2.grf',
+    'steel-industry-0.7.2.grf',
+    'firs-5.2.0.grf',
+    'sailing-ships.grf',
+    'iron-horse-4.29.0.grf',
+    'road-hog-1.4.1.grf',
+    'gist-0.21.10.grf',
+    'ogfx2-settings-0.7.grf',
+    'ogfx2-settings-1.0.grf',
+    'opengfx2-settings-1.0.grf',
+    'opengfx2-classic-1.0.grf',
+    'OpenGFX2_Classic-0.8.1.tar',
+    'PLAYGAMA-LICENSES.md',
+  ]);
+
   const ensureDir = (FS, path) => {
     let current = '';
     for (const part of String(path).split('/').filter(Boolean)) {
@@ -39,6 +55,78 @@
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
     return bytes;
   };
+
+  const isLegacyBundledIDBPath = (key, personalDir) => {
+    if (typeof key !== 'string' || !key.startsWith(personalDir + '/')) return false;
+    const relative = key.slice(personalDir.length + 1);
+    const slash = relative.lastIndexOf('/');
+    const name = slash >= 0 ? relative.slice(slash + 1) : relative;
+    if (!LEGACY_STATIC_FILENAMES.has(name)) return false;
+    return relative.startsWith('newgrf/') ||
+      relative.startsWith('baseset/') ||
+      relative === 'PLAYGAMA-LICENSES.md';
+  };
+
+  const purgeLegacyBundledIDBEntries = (personalDir) => new Promise((resolve) => {
+    if (typeof IDBFS === 'undefined' || !IDBFS || typeof IDBFS.getDB !== 'function') {
+      window.__openttdLegacyBundledIDBStatus = 'idbfs-unavailable';
+      resolve(0);
+      return;
+    }
+
+    IDBFS.getDB(personalDir, (dbError, db) => {
+      if (dbError || !db) {
+        window.__openttdLegacyBundledIDBStatus = 'db-unavailable';
+        if (dbError) console.warn('[OpenTTD] Could not inspect old bundled IDBFS data', dbError);
+        resolve(0);
+        return;
+      }
+
+      let transaction;
+      try {
+        const storeName = IDBFS.DB_STORE_NAME || 'FILE_DATA';
+        transaction = db.transaction([storeName], 'readwrite');
+        const store = transaction.objectStore(storeName);
+        const request = store.openKeyCursor();
+        let removed = 0;
+
+        request.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (!cursor) return;
+          const key = cursor.primaryKey;
+          if (isLegacyBundledIDBPath(key, personalDir)) {
+            try {
+              store.delete(key);
+              removed += 1;
+            } catch (error) {
+              console.warn('[OpenTTD] Could not delete old bundled IDBFS key', key, error);
+            }
+          }
+          cursor.continue();
+        };
+
+        transaction.oncomplete = () => {
+          window.__openttdLegacyBundledIDBPurged = removed;
+          window.__openttdLegacyBundledIDBStatus = 'complete';
+          if (removed) console.info(`[OpenTTD] Removed ${removed} obsolete bundled-content IDBFS entries before startup restore`);
+          resolve(removed);
+        };
+        transaction.onerror = (event) => {
+          window.__openttdLegacyBundledIDBStatus = 'transaction-error';
+          console.warn('[OpenTTD] Old bundled-content IDBFS cleanup failed', event.target?.error || event);
+          resolve(removed);
+        };
+        transaction.onabort = () => {
+          window.__openttdLegacyBundledIDBStatus = 'transaction-aborted';
+          resolve(removed);
+        };
+      } catch (error) {
+        window.__openttdLegacyBundledIDBStatus = 'cleanup-error';
+        console.warn('[OpenTTD] Could not start old bundled-content IDBFS cleanup', error);
+        resolve(0);
+      }
+    });
+  });
 
   const installBundledAIArchives = (FS, personalDir) => {
     const bundle = window.__openttdClassicAIArchives;
@@ -94,50 +182,59 @@
       }
 
       initialPopulateHandled = true;
-      window.__openttdAIPrerunState = 'idb-loading';
+      window.__openttdAIPrerunState = 'idb-cleaning-static-content';
+      const personalDir = '/home/web_user/.openttd';
 
-      return nativeSyncfs(true, function(err) {
-        const finish = () => {
-          if (typeof callback === 'function') callback(err);
-        };
+      const runInitialPopulate = () => {
+        window.__openttdAIPrerunState = 'idb-loading';
+        nativeSyncfs(true, function(err) {
+          const finish = () => {
+            if (typeof callback === 'function') callback(err);
+          };
 
-        if (err) {
-          window.__openttdAIPrerunState = 'idb-error';
-          console.warn('[OpenTTD/AI] Initial IDBFS restore reported an error; installing bundled AI anyway', err);
-        }
-
-        window.__openttdAIPrerunState = 'installing';
-        try {
-          const personalDir = '/home/web_user/.openttd';
-
-          /* First guarantee that the scanner-visible tar archives exist. */
-          installBundledAIArchives(FS, personalDir);
-
-          /* The wrapper installs compat_14.nut ... compat_1.2.nut before its
-           * first await. Cloud/player work may continue after main() is released. */
-          const installAndRestore = window.yandexRestoreOpenTTDCloud;
-          let backgroundRestore = null;
-          if (typeof installAndRestore === 'function') {
-            backgroundRestore = installAndRestore(FS, personalDir);
-          } else {
-            console.error('[OpenTTD/AI] Platform AI compatibility installer is missing');
+          if (err) {
+            window.__openttdAIPrerunState = 'idb-error';
+            console.warn('[OpenTTD/AI] Initial IDBFS restore reported an error; installing bundled AI anyway', err);
           }
 
-          window.__openttdAIPrerunReady = true;
-          window.__openttdAIPrerunState = 'ready';
-          finish();
+          window.__openttdAIPrerunState = 'installing';
+          try {
+            installBundledAIArchives(FS, personalDir);
 
-          if (backgroundRestore) {
-            Promise.resolve(backgroundRestore).catch((error) => {
-              console.warn('[OpenTTD/AI] Background platform restore failed after local AI installation', error);
-            });
+            /* Platform wrappers install compat_14.nut ... compat_1.2.nut
+             * synchronously before their first await. Cloud/player work may
+             * continue after main() is released. */
+            const installAndRestore = window.yandexRestoreOpenTTDCloud;
+            let backgroundRestore = null;
+            if (typeof installAndRestore === 'function') {
+              backgroundRestore = installAndRestore(FS, personalDir);
+            } else {
+              console.error('[OpenTTD/AI] Platform AI compatibility installer is missing');
+            }
+
+            window.__openttdAIPrerunReady = true;
+            window.__openttdAIPrerunState = 'ready';
+            finish();
+
+            if (backgroundRestore) {
+              Promise.resolve(backgroundRestore).catch((error) => {
+                console.warn('[OpenTTD/AI] Background platform restore failed after local AI installation', error);
+              });
+            }
+          } catch (error) {
+            window.__openttdAIPrerunState = 'install-error';
+            console.error('[OpenTTD/AI] Bundled AI startup installation threw', error);
+            finish();
           }
-        } catch (error) {
-          window.__openttdAIPrerunState = 'install-error';
-          console.error('[OpenTTD/AI] Bundled AI startup installation threw', error);
-          finish();
-        }
-      });
+        });
+      };
+
+      /* Key-only IndexedDB cleanup is intentionally performed BEFORE native
+       * IDBFS.populate. This prevents old 20+ MiB GRF blobs from ever being
+       * deserialised into MEMFS on the first launch after this upgrade. */
+      purgeLegacyBundledIDBEntries(personalDir)
+        .catch((error) => console.warn('[OpenTTD] Bundled IDBFS migration failed open', error))
+        .finally(runInitialPopulate);
     };
   };
 
