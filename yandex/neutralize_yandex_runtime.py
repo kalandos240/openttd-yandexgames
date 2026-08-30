@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Remove Playgama-specific naming from the final Yandex runtime package.
+"""Remove Playgama-specific runtime naming from the final Yandex package.
 
-Licensing/source obligations stay intact, but the Yandex archive should not keep
-Playgama-branded runtime filenames, loader constants or integration wording.
+The combined legal bundle is renamed byte-for-byte; its contents are not edited.
+Only executable/runtime-facing references and obsolete platform integration files
+are neutralized or removed.
 """
 from __future__ import annotations
 
@@ -13,23 +14,6 @@ from pathlib import Path
 
 OLD_LICENSE_NAME = "PLAYGAMA-ALL-LICENSES.md"
 NEW_LICENSE_NAME = "THIRD-PARTY-LICENSES.md"
-
-
-def neutralize_license_text(text: str) -> str:
-    replacements = (
-        ("# OpenTTD Playgama — licenses and third-party notices", "# OpenTTD Web — licenses and third-party notices"),
-        ("OpenTTD 15.3 browser/Playgama port", "OpenTTD 15.3 browser port"),
-        ("Playgama WebAssembly edition", "WebAssembly edition"),
-        ("Web/Playgama port source, patches and reproducible build scripts:", "Web port source, patches and reproducible build scripts:"),
-        ("Playgama integration and WebAssembly build modifications", "WebAssembly build modifications"),
-        ("PLAYGAMA-INTEGRATION.txt", "PLATFORM-INTEGRATION.txt"),
-        ("Playgama integration notice", "platform integration notice"),
-        ("Playgama", "Web platform"),
-        ("playgama", "web-platform"),
-    )
-    for old, new in replacements:
-        text = text.replace(old, new)
-    return text
 
 
 def patch_loader(path: Path) -> None:
@@ -66,16 +50,18 @@ def main() -> None:
     old_license = dist / OLD_LICENSE_NAME
     new_license = dist / NEW_LICENSE_NAME
     if old_license.is_file():
-        text = neutralize_license_text(old_license.read_text(encoding="utf-8", errors="replace"))
-        if re.search(r"playgama", text, re.I):
-            raise SystemExit("Playgama branding remains in neutralized Yandex license bundle")
-        new_license.write_text(text, encoding="utf-8")
+        # Rename without altering license/notices content.
+        old_bytes = old_license.read_bytes()
+        new_license.write_bytes(old_bytes)
+        if new_license.read_bytes() != old_bytes:
+            raise SystemExit("Yandex legal bundle changed while being renamed")
         old_license.unlink()
     elif not new_license.is_file():
         raise SystemExit("Combined license bundle is missing from Yandex package")
 
     patch_loader(loader)
 
+    # These are obsolete integration/change-log files, not third-party licenses.
     for name in (
         "PLAYGAMA-INTEGRATION.txt",
         "PLAYGAMA-V10-CHANGES.txt",
@@ -90,7 +76,7 @@ def main() -> None:
     if not new_license.is_file() or new_license.stat().st_size < 100_000:
         raise SystemExit("Neutral Yandex license bundle is missing or unexpectedly small")
 
-    print(f"Yandex runtime branding neutralized: {new_license}")
+    print(f"Yandex runtime naming neutralized; legal text preserved: {new_license}")
 
 
 if __name__ == "__main__":
