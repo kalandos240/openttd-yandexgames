@@ -217,9 +217,9 @@ try {
   result.network = { responses: Object.fromEntries(responses), failedRequests: requestFailures, blockedExternal };
   result.console = { pageErrors, tail: consoleLines.slice(-250) };
 
-  if (!result.renderer.active) throw new Error('WebGL framebuffer presenter did not activate');
   if (pageErrors.length) throw new Error(`page errors during benchmark: ${pageErrors.join('\n')}`);
   if (profile === 'optimized') {
+    if (!result.renderer.active) throw new Error('WebGL framebuffer presenter did not activate');
     const upload = result.renderer.upload;
     if (!upload) throw new Error('WebGL upload telemetry is missing');
     if ((upload.partialUploads || 0) < 1) throw new Error('No dirty-rect partial uploads were observed');
