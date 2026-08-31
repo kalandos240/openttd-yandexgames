@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Release trigger note: this validator is part of the optimized single-file v14 pipeline.
 """Validate the minimal static legal payload for browser releases.
 
 Older builds generated one large PLAYGAMA-ALL-LICENSES.md document so a custom
