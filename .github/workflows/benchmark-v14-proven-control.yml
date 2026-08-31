@@ -1,0 +1,107 @@
+name: Benchmark v14 proven renderer control
+
+on:
+  push:
+    branches:
+      - perf/v14-full-optimization
+    paths:
+      - '.github/workflows/benchmark-v14-proven-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  proven-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NATIVE_ARTIFACT_ID: '9764420560'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble proven single-rect candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/proven/{downloads,native-artifact,native,ya-artifact,prod,out,browser-node}
+          download_artifact() {
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" -o "$2"
+          }
+          download_artifact "$NATIVE_ARTIFACT_ID" /tmp/proven/downloads/native.zip
+          download_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/proven/downloads/ya.zip
+          unzip -q /tmp/proven/downloads/native.zip -d /tmp/proven/native-artifact
+          native_zip="$(find /tmp/proven/native-artifact -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          unzip -q "$native_zip" -d /tmp/proven/native
+          grep -Fq '__openttdDirtyRect' /tmp/proven/native/openttd-runtime.js
+          ! grep -Fq '__openttdDirtyRects' /tmp/proven/native/openttd-runtime.js
+          unzip -q /tmp/proven/downloads/ya.zip -d /tmp/proven/ya-artifact
+          ya_zip="$(find /tmp/proven/ya-artifact -type f -name '*.zip' -print -quit)"
+          unzip -q "$ya_zip" -d /tmp/proven/prod
+          cp /tmp/proven/native/openttd-runtime.js /tmp/proven/prod/openttd-runtime.js
+          rm -f /tmp/proven/prod/openttd.wasm /tmp/proven/prod/openttd.data
+          python3 ci/patch-v14-webgl-runtime-proven.py /tmp/proven/prod/openttd-runtime.js
+          python3 ci/patch-v14-performance-package.py /tmp/proven/prod --platform yandex
+          python3 yandex/neutralize_yandex_runtime.py /tmp/proven/prod
+          node --check /tmp/proven/prod/openttd-runtime.js
+          cat > /tmp/proven/prod/sdk.js <<'JS'
+          (()=>{const d=Object.create(null),p={async getData(k){const o={};for(const x of(k||[]))if(Object.prototype.hasOwnProperty.call(d,x))o[x]=d[x];return o},async setData(v){Object.assign(d,v||{});return true},getMode(){return'full'},getUniqueID(){return'proven-control'},getName(){return'Proven Control'},isAuthorized(){return true}},y={environment:{i18n:{lang:'en'},app:{id:'proven-control'}},features:{LoadingAPI:{ready(){return Promise.resolve(true)}},GameplayAPI:{start(){return Promise.resolve(true)},stop(){return Promise.resolve(true)}}},adv:{showFullscreenAdv({callbacks}={}){callbacks?.onOpen?.();callbacks?.onClose?.(true)}},leaderboards:{async getEntries(){return{entries:[]}},async setScore(){return true}},async getPlayer(){return p},isAvailableMethod(){return Promise.resolve(true)},on(){},off(){}};window.YaGames={async init(){return y}}})();
+          JS
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/proven/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          sed -i 's/timeout: 720000/timeout: 120000/' ./perf.mjs
+      - name: Run proven 4096x4096 plus 14-AI control
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/proven/prod
+          python3 -m http.server 8191 --bind 127.0.0.1 >/tmp/proven-http.log 2>&1 & pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8191/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/proven/browser-node
+          node perf.mjs yandex http://127.0.0.1:8191/index.html /tmp/proven/out/proven.json baseline
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/proven/out/proven.json').read_text())
+          s=(d.get('ai14') or {}).get('snapshot') or {}
+          u=(d.get('renderer') or {}).get('upload') or {}
+          summary={
+            'passed': d.get('passed'),
+            'failure': d.get('failure'),
+            'generation4096Ms': (d.get('generation4096') or {}).get('wallMsUntilResponsive'),
+            'estimatedFps': s.get('estimatedFps'),
+            'p95FrameGapMs': s.get('p95FrameGapMs'),
+            'p99FrameGapMs': s.get('p99FrameGapMs'),
+            'longestLongTaskMs': s.get('longestLongTaskMs'),
+            'wasmHeapBytes': s.get('wasmHeapBytes'),
+            'aiScheduler': d.get('aiScheduler'),
+            'renderer': d.get('renderer'),
+            'bytesPerSecond': u.get('bytesUploaded',0)/30.0,
+          }
+          Path('/tmp/proven/out/PROVEN-CONTROL-SUMMARY.json').write_text(json.dumps(summary,indent=2))
+          print(json.dumps(summary,indent=2))
+          if not d.get('passed'): raise SystemExit('proven control failed')
+          if (d.get('aiScheduler') or {}).get('activeAI') != 14: raise SystemExit('14 AI not active')
+          PY
+      - name: Upload proven control
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-proven-renderer-control
+          compression-level: 0
+          path: /tmp/proven/out/
+          if-no-files-found: warn
