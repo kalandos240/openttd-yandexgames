@@ -37,15 +37,20 @@ jobs:
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
 
+          # The combined ranking patch resolves its helper modules relative to
+          # its own copied location, so stage the complete helper set together.
           cp baseline/playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp baseline/playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp baseline/playgama/patch-browser-ranking-core.py legacy/ci/patch-browser-ranking-core.py
+          cp baseline/playgama/patch-browser-ranking-readable.py legacy/ci/patch-browser-ranking-readable.py
+          cp baseline/playgama/patch-browser-ranking-strict.py legacy/ci/patch-browser-ranking-strict.py
 
           python3 -m py_compile \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py \
-            baseline/playgama/patch-browser-ranking-core.py \
-            baseline/playgama/patch-browser-ranking-readable.py \
-            baseline/playgama/patch-browser-ranking-strict.py \
+            legacy/ci/patch-browser-ranking-core.py \
+            legacy/ci/patch-browser-ranking-readable.py \
+            legacy/ci/patch-browser-ranking-strict.py \
             baseline/playgama/patch-browser-font-web.py \
             baseline/playgama/patch-browser-tutorial.py \
             baseline/playgama/patch-browser-tutorial-toolbar.py \
@@ -106,13 +111,6 @@ jobs:
           from pathlib import Path
           p = Path('legacy/ci/build-final.sh')
           s = p.read_text(encoding='utf-8')
-          old = '''  emcmake cmake .. \\
-            -DHOST_BINARY_DIR=../build-host \\
-            -DCMAKE_BUILD_TYPE=Release \\
-            -DOPTION_USE_ASSERTS=OFF
-          '''
-          # The stable performance patch preserves this configure block but may
-          # normalize leading spaces, so use a narrow line-based insertion.
           needle = '    -DOPTION_USE_ASSERTS=OFF\n'
           if s.count(needle) != 1:
               raise SystemExit(f'Expected one release configure tail, got {s.count(needle)}')
