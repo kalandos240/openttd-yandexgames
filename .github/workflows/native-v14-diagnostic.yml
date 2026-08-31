@@ -76,7 +76,6 @@ jobs:
 
           python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
 
-          # Add names only at final link. This should not alter the code section.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('legacy/ci/build-final.sh')
@@ -84,7 +83,7 @@ jobs:
           needle = '    -DOPTION_USE_ASSERTS=OFF\n'
           if s.count(needle) != 1:
               raise SystemExit(f'Expected one stable Emscripten configure tail, got {s.count(needle)}')
-          replacement = '    -DOPTION_USE_ASSERTS=OFF \\\n    -DCMAKE_EXE_LINKER_FLAGS_RELEASE=-g2\n'
+          replacement = '    -DOPTION_USE_ASSERTS=OFF ' + chr(92) + chr(10) + '    -DCMAKE_EXE_LINKER_FLAGS_RELEASE=-g2' + chr(10)
           p.write_text(s.replace(needle, replacement, 1), encoding='utf-8')
           PY
 
