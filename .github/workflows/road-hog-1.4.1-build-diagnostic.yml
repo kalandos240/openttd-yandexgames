@@ -1,0 +1,35 @@
+name: Road Hog 1.4.1 build diagnostic
+
+on:
+  push:
+    branches:
+      - localization/full-ru-en-v14
+    paths:
+      - '.github/workflows/road-hog-1.4.1-build-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect exact Road Hog source build root
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/road-hog
+          curl -fL --retry 5 --retry-all-errors https://bundles.openttdcoop.org/road-hog/releases/LATEST/road-hog-1.4.1-source.tar.xz -o /tmp/road-hog-source.tar.xz
+          tar -xJf /tmp/road-hog-source.tar.xz -C /tmp/road-hog
+          EN="$(find /tmp/road-hog -type f -name english.lng -print -quit)"
+          ROOT="$(dirname "$(dirname "$(dirname "$EN")")")"
+          echo "ROOT=$ROOT"
+          echo '=== ROOT LIST ==='
+          find "$ROOT" -maxdepth 2 -mindepth 1 -printf '%y %P\n' | sort | head -400
+          echo '=== CONTROL FILES ==='
+          find "$ROOT" -maxdepth 3 -type f \( -iname 'makefile*' -o -name 'build.py' -o -name 'setup.py' -o -name 'requirements.txt' -o -name '*.sh' \) -print | sort
+          for f in "$ROOT/Makefile" "$ROOT/makefile" "$ROOT/build.py" "$ROOT/setup.py" "$ROOT/requirements.txt" "$ROOT/Makefile.config"; do
+            if test -f "$f"; then echo "=== FILE ${f#$ROOT/} ==="; sed -n '1,320p' "$f"; fi
+          done
