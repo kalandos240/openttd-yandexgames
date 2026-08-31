@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Remove Playgama-specific runtime naming and unused external URLs from Yandex.
+"""Remove Playgama-specific runtime naming and stale platform notices from Yandex.
 
-The combined legal bundle is renamed byte-for-byte; its contents are not edited.
-Executable/runtime-facing references and obsolete platform integration files are
-neutralized or removed. The bundled-addons manifest also drops provenance URL
-fields that the runtime loader never reads, while retaining local assets,
-licenses, versions, source commits and integrity hashes.
+The Yandex package reuses the verified browser platform baseline, but must not
+ship executable Playgama integration or misleading Playgama-facing release
+notices. Keep all third-party/full license texts and source-offer information,
+while removing the inactive Playgama integration section and neutralising stale
+platform labels in human-readable release documents.
 """
 from __future__ import annotations
 
@@ -86,6 +86,67 @@ def scrub_unused_manifest_urls(path: Path) -> None:
     print(f"Removed {removed} unused external URL fields from {path.name}.")
 
 
+def neutralize_release_docs(dist: Path) -> None:
+    """Remove inactive Playgama release notes without touching license bodies."""
+    license_bundle = dist / NEW_LICENSE_NAME
+    text = license_bundle.read_text(encoding="utf-8")
+
+    # The baseline legal bundle concatenates a Playgama integration changelog
+    # before the full license texts. It is not a license and is false for the
+    # Yandex package, so remove exactly that section. Everything from
+    # '# Full license texts' onwards remains byte-for-byte identical.
+    integration = re.compile(
+        r"\n## PLAYGAMA-INTEGRATION\.txt\n.*?(?=\n# Full license texts\n)",
+        re.S,
+    )
+    text, removed = integration.subn("\n", text, count=1)
+    if removed != 1:
+        raise SystemExit(f"Expected one stale Playgama integration section, removed {removed}")
+
+    # Only the release/index prose before the immutable full-license corpus has
+    # stale platform naming. Rebrand that prefix, leaving legal texts untouched.
+    marker = "\n# Full license texts\n"
+    if marker not in text:
+        raise SystemExit("Combined license bundle lost '# Full license texts' marker")
+    prefix, license_texts = text.split(marker, 1)
+    prefix = prefix.replace("Playgama", "Yandex Games")
+    prefix = prefix.replace("PLAYGAMA", "YANDEX GAMES")
+    text = prefix + marker + license_texts
+    license_bundle.write_text(text, encoding="utf-8")
+
+    replacements = {
+        "NOTICE.txt": (
+            ("OpenTTD 15.3 - Playgama WebAssembly edition", "OpenTTD 15.3 - Yandex Games WebAssembly edition"),
+            ("Playgama integration and WebAssembly build modifications", "Yandex Games integration and WebAssembly build modifications"),
+        ),
+        "SOURCE_CODE.txt": (
+            ("OpenTTD 15.3 - Playgama WebAssembly edition", "OpenTTD 15.3 - Yandex Games WebAssembly edition"),
+            ("Web/Playgama port source, patches and reproducible build scripts:", "Web/Yandex Games port source, patches and reproducible build scripts:"),
+        ),
+        "BUNDLED-ADDONS.md": (
+            ("Optional bundled add-ons for the Playgama build", "Optional bundled add-ons for the Yandex Games build"),
+            ("The Playgama build ships", "The Yandex Games build ships"),
+            ("in the Playgama package", "in the Yandex Games package"),
+            ("the Playgama 300 MB unpacked-size ceiling", "the platform package-size ceiling"),
+        ),
+    }
+    for name, pairs in replacements.items():
+        path = dist / name
+        if not path.is_file():
+            raise SystemExit(f"Expected Yandex release document is missing: {name}")
+        body = path.read_text(encoding="utf-8")
+        for old, new in pairs:
+            body = body.replace(old, new)
+        path.write_text(body, encoding="utf-8")
+
+    # No Yandex-facing human-readable document may claim this is a Playgama
+    # release. Source/license URLs for actual upstream components remain intact.
+    for name in (NEW_LICENSE_NAME, "NOTICE.txt", "SOURCE_CODE.txt", "BUNDLED-ADDONS.md"):
+        body = (dist / name).read_text(encoding="utf-8")
+        if re.search(r"playgama", body, re.I):
+            raise SystemExit(f"Stale Playgama release text remains in Yandex document: {name}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("dist", type=Path)
@@ -102,7 +163,6 @@ def main() -> None:
     old_license = dist / OLD_LICENSE_NAME
     new_license = dist / NEW_LICENSE_NAME
     if old_license.is_file():
-        # Rename without altering license/notices content.
         old_bytes = old_license.read_bytes()
         new_license.write_bytes(old_bytes)
         if new_license.read_bytes() != old_bytes:
@@ -126,10 +186,12 @@ def main() -> None:
         if path.exists():
             path.unlink()
 
+    neutralize_release_docs(dist)
+
     if not new_license.is_file() or new_license.stat().st_size < 100_000:
         raise SystemExit("Neutral Yandex license bundle is missing or unexpectedly small")
 
-    print(f"Yandex runtime naming neutralized; legal text preserved: {new_license}")
+    print(f"Yandex runtime and release notices neutralized; full license texts preserved: {new_license}")
 
 
 if __name__ == "__main__":
