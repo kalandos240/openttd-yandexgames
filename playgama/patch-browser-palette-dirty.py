@@ -13,7 +13,9 @@ logic, but:
     performs palette animation itself; Paint() already runs because the copied
     palette remains dirty.
   * Blitter_32bppAnim::PaletteAnimate aggregates pixels it actually updates into
-    a fixed 4x4 spatial grid and publishes at most 16 dirty rectangles.
+    a fixed 4x4 spatial grid and marks only those changed areas dirty.
+  * Paint() skips the SDL present entirely when a palette tick changed no screen
+    pixels, avoiding a zero-rect fallback being promoted to a full upload.
 
 Native OpenTTD behaviour is untouched. The bookkeeping uses only fixed stack
 arrays; no per-frame heap allocation is introduced.
@@ -61,6 +63,32 @@ if 'UsePaletteAnimation() == Blitter::PaletteAnimation::Blitter) return;' not in
         raise SystemExit(f'Expected one SDL CheckPaletteAnim anchor, got {s.count(check_anchor)}')
     s = s.replace(check_anchor, check_replacement, 1)
 sdl.write_text(s, encoding='utf-8')
+
+# When the palette changed but the 32bpp animation blitter found no matching
+# screen pixels, dirty_rect legitimately remains empty. Do not pass a zero-sized
+# update to the generated browser presenter, where it is interpreted as an
+# unknown rectangle and promoted to a full-frame upload.
+default = Path('openttd/src/video/sdl2_default_v.cpp')
+d = default.read_text(encoding='utf-8')
+paint_anchor = '''\t\tthis->local_palette.count_dirty = 0;
+\t}
+
+\tSDL_Rect r = { this->dirty_rect.left, this->dirty_rect.top, this->dirty_rect.right - this->dirty_rect.left, this->dirty_rect.bottom - this->dirty_rect.top };
+'''
+paint_replacement = '''\t\tthis->local_palette.count_dirty = 0;
+\t}
+
+#ifdef __EMSCRIPTEN__
+\tif (IsEmptyRect(this->dirty_rect)) return;
+#endif
+
+\tSDL_Rect r = { this->dirty_rect.left, this->dirty_rect.top, this->dirty_rect.right - this->dirty_rect.left, this->dirty_rect.bottom - this->dirty_rect.top };
+'''
+if 'if (IsEmptyRect(this->dirty_rect)) return;' not in d:
+    if d.count(paint_anchor) != 1:
+        raise SystemExit(f'Expected one SDL Paint post-palette anchor, got {d.count(paint_anchor)}')
+    d = d.replace(paint_anchor, paint_replacement, 1)
+default.write_text(d, encoding='utf-8')
 
 path = Path('openttd/src/blitter/32bpp_anim.cpp')
 b = path.read_text(encoding='utf-8')
@@ -178,6 +206,7 @@ def main() -> None:
     for token in (
         "V14_BROWSER_PALETTE_DIRTY_PATCH",
         "UsePaletteAnimation() == Blitter::PaletteAnimation::Blitter) return;",
+        "if (IsEmptyRect(this->dirty_rect)) return;",
         "browser_palette_regions",
         "browser_used_mask",
         "browser_palette_grid",
@@ -185,7 +214,7 @@ def main() -> None:
         if token not in text:
             raise SystemExit(f"Palette dirty-region invariant missing: {token}")
     path.write_text(text, encoding="utf-8")
-    print("Browser palette animation invalidation optimized: no pre-full-dirty for 32bpp blitter; 4x4 changed-region aggregation enabled.")
+    print("Browser palette animation invalidation optimized: no pre-full-dirty for 32bpp blitter; empty palette presents skipped; 4x4 changed-region aggregation enabled.")
 
 
 if __name__ == "__main__":
