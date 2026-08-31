@@ -49,5 +49,13 @@ jobs:
               print(f'{k}:{en[k]}')
           print('EN_COUNT',len(en),'RU_COUNT',len(ru),'MISSING',len(set(en)-set(ru)))
           PY
-          echo '=== build files ==='
-          find /tmp/road-hog -maxdepth 3 -type f \( -name 'Makefile' -o -name 'makefile' -o -name 'build.py' -o -name '*.nml' \) -print | head -80
+          echo '=== source root ==='
+          SRC="$(dirname "$(dirname "$EN")")"
+          echo "SRC=$SRC"
+          echo '=== build/control files ==='
+          find "$SRC" -maxdepth 4 -type f \( -iname 'makefile*' -o -name 'build.py' -o -name 'setup.py' -o -name 'requirements.txt' -o -name '*.nml' -o -name '*.pnml' -o -name '*.py' \) -printf '%P\n' | sort | head -250
+          for f in "$SRC/Makefile" "$SRC/makefile" "$SRC/build.py" "$SRC/setup.py" "$SRC/requirements.txt"; do
+            if test -f "$f"; then echo "=== FILE ${f#$SRC/} ==="; sed -n '1,260p' "$f"; fi
+          done
+          echo '=== top-level listing ==='
+          find "$SRC" -maxdepth 2 -mindepth 1 -printf '%y %P\n' | sort | head -300
