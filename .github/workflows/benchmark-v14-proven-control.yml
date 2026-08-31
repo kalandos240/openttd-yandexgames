@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      NATIVE_ARTIFACT_ID: '9764420560'
+      NATIVE_ARTIFACT_ID: '9765267124'
       VERIFIED_YA_ARTIFACT_ID: '9738530154'
     steps:
       - uses: actions/checkout@v4
