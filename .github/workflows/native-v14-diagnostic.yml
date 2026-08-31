@@ -1,25 +1,24 @@
-name: Diagnose v14 native OpenTTD build
+name: Diagnose v14 NewGRF hot WASM functions
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - feature/global-ranking-tutorial
+      - perf/newgrf-lag-license-removal-v14
     paths:
       - '.github/workflows/native-v14-diagnostic.yml'
-      - 'playgama/patch-browser-ranking.py'
-      - 'playgama/patch-browser-game-speed-selector.py'
 
 permissions:
   contents: read
+  actions: read
 
 env:
-  LEGACY_BUILD_REF: fix/direct-file-launch
+  CURRENT_LOCALIZED_ARTIFACT_ID: '9772768820'
 
 jobs:
   native-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 100
     container:
       image: emscripten/emsdk:3.1.57
 
@@ -30,38 +29,16 @@ jobs:
       - name: Checkout tested browser pipeline
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.LEGACY_BUILD_REF }}
+          ref: fix/direct-file-launch
           path: legacy
 
-      - name: Wire full-feature native patches
+      - name: Wire exact profiled source patch stack
         shell: bash
         run: |
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
-
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
-
-          python3 -m py_compile \
-            legacy/ci/patch-playgama-newgrf-main-menu.py \
-            legacy/ci/patch-browser-ranking.py \
-            playgama/patch-browser-ranking-core.py \
-            playgama/patch-browser-ranking-readable.py \
-            playgama/patch-browser-ranking-strict.py \
-            playgama/patch-browser-font-web.py \
-            playgama/patch-browser-tutorial.py \
-            playgama/patch-browser-tutorial-toolbar.py \
-            playgama/patch-browser-tutorial-level.py \
-            playgama/patch-browser-tutorial-native-layout.py \
-            playgama/patch-browser-tutorial-objectives.py \
-            playgama/patch-browser-tutorial-compile-fix.py \
-            playgama/patch-browser-tutorial-final-polish.py \
-            playgama/patch-browser-tutorial-v15-compat.py \
-            playgama/patch-browser-tutorial-real-objectives.py \
-            playgama/patch-browser-tutorial-clean-ui.py \
-            playgama/patch-browser-game-speed-selector.py \
-            playgama/patch-browser-startup-watchdog.py \
-            playgama/patch-browser-build-performance.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -85,38 +62,170 @@ jobs:
 
           build = Path('legacy/ci/build-final.sh')
           b = build.read_text(encoding='utf-8')
-          anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
-          addition = (
-              anchor
+          fonts_anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          fonts_copy = (
+              fonts_anchor
               + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf '
               + 'openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf '
               + 'openttd/build/yandex_baseset/\n'
           )
-          if b.count(anchor) != 1:
+          if b.count(fonts_anchor) != 1:
               raise SystemExit('Could not find font staging anchor')
-          build.write_text(b.replace(anchor, addition, 1), encoding='utf-8')
+          build.write_text(b.replace(fonts_anchor, fonts_copy, 1), encoding='utf-8')
           PY
 
           python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
 
-      - name: Build and capture complete diagnostics
+          # Add names only at final link. This should not alter the code section.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-final.sh')
+          s = p.read_text(encoding='utf-8')
+          needle = '    -DOPTION_USE_ASSERTS=OFF\n'
+          if s.count(needle) != 1:
+              raise SystemExit(f'Expected one stable Emscripten configure tail, got {s.count(needle)}')
+          replacement = '    -DOPTION_USE_ASSERTS=OFF \\\n    -DCMAKE_EXE_LINKER_FLAGS_RELEASE=-g2\n'
+          p.write_text(s.replace(needle, replacement, 1), encoding='utf-8')
+          PY
+
+      - name: Build symbol-named runtime
         working-directory: legacy
         shell: bash
         run: |
-          set -uo pipefail
-          rm -f /tmp/v14-native-build.log /tmp/v14-native-exit-code.txt
-          bash ci/build-yandex-release.sh 2>&1 | tee /tmp/v14-native-build.log
-          status=${PIPESTATUS[0]}
-          printf '%s\n' "$status" > /tmp/v14-native-exit-code.txt
-          exit "$status"
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/named-runtime
+          mkdir -p /tmp/named-runtime
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/named-runtime
+          test -s /tmp/named-runtime/openttd-runtime.js
 
-      - name: Upload native build diagnostics
+      - name: Download exact profiled release runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/current-artifact /tmp/current-release
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CURRENT_LOCALIZED_ARTIFACT_ID}/zip" \
+            -o /tmp/current-artifact.zip
+          unzip -q /tmp/current-artifact.zip -d /tmp/current-artifact
+          YAZIP="$(find /tmp/current-artifact -type f -name 'OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip' -print -quit)"
+          test -s "$YAZIP"
+          unzip -q "$YAZIP" -d /tmp/current-release
+          test -s /tmp/current-release/openttd-runtime.js
+
+      - name: Prove code identity and map hot functions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, re
+
+          targets = [1406, 3456, 3457, 3551, 3796, 5626, 7151, 7292]
+
+          def uleb(data, p):
+              value = 0
+              shift = 0
+              while True:
+                  b = data[p]
+                  p += 1
+                  value |= (b & 0x7f) << shift
+                  if not (b & 0x80):
+                      return value, p
+                  shift += 7
+
+          def get_wasm(path):
+              raw = Path(path).read_bytes()
+              m = re.search(br'wasmBinaryFile="data:application/octet-stream;base64,([A-Za-z0-9+/=]+)"', raw)
+              if not m:
+                  raise SystemExit(f'Embedded wasm missing: {path}')
+              return base64.b64decode(m.group(1))
+
+          def iter_sections(data):
+              p = 8
+              while p < len(data):
+                  sid = data[p]
+                  p += 1
+                  size, p = uleb(data, p)
+                  start = p
+                  end = p + size
+                  name = None
+                  if sid == 0:
+                      n, q = uleb(data, start)
+                      name = data[q:q+n].decode('utf-8', 'replace')
+                  yield sid, start, end, name
+                  p = end
+
+          def code_section(data):
+              for sid, start, end, _ in iter_sections(data):
+                  if sid == 10:
+                      return data[start:end]
+              raise SystemExit('Code section missing')
+
+          def function_names(data):
+              names = {}
+              for sid, start, end, name in iter_sections(data):
+                  if sid != 0 or name != 'name':
+                      continue
+                  n, p = uleb(data, start)
+                  p += n
+                  while p < end:
+                      subsection = data[p]
+                      p += 1
+                      size, p = uleb(data, p)
+                      sub_end = p + size
+                      if subsection == 1:
+                          count, q = uleb(data, p)
+                          for _ in range(count):
+                              idx, q = uleb(data, q)
+                              ln, q = uleb(data, q)
+                              names[idx] = data[q:q+ln].decode('utf-8', 'replace')
+                              q += ln
+                      p = sub_end
+              return names
+
+          current = get_wasm('/tmp/current-release/openttd-runtime.js')
+          named = get_wasm('/tmp/named-runtime/openttd-runtime.js')
+          current_code = code_section(current)
+          named_code = code_section(named)
+          same = current_code == named_code
+          names = function_names(named)
+
+          lines = [
+              f'current_code_sha256={hashlib.sha256(current_code).hexdigest()}',
+              f'named_code_sha256={hashlib.sha256(named_code).hexdigest()}',
+              f'code_section_identical={str(same).lower()}',
+              f'named_function_count={len(names)}',
+              '',
+              'Firefox hot function indices:',
+          ]
+          for idx in targets:
+              lines.append(f'{idx}: {names.get(idx, "<no-name>")}')
+          lines += ['', 'Neighbourhood 3380..3850:']
+          for idx in range(3380, 3851):
+              if idx in names:
+                  lines.append(f'{idx}: {names[idx]}')
+
+          out = '\n'.join(lines) + '\n'
+          Path('/tmp/wasm-hot-function-map.txt').write_text(out, encoding='utf-8')
+          print(out)
+          if not same:
+              raise SystemExit('Debug-name link changed the code section; exact index identity was not proven')
+          missing = [idx for idx in targets if idx not in names]
+          if missing:
+              raise SystemExit(f'Missing named functions: {missing}')
+          PY
+
+      - name: Upload native mapping diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v14-native-build-diagnostics
-          path: |
-            /tmp/v14-native-build.log
-            /tmp/v14-native-exit-code.txt
+          name: v14-newgrf-wasm-hot-function-map
+          path: /tmp/wasm-hot-function-map.txt
           if-no-files-found: warn
           retention-days: 7
