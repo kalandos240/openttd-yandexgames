@@ -1,0 +1,4 @@
+# Missing gameplay strings in upstream GIST 0.21.10 Russian localization.
+# These are appended to the pinned upstream lang/russian.lng before rebuilding.
+STR_BRICK_WORKS:{BLACK}Это предприятие может случайно закрыться после 1820 года.{}Для начала производства предприятию необходимы все перечисленные виды сырья.
+STR_INDUSTRY_NOT_AVAILABLE_AFTER  :{}{BLACK}Предприятие недоступно после {STRING} года.
