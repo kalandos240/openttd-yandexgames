@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/build-v14-full-optimization-runtime.yml'
       - 'playgama/patch-browser-full-performance.py'
+      - 'playgama/patch-browser-dirty-rect.py'
       - 'playgama/patch-browser-build-performance.py'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-ranking-core.py'
@@ -79,7 +80,8 @@ jobs:
             playgama/patch-browser-game-speed-selector.py \
             playgama/patch-browser-startup-watchdog.py \
             playgama/patch-browser-build-performance.py \
-            playgama/patch-browser-full-performance.py
+            playgama/patch-browser-full-performance.py \
+            playgama/patch-browser-dirty-rect.py
 
           python3 - <<'PY'
           from pathlib import Path
@@ -118,11 +120,13 @@ jobs:
           # Keep the proven startup/AI fixes, then layer profiler-driven tuning.
           python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
           python3 playgama/patch-browser-full-performance.py legacy/ci/build-final.sh
+          python3 playgama/patch-browser-dirty-rect.py legacy/ci/build-final.sh
 
           grep -Fq -- '-msimd128' legacy/ci/build-final.sh
           grep -Fq -- '-flto=thin' legacy/ci/build-final.sh
           grep -Fq 'browser_tile_warmup_loops' legacy/ci/build-final.sh
           grep -Fq 'browser_ai_opcode_budget' legacy/ci/build-final.sh
+          grep -Fq 'Module.__openttdDirtyRect' legacy/ci/build-final.sh
           ! grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
           ! grep -Fq -- '-sSUPPORT_LONGJMP=wasm' legacy/ci/build-final.sh
           ! grep -Fq -- '-sASYNCIFY' legacy/ci/build-final.sh
@@ -143,6 +147,8 @@ jobs:
           grep -Fq 'AutoRestoreBackup<uint32_t> browser_ai_budget' openttd/src/ai/ai_core.cpp
           grep -Fq 'browser_active_ai_count > 6' openttd/src/ai/ai_core.cpp
           grep -Fq 'browser_configured_opcode_budget) * 6u' openttd/src/ai/ai_core.cpp
+          grep -Fq 'Module.__openttdDirtyRect' openttd/src/video/sdl2_default_v.cpp
+          grep -Fq 'SDL_UpdateWindowSurfaceRects(this->sdl_window, &r, 1);' openttd/src/video/sdl2_default_v.cpp
 
           grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
           grep -Fq -- '-flto=thin' openttd/build/CMakeCache.txt
@@ -185,6 +191,7 @@ jobs:
           # The optimized runtime intentionally stays synchronous and keeps the
           # same browser compatibility model as the tested v14 baseline.
           ! grep -Fq 'Asyncify.handleSleep' /tmp/v14-full-opt-runtime/openttd-runtime.js
+          grep -Fq '__openttdDirtyRect' /tmp/v14-full-opt-runtime/openttd-runtime.js
 
       - name: Upload verified optimized native runtime
         uses: actions/upload-artifact@v4
