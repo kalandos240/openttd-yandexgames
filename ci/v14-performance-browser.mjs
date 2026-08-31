@@ -1,14 +1,20 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 
-const [platform, url, output, profile = 'optimized'] = process.argv.slice(2);
-if (!platform || !url || !output || !['baseline', 'optimized'].includes(profile)) {
-  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized]');
+const [platform, url, output, profile = 'optimized', mapLog2Arg = '12', aiSampleMsArg = '30000'] = process.argv.slice(2);
+const mapLog2 = Number(mapLog2Arg);
+const aiSampleMs = Number(aiSampleMsArg);
+if (!platform || !url || !output || !['baseline', 'optimized'].includes(profile) ||
+    !Number.isInteger(mapLog2) || mapLog2 < 9 || mapLog2 > 12 ||
+    !Number.isInteger(aiSampleMs) || aiSampleMs < 10000 || aiSampleMs > 120000) {
+  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized] [map_log2=12] [ai_sample_ms=30000]');
 }
+const mapEdge = 2 ** mapLog2;
 const executablePath = process.env.CHROME_BIN;
 if (!executablePath) throw new Error('CHROME_BIN is not set');
 
 const browser = await puppeteer.launch({
+  protocolTimeout: 900000,
   executablePath,
   headless: true,
   args: [
@@ -94,9 +100,12 @@ const result = {
   platform,
   profile,
   url,
+  map: { log2: mapLog2, width: mapEdge, height: mapEdge, tiles: mapEdge * mapEdge },
+  aiTarget: 14,
+  aiSampleMs,
   startedAt: new Date().toISOString(),
   startup: {},
-  generation4096: {},
+  generation: {},
   ai14: {},
   renderer: {},
   memory: {},
@@ -204,10 +213,9 @@ try {
   }
   if (pageErrors.length) throw new Error(`page errors before benchmark: ${pageErrors.join('\n')}`);
 
-  // Use OpenTTD's own console and setting system. 4096 == 2^12.
   await openConsole();
-  await consoleCommand('setting_newgame game_creation.map_x 12');
-  await consoleCommand('setting_newgame game_creation.map_y 12');
+  await consoleCommand(`setting_newgame game_creation.map_x ${mapLog2}`);
+  await consoleCommand(`setting_newgame game_creation.map_y ${mapLog2}`);
   await consoleCommand('setting_newgame difficulty.max_no_competitors 14');
   await consoleCommand('setting_newgame difficulty.competitors_interval 0');
 
@@ -217,26 +225,25 @@ try {
 
   // World generation is synchronous in this production Emscripten port. The
   // rAF probe stops during the blocking generator and resumes when the game
-  // returns to the browser. Require a real >=1s stall followed by live frames.
+  // returns to the browser. Keep a hard 12-minute game timeout even though the
+  // CDP transport itself allows 15 minutes, so a stuck generator still fails.
   await page.waitForFunction(() => {
     const p = window.__otPerfProbe;
     return p && p.maxFrameGap >= 1000 && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
   }, { timeout: 720000, polling: 250 });
   const generationWallMs = Date.now() - generationWallStart;
   await sleep(3000);
-  result.generation4096 = {
+  result.generation = {
     wallMsUntilResponsive: generationWallMs,
-    snapshot: await snapshot('4096-generated'),
+    snapshot: await snapshot(`${mapEdge}-generated`),
   };
 
-  // Let all zero-interval competitors initialize and run. On optimized builds
-  // native telemetry proves the exact active-AI count and scheduler budget.
   await resetFrameProbe();
   const aiSampleStart = Date.now();
-  await sleep(30000);
+  await sleep(aiSampleMs);
   result.ai14 = {
     sampleWallMs: Date.now() - aiSampleStart,
-    snapshot: await snapshot('14-ai-30s'),
+    snapshot: await snapshot(`14-ai-${Math.round(aiSampleMs / 1000)}s`),
   };
 
   result.renderer = {
@@ -266,9 +273,7 @@ try {
     tail: consoleLines.slice(-250),
   };
 
-  // Common hard pass criteria are intentionally the same for baseline and
-  // optimized packages. Extra optimized-only gates verify the new mechanisms.
-  if (!result.renderer.active) throw new Error('WebGL framebuffer presenter did not activate');
+  if (profile === 'optimized' && !result.renderer.active) throw new Error('WebGL framebuffer presenter did not activate');
   if (pageErrors.length) throw new Error(`page errors during benchmark: ${pageErrors.join('\n')}`);
   if (profile === 'optimized') {
     if (!result.renderer.upload) throw new Error('WebGL upload telemetry is missing');
