@@ -1,9 +1,14 @@
-/* Optional bundled OpenTTD add-ons for the Playgama/Yandex browser builds.
+/* Optional bundled OpenTTD add-ons for the browser builds.
  *
- * Bundled content is immutable package data, not user data.  It deliberately
+ * Bundled content is immutable package data, not user data. It deliberately
  * lives outside /home/web_user/.openttd so IDBFS never has to restore tens of
  * MiB of static GRFs during a cold start. OpenTTD scans the binary search path
  * (including /newgrf and /baseset) natively when the NewGRF menu rescans.
+ *
+ * The installer is intentionally paced: network/decompression stays async and
+ * each synchronous MEMFS write is moved to a browser idle turn. This prevents
+ * the old behaviour where several large GRFs were written back-to-back shortly
+ * after the first menu frame, which produced visible post-start stutters.
  */
 (() => {
   'use strict';
@@ -11,13 +16,13 @@
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
-  const LICENSE_BUNDLE_URL = './PLAYGAMA-ALL-LICENSES.md';
-  const LICENSE_TARGET = '/docs/PLAYGAMA-LICENSES.md';
   const INSTALL_CONCURRENCY = 1;
   const FETCH_TIMEOUT_MS = 8000;
   const RESTORE_STARTUP_GATE_MS = 1500;
   const POST_START_DELAY_MS = 1200;
   const POST_START_IDLE_TIMEOUT_MS = 5000;
+  const WRITE_IDLE_TIMEOUT_MS = 1500;
+  const INTER_ITEM_YIELD_MS = 32;
 
   let manifestPromise = null;
 
@@ -28,6 +33,16 @@
       try { FS.mkdir(current); } catch (_) {}
     }
   };
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const waitForIdle = (timeout = WRITE_IDLE_TIMEOUT_MS) => new Promise((resolve) => {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout });
+    } else {
+      setTimeout(resolve, 16);
+    }
+  });
 
   const fetchWithTimeout = async (url, options = {}) => {
     if (typeof AbortController !== 'function') return fetch(url, options);
@@ -59,6 +74,18 @@
     throw new Error(`Unsupported bundled addon type: ${item.type}`);
   };
 
+  const installedBytesFor = (item) => Number(item.installed_bytes ?? item.bytes);
+
+  const orderedItems = (items) => [...items].sort((a, b) => {
+    const aBase = a?.type === 'base-graphics' ? 1 : 0;
+    const bBase = b?.type === 'base-graphics' ? 1 : 0;
+    if (aBase !== bBase) return aBase - bBase;
+    const aBytes = installedBytesFor(a);
+    const bBytes = installedBytesFor(b);
+    if (Number.isFinite(aBytes) && Number.isFinite(bBytes) && aBytes !== bBytes) return aBytes - bBytes;
+    return String(a?.content_id || '').localeCompare(String(b?.content_id || ''));
+  });
+
   const inflateGzip = async (packed) => {
     if (typeof DecompressionStream !== 'function') {
       throw new Error('This browser does not support DecompressionStream(gzip)');
@@ -84,7 +111,7 @@
     const root = installRootFor(item);
     ensureDir(FS, root);
     const target = root + '/' + item.install_filename;
-    const installedBytes = Number(item.installed_bytes ?? item.bytes);
+    const installedBytes = installedBytesFor(item);
     const packagedBytes = Number(item.packaged_bytes ?? item.bytes);
 
     if (!Number.isFinite(installedBytes) || installedBytes <= 0) {
@@ -111,7 +138,13 @@
     if (data.byteLength !== installedBytes) {
       throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
     }
+
+    // FS.writeFile is synchronous and can block a frame for multi-megabyte GRFs.
+    // Enter an idle turn immediately before the write, then yield once more so
+    // rendering/input gets a chance to run before the next asset starts.
+    await waitForIdle();
     FS.writeFile(target, data);
+    await sleep(INTER_ITEM_YIELD_MS);
     return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target };
   };
 
@@ -132,26 +165,20 @@
     return results;
   };
 
-  const installLicenseBundle = async (FS) => {
-    ensureDir(FS, '/docs');
-    const response = await fetchWithTimeout(new URL(LICENSE_BUNDLE_URL, document.baseURI).toString(), { cache: 'force-cache' });
-    if (!response.ok) throw new Error(`HTTP ${response.status} while loading license bundle`);
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (data.byteLength < 1024) throw new Error('Bundled license document is unexpectedly small');
-    FS.writeFile(LICENSE_TARGET, data);
-    window.__openttdLicenseBundlePath = LICENSE_TARGET;
-    return { state: 'installed', bytes: data.byteLength, path: LICENSE_TARGET };
-  };
-
   const installBundledContent = async (FS) => {
-    let licenseStatus = null;
-    try { licenseStatus = await installLicenseBundle(FS); }
-    catch (error) { console.warn('[OpenTTD] License bundle background install failed', error); }
-
     const manifest = await getManifest();
-    const results = await mapLimit(manifest.items, INSTALL_CONCURRENCY, (item) => installOne(FS, item));
+    const items = orderedItems(manifest.items);
+    window.__openttdBundledAddonsProgress = { total: items.length, completed: 0, current: null };
+
+    const results = await mapLimit(items, INSTALL_CONCURRENCY, async (item) => {
+      window.__openttdBundledAddonsProgress.current = item.content_id;
+      const result = await installOne(FS, item);
+      window.__openttdBundledAddonsProgress.completed += 1;
+      return result;
+    });
+
+    window.__openttdBundledAddonsProgress.current = null;
     const failed = results.filter((row) => row?.state === 'failed');
-    window.__openttdBundledLicenseStatus = licenseStatus;
     window.__openttdBundledAddonsStatus = {
       manifest_version: manifest.manifest_version,
       installed: results.filter((row) => row?.state === 'installed').length,
@@ -159,6 +186,7 @@
       failed,
       results,
       persistent: false,
+      paced_writes: true,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
@@ -209,8 +237,8 @@
         }
       };
 
-      // Let the first menu frames render before decompressing/writing bundled
-      // content. The target paths are MEMFS/global search paths, never IDBFS.
+      // Let the first menu frames render before bundled content begins. Each
+      // individual MEMFS write is additionally paced by installOne().
       setTimeout(startWhenIdle, POST_START_DELAY_MS);
     };
 
