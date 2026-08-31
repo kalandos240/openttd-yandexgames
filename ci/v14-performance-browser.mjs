@@ -272,7 +272,7 @@ try {
   await sleep(3000);
   result.generation = {
     wallMsUntilResponsive: generationWallMs,
-    mainThreadProbeBlockedMs,
+    mainThreadProbeBlockedMs: mainThreadBlockedMs,
     browserNowAfterGeneration,
     snapshot: await snapshot(`${mapEdge}-generated`),
   };
