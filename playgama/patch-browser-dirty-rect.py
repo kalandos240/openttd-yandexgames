@@ -6,6 +6,9 @@ but SDL2's Emscripten framebuffer backend ignores the rects and sends the entire
 surface to JavaScript. This browser-only source patch publishes the rectangle just
 before SDL_UpdateWindowSurfaceRects(), allowing the later WebGL presenter patch to
 upload only changed pixels while keeping SDL's stock call and fallback intact.
+
+This remains deliberately single-rectangle: generic browser multi-rect tracking
+regressed synchronous 4096x4096 generation and is not part of the production path.
 """
 from __future__ import annotations
 
