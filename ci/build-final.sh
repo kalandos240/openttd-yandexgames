@@ -27,6 +27,15 @@ if 'russian.lng@/lang/russian.lng' not in s:
         + '    target_link_libraries(WASM::WASM INTERFACE "--preload-file ${CMAKE_BINARY_DIR}/yandex_baseset@/baseset")\n',
         1,
     )
+# The direct-file build embeds OpenGFX/OpenSFX/OpenMSX plus rendered browser
+# audio into the module. OpenTTD's upstream 32 MiB initial heap is too small
+# for the linker once those assets are embedded. Keep growth enabled, but start
+# at 64 MiB so the module can link and boot reliably.
+old_memory = '    target_link_libraries(WASM::WASM INTERFACE "-s INITIAL_MEMORY=33554432")\n'
+new_memory = '    target_link_libraries(WASM::WASM INTERFACE "-s INITIAL_MEMORY=67108864")\n'
+if old_memory not in s:
+    raise SystemExit('Could not find Emscripten INITIAL_MEMORY setting')
+s = s.replace(old_memory, new_memory, 1)
 cmake.write_text(s)
 
 pre = Path('openttd/os/emscripten/pre.js')
