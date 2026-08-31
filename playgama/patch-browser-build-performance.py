@@ -9,6 +9,7 @@ OpenTTD zero-interval patch remains part of the legacy source pipeline.
 from __future__ import annotations
 
 import argparse
+import py_compile
 import re
 import subprocess
 import sys
@@ -88,11 +89,14 @@ def main() -> None:
 
     palette_patch = Path(__file__).with_name('patch-browser-palette-dirty.py')
     if palette_patch.is_file():
+        py_compile.compile(str(palette_patch), doraise=True)
         subprocess.run([sys.executable, str(palette_patch), str(path)], check=True)
         patched = path.read_text(encoding='utf-8')
         if 'V14_BROWSER_PALETTE_DIRTY_PATCH' not in patched:
             raise SystemExit('Palette dirty-region source patch did not wire into build-final.sh')
-        print('Browser palette dirty-region experiment wired into native source build.')
+        if 'if (IsEmptyRect(this->dirty_rect)) return;' not in patched:
+            raise SystemExit('Palette empty-present browser guard is missing from build-final.sh')
+        print('Browser palette dirty-region patch compiled, wired, and empty-present guard verified.')
 
     direct = path.with_name('build-direct-file.sh')
     if direct.is_file():
