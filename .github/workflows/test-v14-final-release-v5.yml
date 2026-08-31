@@ -1,0 +1,55 @@
+name: Test v14 final release v5
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/test-v14-final-release-v5.yml'
+      - 'ci/run-v14-final-release-v5.sh'
+      - 'ci/v14-performance-browser.mjs'
+      - 'ci/v14-viewport-smoke.mjs'
+      - 'ci/platform-hosted-smoke.mjs'
+      - 'ci/v14-yandex-sdk-mock.js'
+      - 'ci/v14-playgama-loader-mock.js'
+      - 'ci/patch-v14-webgl-runtime.py'
+      - 'ci/patch-v14-performance-package.py'
+      - 'ci/patch-v14-playgama-single-file.py'
+      - 'ci/patch-v14-simpleai-bridge-cache.py'
+      - 'yandex/neutralize_yandex_runtime.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  final-release-v5:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NATIVE_ARTIFACT_ID: '9746240087'
+      NATIVE_BUILD_RUN: '33358837803'
+      NATIVE_BUILD_SHA: '6a5f09490f97b6066d520fa058dcceb6ec1cf2b2'
+      AI_SOURCE_SHA: '6941b25d1dfaf941a66d38430632f850b78c54a1'
+      NATIVE_ARTIFACT_DIGEST: 'sha256:ff29325bd343f94946e3e0becbcc8611f122ba81bdb153b697e7d2bf9169ef87'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+
+    steps:
+      - name: Checkout exact release tooling
+        uses: actions/checkout@v4
+
+      - name: Run exact v14 final release gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash ci/run-v14-final-release-v5.sh
+
+      - name: Upload final tested v14 release v5
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-final-tested-v5
+          compression-level: 0
+          path: /tmp/v14v5/out/
+          if-no-files-found: error
