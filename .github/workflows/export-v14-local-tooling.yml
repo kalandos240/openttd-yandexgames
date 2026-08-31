@@ -1,0 +1,45 @@
+name: Export v14 final local tooling
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/export-v14-local-tooling.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage exact final tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v14-tooling/ci /tmp/v14-tooling/yandex
+          cp ci/patch-v14-webgl-runtime.py /tmp/v14-tooling/ci/
+          cp ci/patch-v14-simpleai-bridge-cache.py /tmp/v14-tooling/ci/
+          cp ci/patch-v14-performance-package.py /tmp/v14-tooling/ci/
+          cp ci/patch-v14-playgama-single-file.py /tmp/v14-tooling/ci/
+          cp ci/platform-hosted-smoke.mjs /tmp/v14-tooling/ci/
+          cp ci/v14-viewport-smoke.mjs /tmp/v14-tooling/ci/
+          cp ci/v14-performance-browser-final.mjs /tmp/v14-tooling/ci/
+          cp ci/v14-yandex-sdk-mock.js /tmp/v14-tooling/ci/
+          cp ci/v14-playgama-loader-mock.js /tmp/v14-tooling/ci/
+          cp yandex/neutralize_yandex_runtime.py /tmp/v14-tooling/yandex/
+          python3 -m py_compile /tmp/v14-tooling/ci/*.py /tmp/v14-tooling/yandex/*.py
+          node --check /tmp/v14-tooling/ci/platform-hosted-smoke.mjs
+          node --check /tmp/v14-tooling/ci/v14-viewport-smoke.mjs
+          node --check /tmp/v14-tooling/ci/v14-performance-browser-final.mjs
+          grep -Fq 'armFrameProbe' /tmp/v14-tooling/ci/v14-performance-browser-final.mjs
+          printf '%s\n' "$GITHUB_SHA" > /tmp/v14-tooling/BRANCH-SHA.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v14-final-local-tooling
+          compression-level: 0
+          path: /tmp/v14-tooling/
+          if-no-files-found: error
