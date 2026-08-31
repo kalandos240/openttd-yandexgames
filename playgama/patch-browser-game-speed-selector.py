@@ -7,6 +7,9 @@ x2/x4/x8 choices. OpenTTD already implements the intended behaviour:
 == 0`) and `ChangeGameSpeed(false)` returns to normal speed. Rendering remains a
 separate 60 Hz concern and is optimized after link without changing simulation
 semantics.
+
+This file is also a release-triggered native contract gate, so packaging/runtime
+verification changes are rebuilt against the same stock-speed source baseline.
 """
 from pathlib import Path
 
