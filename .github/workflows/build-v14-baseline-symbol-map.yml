@@ -37,13 +37,31 @@ jobs:
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
 
-          # The combined ranking patch resolves its helper modules relative to
-          # its own copied location, so stage the complete helper set together.
-          cp baseline/playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
-          cp baseline/playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
-          cp baseline/playgama/patch-browser-ranking-core.py legacy/ci/patch-browser-ranking-core.py
-          cp baseline/playgama/patch-browser-ranking-readable.py legacy/ci/patch-browser-ranking-readable.py
-          cp baseline/playgama/patch-browser-ranking-strict.py legacy/ci/patch-browser-ranking-strict.py
+          # patch-browser-ranking.py is an orchestrator. It resolves every
+          # browser feature patch relative to its own directory, therefore the
+          # diagnostic build must stage the same sibling stack as production.
+          for f in \
+            patch-playgama-newgrf-main-menu.py \
+            patch-browser-ranking.py \
+            patch-browser-ranking-core.py \
+            patch-browser-ranking-readable.py \
+            patch-browser-ranking-strict.py \
+            patch-browser-font-web.py \
+            patch-browser-tutorial.py \
+            patch-browser-tutorial-toolbar.py \
+            patch-browser-tutorial-level.py \
+            patch-browser-tutorial-native-layout.py \
+            patch-browser-tutorial-objectives.py \
+            patch-browser-tutorial-compile-fix.py \
+            patch-browser-tutorial-final-polish.py \
+            patch-browser-tutorial-v15-compat.py \
+            patch-browser-tutorial-real-objectives.py \
+            patch-browser-tutorial-clean-ui.py \
+            patch-browser-tutorial-highlights.py \
+            patch-browser-game-speed-selector.py \
+            patch-browser-startup-watchdog.py; do
+            cp "baseline/playgama/${f}" "legacy/ci/${f}"
+          done
 
           python3 -m py_compile \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
@@ -51,20 +69,20 @@ jobs:
             legacy/ci/patch-browser-ranking-core.py \
             legacy/ci/patch-browser-ranking-readable.py \
             legacy/ci/patch-browser-ranking-strict.py \
-            baseline/playgama/patch-browser-font-web.py \
-            baseline/playgama/patch-browser-tutorial.py \
-            baseline/playgama/patch-browser-tutorial-toolbar.py \
-            baseline/playgama/patch-browser-tutorial-level.py \
-            baseline/playgama/patch-browser-tutorial-native-layout.py \
-            baseline/playgama/patch-browser-tutorial-objectives.py \
-            baseline/playgama/patch-browser-tutorial-compile-fix.py \
-            baseline/playgama/patch-browser-tutorial-final-polish.py \
-            baseline/playgama/patch-browser-tutorial-v15-compat.py \
-            baseline/playgama/patch-browser-tutorial-real-objectives.py \
-            baseline/playgama/patch-browser-tutorial-clean-ui.py \
-            baseline/playgama/patch-browser-tutorial-highlights.py \
-            baseline/playgama/patch-browser-game-speed-selector.py \
-            baseline/playgama/patch-browser-startup-watchdog.py \
+            legacy/ci/patch-browser-font-web.py \
+            legacy/ci/patch-browser-tutorial.py \
+            legacy/ci/patch-browser-tutorial-toolbar.py \
+            legacy/ci/patch-browser-tutorial-level.py \
+            legacy/ci/patch-browser-tutorial-native-layout.py \
+            legacy/ci/patch-browser-tutorial-objectives.py \
+            legacy/ci/patch-browser-tutorial-compile-fix.py \
+            legacy/ci/patch-browser-tutorial-final-polish.py \
+            legacy/ci/patch-browser-tutorial-v15-compat.py \
+            legacy/ci/patch-browser-tutorial-real-objectives.py \
+            legacy/ci/patch-browser-tutorial-clean-ui.py \
+            legacy/ci/patch-browser-tutorial-highlights.py \
+            legacy/ci/patch-browser-game-speed-selector.py \
+            legacy/ci/patch-browser-startup-watchdog.py \
             baseline/playgama/patch-browser-build-performance.py
 
           python3 - <<'PY'
