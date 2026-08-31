@@ -1,0 +1,69 @@
+##grflangid 0x07
+STR_GENERAL_DESC        :OpenGFX2 Settings. Свободно распространяется на условиях GNU General Public License версии 2.
+
+STR_GRF_NAME            :OpenGFX2 Settings
+STR_GRF_DESCRIPTION     :{ORANGE}OpenGFX2 Settings. Изменяет параметры, используемые дополнительным GRF OpenGFX2; это обходной способ настройки параметров дополнительного GRF базового набора.{BLACK}{}Автор: Zephyris, на основе работы команды OpenGFX{}{BLACK}Лицензия: {SILVER}GPL v2+{}{BLACK}Сайт: {SILVER}https://github.com/zephyris/OpenGFX2
+STR_GRF_URL             :https://github.com/zephyris/opengfx2
+
+STR_WARN_SETTINGSGRF_NOTRECOMMENDED   :NewGRF OpenGFX2 Settings не рекомендуется использовать в OpenTTD 14.0 и новее. Вместо него рекомендуется использовать параметры базового набора!
+
+STR_PARAM_CURSOR_NAME                 :Курсор мыши
+STR_PARAM_CURSOR_DESC                 :Стиль и цвет курсора (указателя) мыши.
+STR_PARAM_CURSOR_VALUE_DEFAULT        :Классический, жёлтый (по умолчанию)
+STR_PARAM_CURSOR_VALUE_CLASSIC_GRAY   :Классический, серый
+STR_PARAM_CURSOR_VALUE_OPENGFX_YELLOW :В стиле OpenGFX, жёлтый
+STR_PARAM_CURSOR_VALUE_WIN_WHITE      :В стиле Windows, белый
+
+STR_PARAM_GRIDLINE_NAME               :Сетка рельефа
+STR_PARAM_GRIDLINE_DESC               :Показывать ли линии сетки по краям клеток суши и воды.
+STR_PARAM_GRIDLINE_VALUE_DEFAULT      :Только сетка суши (по умолчанию)
+STR_PARAM_GRIDLINE_VALUE_NOGRIDLINE   :Без сетки
+STR_PARAM_GRIDLINE_VALUE_WATERGRID    :Сетка суши и воды
+
+STR_PARAM_LOGO_NAME                   :Стиль логотипа
+STR_PARAM_LOGO_DESC                   :Стиль логотипа OpenTTD на титульном экране.
+STR_PARAM_LOGO_VALUE_DEFAULT          :По умолчанию
+STR_PARAM_LOGO_VALUE_UNDERGROUND      :В стиле метро
+STR_PARAM_LOGO_VALUE_CABRIOLET        :Обтекаемый
+
+STR_PARAM_VALUE_TEMPERATE             :Умеренный
+STR_PARAM_VALUE_ARCTIC                :Арктический
+STR_PARAM_VALUE_TROPICAL              :Тропический
+STR_PARAM_VALUE_TOYLAND               :Игрушечный
+
+STR_PARAM_VALUE_TEMPERATE_DEFAULT     :Умеренный (по умолчанию)
+STR_PARAM_VALUE_ARCTIC_DEFAULT        :Арктический (по умолчанию)
+STR_PARAM_VALUE_TROPICAL_DEFAULT      :Тропический (по умолчанию)
+STR_PARAM_VALUE_TOYLAND_DEFAULT       :Игрушечный (по умолчанию)
+
+STR_PARAM_VALUE_TEMPERATE_DALTERNATE  :Умеренный (альтернативный стиль)
+STR_PARAM_VALUE_ARCTIC_ALTERNATE      :Арктический (альтернативный стиль)
+STR_PARAM_VALUE_TROPICAL_ALTERNATE    :Тропический (альтернативный стиль)
+STR_PARAM_VALUE_TOYLAND_ALTERNATE     :Игрушечный (альтернативный стиль)
+
+STR_PARAM_FOUNDATIONS_TEMPERATE_NAME  :Фундаменты умеренного климата
+STR_PARAM_FOUNDATIONS_TEMPERATE_DESC  :Стиль фундаментов для умеренного климата.
+STR_PARAM_FOUNDATIONS_ARCTIC_NAME     :Фундаменты арктического климата
+STR_PARAM_FOUNDATIONS_ARCTIC_DESC     :Стиль фундаментов для арктического климата.
+STR_PARAM_FOUNDATIONS_TROPICAL_NAME   :Фундаменты тропического климата
+STR_PARAM_FOUNDATIONS_TROPICAL_DESC   :Стиль фундаментов для тропического климата.
+STR_PARAM_FOUNDATIONS_TOYLAND_NAME    :Фундаменты игрушечного климата
+STR_PARAM_FOUNDATIONS_TOYLAND_DESC    :Стиль фундаментов для игрушечного климата.
+
+STR_PARAM_GRASS_TEMPERATE_NAME  :Трава умеренного климата
+STR_PARAM_GRASS_TEMPERATE_DESC  :Стиль травы для умеренного климата.
+STR_PARAM_GRASS_ARCTIC_NAME     :Трава арктического климата
+STR_PARAM_GRASS_ARCTIC_DESC     :Стиль травы для арктического климата.
+STR_PARAM_GRASS_TROPICAL_NAME   :Трава тропического климата
+STR_PARAM_GRASS_TROPICAL_DESC   :Стиль травы для тропического климата.
+STR_PARAM_GRASS_TOYLAND_NAME    :Трава игрушечного климата
+STR_PARAM_GRASS_TOYLAND_DESC    :Стиль травы для игрушечного климата.
+
+STR_PARAM_TREES_TEMPERATE_NAME  :Деревья умеренного климата
+STR_PARAM_TREES_TEMPERATE_DESC  :Стиль деревьев для умеренного климата.
+STR_PARAM_TREES_ARCTIC_NAME     :Деревья арктического климата
+STR_PARAM_TREES_ARCTIC_DESC     :Стиль деревьев для арктического климата.
+STR_PARAM_TREES_TROPICAL_NAME   :Деревья тропического климата
+STR_PARAM_TREES_TROPICAL_DESC   :Стиль деревьев для тропического климата (пальмы и кактусы не заменяются).
+STR_PARAM_TREES_TOYLAND_NAME    :Деревья игрушечного климата
+STR_PARAM_TREES_TOYLAND_DESC    :Стиль деревьев для игрушечного климата.
