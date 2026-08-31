@@ -1,5 +1,6 @@
 /* Optional bundled OpenTTD add-ons for the Playgama/Yandex browser builds.
  * Release-critical: changes here must rebuild the single-file native package.
+ * Regression coverage: test-cold-start-addon-gate.cjs mirrors the chunked FS API.
  *
  * Bundled content is immutable package data, not user data. It deliberately
  * lives outside /home/web_user/.openttd so IDBFS never has to restore tens of
