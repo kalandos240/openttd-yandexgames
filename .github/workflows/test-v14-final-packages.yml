@@ -6,6 +6,9 @@ on:
       - perf/v14-simpleai-bridge-cache
     paths:
       - '.github/workflows/test-v14-final-packages.yml'
+      - 'ci/patch-v14-performance-harness.py'
+      - 'ci/v14-performance-browser.mjs'
+      - 'ci/v14-viewport-smoke.mjs'
   workflow_dispatch:
 
 permissions:
@@ -117,8 +120,6 @@ jobs:
             grep -Fq 'Module.calledRun === true' "$d/openttd-ranking-core.js"
           done
 
-          # Yandex: local SDK path only, no Playgama runtime naming, and no
-          # unused external provenance/download URLs in the add-on manifest.
           grep -Fq "script.src = '/sdk.js'" /tmp/v14final/prod/ya/yandex-bootstrap.js
           test -s /tmp/v14final/prod/ya/THIRD-PARTY-LICENSES.md
           test ! -e /tmp/v14final/prod/ya/PLAYGAMA-ALL-LICENSES.md
@@ -126,12 +127,10 @@ jobs:
           ! grep -Eiq 'https?://' /tmp/v14final/prod/ya/OPENTTD-BUNDLED-ADDONS.json
           ! grep -Eiq 'https?://[^"[:space:]]+' /tmp/v14final/prod/ya/index.html
 
-          # Playgama keeps its official external Bridge loader; game assets stay local.
           ! grep -Fq 'bridge.playgama.com' /tmp/v14final/prod/pg/index.html
           grep -Fq 'https://bridge.playgama.com/v1.31.0/playgama-bridge.js' /tmp/v14final/prod/pg/platform-bridge-loader.js
           grep -Fq 'window.__openttdPlatformStartupIndependent===true' /tmp/v14final/prod/pg/openttd-runtime.js
 
-          # Native tutorial/ranking gates were compiled in the source run recorded below.
           cat > /tmp/v14final/out/BUILD-PROVENANCE.txt <<EOF
           OpenTTD v14 final web packages
           Native source run: ${NATIVE_SOURCE_RUN}
