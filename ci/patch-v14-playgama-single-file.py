@@ -4,6 +4,11 @@
 The rebuilt Emscripten bundle minifies the startup callback name, so this patch
 matches the SDK wait gate structurally instead of relying on the historical
 `finish_startup` identifier.
+
+Playgama's native cloud-save module replaces the legacy Yandex-compatible
+restore hook. The AI/runtime fixes therefore must load *after* that module and
+before the generic bundled-content wrapper, otherwise the SimpleAI installer is
+silently discarded before OpenTTD scans the AI directory.
 """
 from __future__ import annotations
 
@@ -34,6 +39,25 @@ def patch_index(dist: Path) -> None:
         text = text.replace(stable, loader_tag, 1)
     elif loader_tag not in text:
         raise SystemExit("Playgama Bridge loader insertion point was not found")
+
+    # The baseline has openttd-playgama-fixes.js before the Playgama-native
+    # cloud-save module. Both wrap/replace window.yandexRestoreOpenTTDCloud;
+    # loading cloud saves later therefore erased the SimpleAI installation hook.
+    # Move the fixes script after native cloud saves and immediately before the
+    # generic bundled-addons wrapper. The resulting call chain is:
+    # bundled-addons -> AI/platform fixes -> Playgama cloud restore -> main().
+    fixes_tag = '<script src="openttd-playgama-fixes.js"></script>'
+    cloud_tag = '<script src="openttd-playgama-cloud-saves.js"></script>'
+    addons_tag = '<script src="openttd-bundled-addons.js"></script>'
+    for tag, label in ((fixes_tag, "Playgama fixes"), (cloud_tag, "Playgama cloud saves"), (addons_tag, "bundled add-ons")):
+        if text.count(tag) != 1:
+            raise SystemExit(f"Expected exactly one {label} script tag, found {text.count(tag)}")
+
+    text = text.replace(fixes_tag, "", 1)
+    text = text.replace(addons_tag, fixes_tag + addons_tag, 1)
+
+    if not (text.index(cloud_tag) < text.index(fixes_tag) < text.index(addons_tag)):
+        raise SystemExit("Playgama restore/AI script order could not be established")
     path.write_text(text, encoding="utf-8")
 
 
@@ -131,6 +155,14 @@ def validate(dist: Path) -> None:
     if "const MAX_SCORE = 1000" not in global_ranking:
         raise SystemExit("Playgama global leaderboard score range is not bounded to 1000")
 
+    cloud_tag = '<script src="openttd-playgama-cloud-saves.js"></script>'
+    fixes_tag = '<script src="openttd-playgama-fixes.js"></script>'
+    addons_tag = '<script src="openttd-bundled-addons.js"></script>'
+    if not (html.count(cloud_tag) == html.count(fixes_tag) == html.count(addons_tag) == 1):
+        raise SystemExit("Playgama AI/cloud restore script tags are incomplete")
+    if not (html.index(cloud_tag) < html.index(fixes_tag) < html.index(addons_tag)):
+        raise SystemExit("Playgama AI installer would be overwritten by cloud restore")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -146,7 +178,7 @@ def main() -> None:
     patch_adapter(dist)
     patch_runtime_startup(dist)
     validate(dist)
-    print("v14 single-file Playgama hardening applied")
+    print("v14 single-file Playgama hardening applied: Bridge non-blocking, cloud restore preserved, SimpleAI install order fixed")
 
 
 if __name__ == "__main__":
