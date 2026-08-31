@@ -1,0 +1,221 @@
+name: Benchmark v14 renderer A-B
+
+on:
+  push:
+    branches:
+      - perf/v14-full-optimization
+    paths:
+      - '.github/workflows/benchmark-v14-renderer-ab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  renderer-ab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NATIVE_RUN_ID: '33407781817'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+
+    steps:
+      - name: Checkout performance tooling
+        uses: actions/checkout@v4
+
+      - name: Wait for exact single-rect native runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ab/{downloads,native-artifact,native,ya-artifact,shell,current,proven,out,browser-node}
+          artifact_id=''
+          for _ in $(seq 1 180); do
+            json="$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}/artifacts")"
+            artifact_id="$(printf '%s' "$json" | jq -r '.artifacts[] | select(.name == "openttd-v14-full-optimization-native-runtime") | .id' | head -n1)"
+            if [ -n "$artifact_id" ] && [ "$artifact_id" != null ]; then break; fi
+            sleep 5
+          done
+          test -n "$artifact_id"
+          test "$artifact_id" != null
+          printf '%s\n' "$artifact_id" > /tmp/ab/native-artifact-id.txt
+
+          download_artifact() {
+            local id="$1" out="$2"
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
+              -o "$out"
+          }
+          download_artifact "$artifact_id" /tmp/ab/downloads/native.zip
+          download_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/ab/downloads/ya.zip
+
+          unzip -q /tmp/ab/downloads/native.zip -d /tmp/ab/native-artifact
+          native_zip="$(find /tmp/ab/native-artifact -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          test -s "$native_zip"
+          unzip -q "$native_zip" -d /tmp/ab/native
+          test -s /tmp/ab/native/openttd-runtime.js
+          grep -Fq '__openttdDirtyRect' /tmp/ab/native/openttd-runtime.js
+          ! grep -Fq 'BROWSER_DIRTY_RECT_LIMIT' /tmp/ab/native/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/ab/native/openttd-runtime.js
+
+          unzip -q /tmp/ab/downloads/ya.zip -d /tmp/ab/ya-artifact
+          ya_zip="$(find /tmp/ab/ya-artifact -type f -name '*.zip' -print -quit)"
+          test -s "$ya_zip"
+          unzip -q "$ya_zip" -d /tmp/ab/shell
+          cp -a /tmp/ab/shell/. /tmp/ab/current/
+          cp -a /tmp/ab/shell/. /tmp/ab/proven/
+
+      - name: Assemble identical current and proven presenter candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            ci/patch-v14-webgl-runtime.py \
+            ci/patch-v14-webgl-runtime-proven.py \
+            ci/patch-v14-performance-package.py \
+            yandex/neutralize_yandex_runtime.py
+
+          cp /tmp/ab/native/openttd-runtime.js /tmp/ab/current/openttd-runtime.js
+          cp /tmp/ab/native/openttd-runtime.js /tmp/ab/proven/openttd-runtime.js
+          rm -f /tmp/ab/current/openttd.wasm /tmp/ab/current/openttd.data
+          rm -f /tmp/ab/proven/openttd.wasm /tmp/ab/proven/openttd.data
+
+          python3 ci/patch-v14-webgl-runtime.py /tmp/ab/current/openttd-runtime.js
+          python3 ci/patch-v14-webgl-runtime-proven.py /tmp/ab/proven/openttd-runtime.js
+
+          for d in /tmp/ab/current /tmp/ab/proven; do
+            python3 ci/patch-v14-performance-package.py "$d" --platform yandex
+            python3 yandex/neutralize_yandex_runtime.py "$d"
+            node --check "$d/openttd-runtime.js"
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq '__openttdDirtyRect' "$d/openttd-runtime.js"
+          done
+          grep -Fq 'UNPACK_ROW_LENGTH' /tmp/ab/current/openttd-runtime.js
+          grep -Fq 'zeroCopyRectUploads' /tmp/ab/current/openttd-runtime.js
+          ! grep -Fq 'UNPACK_ROW_LENGTH' /tmp/ab/proven/openttd-runtime.js
+
+      - name: Install deterministic Yandex mock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/ab/sdk.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'renderer-ab-user'; }, getName() { return 'Renderer AB'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'renderer-ab' } },
+              features: { LoadingAPI: { ready() { return Promise.resolve(true); } }, GameplayAPI: { start() { return Promise.resolve(true); }, stop() { return Promise.resolve(true); } } },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { return ysdk; } };
+          })();
+          JS
+          cp /tmp/ab/sdk.js /tmp/ab/current/sdk.js
+          cp /tmp/ab/sdk.js /tmp/ab/proven/sdk.js
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          cd /tmp/ab/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          sed -i 's/timeout: 720000/timeout: 180000/' ./perf.mjs
+          grep -Fq 'timeout: 180000' ./perf.mjs
+
+      - name: Run 4096x4096 plus 14-AI presenter A-B
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          run_perf() {
+            local dir="$1" port="$2" name="$3" profile="$4"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/${name}-http.log" 2>&1 &
+            local pid=$!
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd /tmp/ab/browser-node
+            set +e
+            node perf.mjs yandex "http://127.0.0.1:${port}/index.html" "/tmp/ab/out/${name}.json" "$profile"
+            local rc=$?
+            set -e
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return "$rc"
+          }
+
+          current_rc=0
+          proven_rc=0
+          run_perf /tmp/ab/current 8181 renderer-current optimized || current_rc=$?
+          run_perf /tmp/ab/proven 8182 renderer-proven baseline || proven_rc=$?
+
+          CURRENT_RC="$current_rc" PROVEN_RC="$proven_rc" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          out = Path('/tmp/ab/out')
+          summary = {'nativeArtifactId': Path('/tmp/ab/native-artifact-id.txt').read_text().strip()}
+          for name in ('current', 'proven'):
+              p = out / f'renderer-{name}.json'
+              if not p.exists():
+                  summary[name] = {'missing': True}
+                  continue
+              data = json.loads(p.read_text())
+              snap = (data.get('ai14') or {}).get('snapshot') or {}
+              upload = (data.get('renderer') or {}).get('upload') or {}
+              summary[name] = {
+                  'passed': data.get('passed'),
+                  'failure': data.get('failure'),
+                  'generation4096Ms': (data.get('generation4096') or {}).get('wallMsUntilResponsive'),
+                  'estimatedFps': snap.get('estimatedFps'),
+                  'p95FrameGapMs': snap.get('p95FrameGapMs'),
+                  'p99FrameGapMs': snap.get('p99FrameGapMs'),
+                  'longestLongTaskMs': snap.get('longestLongTaskMs'),
+                  'wasmHeapBytes': snap.get('wasmHeapBytes'),
+                  'aiScheduler': data.get('aiScheduler'),
+                  'partialUploadRatio': (data.get('renderer') or {}).get('partialUploadRatio'),
+                  'upload': upload,
+                  'bytesPerSecond': upload.get('bytesUploaded', 0) / 30.0,
+              }
+          (out / 'RENDERER-AB-SUMMARY.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary, indent=2))
+
+          # Proven is the control: it must finish 4096^2 and run all 14 AI.
+          proven = summary.get('proven', {})
+          if not proven.get('passed'):
+              raise SystemExit('Proven presenter control did not complete')
+          if (proven.get('aiScheduler') or {}).get('activeAI') != 14:
+              raise SystemExit('Proven presenter control did not run 14 AI')
+
+          # Current is accepted only on the same functional criteria.
+          current = summary.get('current', {})
+          if not current.get('passed'):
+              raise SystemExit('Current WebGL2 presenter did not complete')
+          if (current.get('aiScheduler') or {}).get('activeAI') != 14:
+              raise SystemExit('Current WebGL2 presenter did not run 14 AI')
+          PY
+
+      - name: Upload A-B measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-renderer-ab-measurements
+          compression-level: 0
+          path: /tmp/ab/out/
+          if-no-files-found: warn
