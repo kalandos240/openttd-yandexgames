@@ -6,6 +6,8 @@ on:
       - perf/v14-full-optimization
     paths:
       - '.github/workflows/benchmark-v14-renderer-ab.yml'
+      - 'ci/patch-v14-webgl-runtime.py'
+      - 'ci/patch-v14-webgl-runtime-proven.py'
   workflow_dispatch:
 
 permissions:
@@ -196,14 +198,12 @@ jobs:
           (out / 'RENDERER-AB-SUMMARY.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
           print(json.dumps(summary, indent=2))
 
-          # Proven is the control: it must finish 4096^2 and run all 14 AI.
           proven = summary.get('proven', {})
           if not proven.get('passed'):
               raise SystemExit('Proven presenter control did not complete')
           if (proven.get('aiScheduler') or {}).get('activeAI') != 14:
               raise SystemExit('Proven presenter control did not run 14 AI')
 
-          # Current is accepted only on the same functional criteria.
           current = summary.get('current', {})
           if not current.get('passed'):
               raise SystemExit('Current WebGL2 presenter did not complete')
