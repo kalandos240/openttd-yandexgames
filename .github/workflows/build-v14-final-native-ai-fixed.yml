@@ -38,20 +38,6 @@ jobs:
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
 
-          # OpenTTD 15.3 has a deliberate blank line between the AI-count loop
-          # and num_companies. Align the strict source anchor in the legacy
-          # patch with that exact upstream layout before applying it.
-          python3 - <<'PY_FIX_AI_PATCH'
-          from pathlib import Path
-          p = Path('legacy/ci/patch-ai-zero-interval.py')
-          s = p.read_text(encoding='utf-8')
-          old = r"\t\t\t}\n\t\t\tsize_t num_companies"
-          new = r"\t\t\t}\n\n\t\t\tsize_t num_companies"
-          if s.count(old) != 1:
-              raise SystemExit(f'Expected one OpenTTD 15.3 AI anchor in patch script, got {s.count(old)}')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
-          PY_FIX_AI_PATCH
-
           python3 -m py_compile \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py \
@@ -130,7 +116,6 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
-          # Large-map and renderer optimizations.
           grep -Fq 'browser_tile_warmup_loops' openttd/src/genworld.cpp
           grep -Fq 'browser_tile_warmup_loops = 0x300' openttd/src/genworld.cpp
           grep -Fq 'browser_ai_opcode_budget' openttd/src/ai/ai_core.cpp
@@ -138,7 +123,6 @@ jobs:
           grep -Fq '__openttdAIStats' openttd/src/ai/ai_core.cpp
           grep -Fq 'Module.__openttdDirtyRect' openttd/src/video/sdl2_default_v.cpp
 
-          # Exact zero-interval / selected-AI fixes that must be in the WASM.
           grep -Fq 'zero means start requested AI competitors immediately' openttd/src/company_cmd.cpp
           grep -Fq 'Browser zero-interval AI bootstrap' openttd/src/company_cmd.cpp
           grep -Fq '_new_competitor_timeout.Reset({ TimerGameTick::Priority::COMPETITOR_TIMEOUT, 1 });' openttd/src/company_cmd.cpp
@@ -151,7 +135,6 @@ jobs:
           grep -Fq 'const int required_competitors = this->slot.base() + 1;' openttd/src/script/script_gui.cpp
           grep -Fq 'IConsoleSetSetting("difficulty.max_no_competitors", required_competitors);' openttd/src/script/script_gui.cpp
 
-          # Tutorial/UI gates preserved.
           grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/english.txt
           grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/russian.txt
           grep -Fq 'BrowserTutorialResolveTarget' openttd/src/intro_gui.cpp
@@ -160,7 +143,6 @@ jobs:
           grep -Fq 'BrowserTutorialTarget::AirToolbar' openttd/src/intro_gui.cpp
           grep -Fq 'ChangeGameSpeed(_game_speed == 100);' openttd/src/toolbar_gui.cpp
 
-          # Keep broad browser compatibility: synchronous runtime, no Asyncify/EH experiment.
           grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
           grep -Fq -- '-flto=thin' openttd/build/CMakeCache.txt
           ! grep -Fq -- '-fwasm-exceptions' openttd/build/CMakeCache.txt
