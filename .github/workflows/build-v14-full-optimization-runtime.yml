@@ -126,6 +126,7 @@ jobs:
           grep -Fq -- '-flto=thin' legacy/ci/build-final.sh
           grep -Fq 'browser_tile_warmup_loops' legacy/ci/build-final.sh
           grep -Fq 'browser_ai_opcode_budget' legacy/ci/build-final.sh
+          grep -Fq '__openttdAIStats' legacy/ci/build-final.sh
           grep -Fq 'Module.__openttdDirtyRect' legacy/ci/build-final.sh
           ! grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
           ! grep -Fq -- '-sSUPPORT_LONGJMP=wasm' legacy/ci/build-final.sh
@@ -147,6 +148,8 @@ jobs:
           grep -Fq 'AutoRestoreBackup<uint32_t> browser_ai_budget' openttd/src/ai/ai_core.cpp
           grep -Fq 'browser_active_ai_count > 6' openttd/src/ai/ai_core.cpp
           grep -Fq 'browser_configured_opcode_budget) * 6u' openttd/src/ai/ai_core.cpp
+          grep -Fq 'Module.__openttdAIStats' openttd/src/ai/ai_core.cpp
+          grep -Fq 'effectiveOpcodeBudget' openttd/src/ai/ai_core.cpp
           grep -Fq 'Module.__openttdDirtyRect' openttd/src/video/sdl2_default_v.cpp
           grep -Fq 'SDL_UpdateWindowSurfaceRects(this->sdl_window, &r, 1);' openttd/src/video/sdl2_default_v.cpp
 
@@ -192,6 +195,7 @@ jobs:
           # same browser compatibility model as the tested v14 baseline.
           ! grep -Fq 'Asyncify.handleSleep' /tmp/v14-full-opt-runtime/openttd-runtime.js
           grep -Fq '__openttdDirtyRect' /tmp/v14-full-opt-runtime/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/v14-full-opt-runtime/openttd-runtime.js
 
       - name: Upload verified optimized native runtime
         uses: actions/upload-artifact@v4
