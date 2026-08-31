@@ -1,0 +1,316 @@
+name: Build v14 full RU EN localization v3
+
+on:
+  push:
+    branches:
+      - localization/full-ru-en-v14
+    paths:
+      - '.github/workflows/build-v14-full-ru-en-localization-v3.yml'
+      - 'playgama/newgrf-localization/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  BASE_ARTIFACT_ID: '9740643983'
+  EXPECTED_YA_RUNTIME_SHA256: 'fb84dc1c8ec46045adb4a913b49a72bd8b59d517dca7d33cd22b7e5433bba4fb'
+  EXPECTED_PG_RUNTIME_SHA256: 'ad5f368b00ce1938795795728efbea36aae452993f90cc2d640e184bdb3853f8'
+  IRON_HORSE_COMMIT: 'ec0523c6f80459ec40cb4488e9a23e5aaa3705c3'
+  FIRS_COMMIT: '8844b7da36e919690322dcd69ffd9977e4e9a9c4'
+  FIRS_RUSSIAN_BASE_COMMIT: 'f72116eb31d8823b1dd4e0c30319aefa66b11936'
+  EARLY_COMMIT: 'ae1a35b127cf089bce697afee1bc7cb6a0608b2a'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout localization branch
+        uses: actions/checkout@v4
+
+      - name: Install NewGRF build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git make zip unzip xz-utils graphviz grfcodec python3-pip curl ca-certificates
+          python3 -m pip install --break-system-packages --disable-pip-version-check --no-cache-dir 'nml==0.9.0' chameleon markdown pillow
+
+      - name: Download exact optimized v14 baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/localized-v14
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"/{download,outer,ya,pg,src,out,report}
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${BASE_ARTIFACT_ID}/zip" \
+            -o "$ROOT/download/baseline-artifact.zip"
+          unzip -q "$ROOT/download/baseline-artifact.zip" -d "$ROOT/outer"
+          YA_ZIP="$(find "$ROOT/outer" -type f -name 'openttd-yandexgames-v14-tutorial-highlight-performance.zip' -print -quit)"
+          PG_ZIP="$(find "$ROOT/outer" -type f -name 'openttd-playgama-v14-tutorial-highlight-performance.zip' -print -quit)"
+          test -s "$YA_ZIP"; test -s "$PG_ZIP"
+          unzip -q "$YA_ZIP" -d "$ROOT/ya"
+          unzip -q "$PG_ZIP" -d "$ROOT/pg"
+          test "$(sha256sum "$ROOT/ya/openttd-runtime.js" | awk '{print $1}')" = "$EXPECTED_YA_RUNTIME_SHA256"
+          test "$(sha256sum "$ROOT/pg/openttd-runtime.js" | awk '{print $1}')" = "$EXPECTED_PG_RUNTIME_SHA256"
+          test -s "$ROOT/ya/OPENTTD-BUNDLED-ADDONS.json"; test -d "$ROOT/ya/addons"
+          test -s "$ROOT/pg/OPENTTD-BUNDLED-ADDONS.json"; test -d "$ROOT/pg/addons"
+
+      - name: Fetch exact pinned source trees and language tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/localized-v14/src
+          git clone https://github.com/andythenorth/firs.git "$ROOT/firs"
+          git -C "$ROOT/firs" checkout "$FIRS_COMMIT"
+          git -C "$ROOT/firs" show "$FIRS_RUSSIAN_BASE_COMMIT:src/grf/lang/russian.toml" > "$ROOT/firs-russian-base.toml"
+
+          git clone https://github.com/andythenorth/iron-horse.git "$ROOT/iron-horse"
+          git -C "$ROOT/iron-horse" checkout "$IRON_HORSE_COMMIT"
+
+          git clone https://github.com/DonaldDuck313/OpenTTD-NewGRFs.git "$ROOT/early"
+          git -C "$ROOT/early" checkout "$EARLY_COMMIT"
+
+          git clone --branch v0.21.10 --depth 1 https://github.com/UweDomaratius/GermanIndustries.git "$ROOT/gist"
+
+          GIT_LFS_SKIP_SMUDGE=1 git clone --branch v0.7 --depth 1 https://github.com/OpenTTD/OpenGFX2.git "$ROOT/ogfx-v07"
+
+          mkdir -p "$ROOT/ogfx-v081-lang"
+          curl -fL --retry 5 --retry-all-errors https://raw.githubusercontent.com/OpenTTD/OpenGFX2/0.8.1/baseset/lang/english.lng -o "$ROOT/ogfx-v081-lang/english.lng"
+          curl -fL --retry 5 --retry-all-errors https://raw.githubusercontent.com/OpenTTD/OpenGFX2/0.8.1/baseset/lang/russian.lng -o "$ROOT/ogfx-v081-lang/russian.lng"
+
+          curl -fL --retry 5 --retry-all-errors https://bundles.openttdcoop.org/road-hog/releases/LATEST/road-hog-1.4.1-source.tar.xz -o "$ROOT/road-hog-1.4.1-source.tar.xz"
+          mkdir -p "$ROOT/road-hog"
+          tar -xJf "$ROOT/road-hog-1.4.1-source.tar.xz" -C "$ROOT/road-hog"
+
+      - name: Generate and complete Russian language tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/localized-v14/src
+          python3 playgama/newgrf-localization/prepare_firs_russian_v520.py \
+            --english "$ROOT/firs/src/grf/lang/english.toml" \
+            --historical-russian "$ROOT/firs-russian-base.toml" \
+            --output "$ROOT/firs/src/grf/lang/russian.toml"
+          python3 playgama/newgrf-localization/prepare_iron_horse_russian_v429.py \
+            --english "$ROOT/iron-horse/src/lang/english.toml" \
+            --output "$ROOT/iron-horse/src/lang/russian.toml"
+          cp playgama/newgrf-localization/early-vehicle-set/russian.lng "$ROOT/early/EarlyVehicleSet/lang/russian.lng"
+          cp playgama/newgrf-localization/opengfx2-settings/russian.lng "$ROOT/ogfx-v07/newgrf/lang/settings/russian.lng"
+          printf '\n' >> "$ROOT/gist/lang/russian.lng"
+          cat playgama/newgrf-localization/gist-0.21.10/russian-missing.lng >> "$ROOT/gist/lang/russian.lng"
+
+      - name: Strict localization coverage audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+          R = Path('/tmp/localized-v14/src')
+          failures=[]
+          def lng(path):
+              out={}
+              for raw in Path(path).read_text(encoding='utf-8-sig').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or ':' not in s: continue
+                  k,v=s.split(':',1); k=k.strip()
+                  if k.startswith('STR_'): out[k]=v.strip()
+              return out
+          def audit(en,ru,label):
+              e,r=lng(en),lng(ru)
+              if not e or not r:
+                  failures.append(f'{label}: empty language table'); return
+              missing=sorted(set(e)-set(r))
+              extra=sorted(set(r)-set(e))
+              print(f'{label}: EN={len(e)} RU={len(r)} missing={len(missing)} extra={len(extra)}')
+              if missing:
+                  print('  missing:', missing[:100]); failures.append(f'{label}: {len(missing)} missing Russian keys')
+          def toml_sections(path):
+              with Path(path).open('rb') as f: d=tomllib.load(f)
+              return {k:v for k,v in d.items() if k!='GLOBAL_PRAGMA'}
+          for label,en,ru in [
+              ('FIRS 5.2.0',R/'firs/src/grf/lang/english.toml',R/'firs/src/grf/lang/russian.toml'),
+              ('Iron Horse 4.29.0',R/'iron-horse/src/lang/english.toml',R/'iron-horse/src/lang/russian.toml')]:
+              e,r=toml_sections(en),toml_sections(ru)
+              missing=sorted(set(e)-set(r)); mismatches=[k for k in e if k in r and set(e[k])!=set(r[k])]
+              print(f'{label}: EN={len(e)} RU={len(r)} missing={len(missing)} mismatched={len(mismatches)}')
+              if missing: failures.append(f'{label}: {len(missing)} missing Russian sections')
+              if mismatches: failures.append(f'{label}: {len(mismatches)} field mismatches')
+          audit(R/'early/EarlyVehicleSet/lang/english.lng',R/'early/EarlyVehicleSet/lang/russian.lng','Early Vehicle Set 0.0.2')
+          audit(R/'gist/lang/english.lng',R/'gist/lang/russian.lng','GIST 0.21.10')
+          audit(R/'ogfx-v07/newgrf/lang/settings/english.lng',R/'ogfx-v07/newgrf/lang/settings/russian.lng','OpenGFX2 Settings 0.7')
+          audit(R/'ogfx-v081-lang/english.lng',R/'ogfx-v081-lang/russian.lng','OpenGFX2 Classic 0.8.1')
+          pairs=[]
+          for en in (R/'road-hog').rglob('english.lng'):
+              ru=en.with_name('russian.lng')
+              if ru.is_file(): pairs.append((len(lng(en)),en,ru))
+          if not pairs:
+              failures.append('Road Hog 1.4.1: no English/Russian source pair')
+          else:
+              _,en,ru=max(pairs); audit(en,ru,'Road Hog 1.4.1')
+          if failures:
+              raise SystemExit('LOCALIZATION AUDIT FAILED: ' + '; '.join(failures))
+          print('STRICT LOCALIZATION COVERAGE AUDIT PASSED')
+          PY
+
+      - name: Build localized FIRS 5.2.0
+        working-directory: /tmp/localized-v14/src/firs
+        shell: bash
+        run: |
+          set -euo pipefail
+          make grf
+          test -s generated/firs.grf
+          cp generated/firs.grf /tmp/localized-v14/src/firs-5.2.0-localized.grf
+
+      - name: Build localized Iron Horse 4.29.0
+        working-directory: /tmp/localized-v14/src/iron-horse
+        shell: bash
+        run: |
+          set -euo pipefail
+          make grf GRF=horse PW=2 SD=True
+          test -s generated/iron-horse.grf
+          cp generated/iron-horse.grf /tmp/localized-v14/src/iron-horse-4.29.0-localized.grf
+
+      - name: Build localized Early Vehicle Set 0.0.2
+        working-directory: /tmp/localized-v14/src/early/EarlyVehicleSet
+        shell: bash
+        run: |
+          set -euo pipefail
+          nmlc -c --grf=EarlyVehicleSet-localized.grf EarlyVehicleSet.nml
+          test -s EarlyVehicleSet-localized.grf
+          cp EarlyVehicleSet-localized.grf /tmp/localized-v14/src/early-vehicle-set-0.0.2-localized.grf
+
+      - name: Build localized GIST 0.21.10
+        working-directory: /tmp/localized-v14/src/gist
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build.py '0.21.10'
+          test -s build/german_industries.grf
+          cp build/german_industries.grf /tmp/localized-v14/src/gist-0.21.10-localized.grf
+
+      - name: Build localized OpenGFX2 Settings 0.7
+        working-directory: /tmp/localized-v14/src/ogfx-v07
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 templates/nml_preprocessor.py newgrf/ogfx2_settings.pnml 32ez exclude_name_suffix
+          test -s newgrf/ogfx2_settings.nml
+          cd newgrf
+          nmlc -p DOS --quiet -c -l lang/settings ogfx2_settings.nml
+          test -s ogfx2_settings.grf
+          cp ogfx2_settings.grf /tmp/localized-v14/src/ogfx2-settings-0.7-localized.grf
+
+      - name: Patch bilingual NewGRFs into both optimized packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import gzip,hashlib,json
+          R=Path('/tmp/localized-v14')
+          repl={
+            'newgrf/43411223':R/'src/iron-horse-4.29.0-localized.grf',
+            'newgrf/f1250009':R/'src/firs-5.2.0-localized.grf',
+            'newgrf/474c0501':R/'src/early-vehicle-set-0.0.2-localized.grf',
+            'newgrf/55440100':R/'src/gist-0.21.10-localized.grf',
+            'newgrf/4f475a01':R/'src/ogfx2-settings-0.7-localized.grf'}
+          expected={'ya':'fb84dc1c8ec46045adb4a913b49a72bd8b59d517dca7d33cd22b7e5433bba4fb','pg':'ad5f368b00ce1938795795728efbea36aae452993f90cc2d640e184bdb3853f8'}
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          md5=lambda b:hashlib.md5(b).hexdigest()
+          rows=[]
+          for platform in ('ya','pg'):
+              root=R/platform
+              assert sha((root/'openttd-runtime.js').read_bytes())==expected[platform]
+              mp=root/'OPENTTD-BUNDLED-ADDONS.json'; m=json.loads(mp.read_text(encoding='utf-8')); by={i['content_id']:i for i in m['items']}
+              for cid,src in repl.items():
+                  if cid not in by: raise SystemExit(f'{platform}: manifest missing {cid}')
+                  raw=src.read_bytes(); packed=gzip.compress(raw,compresslevel=9,mtime=0); item=by[cid]; asset=root/item['asset']; asset.write_bytes(packed)
+                  item.update(packaged_bytes=len(packed),installed_bytes=len(raw),md5=md5(raw),sha256=sha(raw),packaged_sha256=sha(packed))
+                  item['localization']={'english':True,'russian':True,'russian_grflangid':'0x07','policy':'gameplay/common-noun strings translated; proper/program names preserved'}
+                  item['built_from_source']=True
+                  if cid=='newgrf/4f475a01': item['source_tag']='v0.7'
+                  if cid=='newgrf/55440100': item['source_tag']='v0.21.10'
+                  assert gzip.decompress(asset.read_bytes())==raw
+                  rows.append((platform,cid,item['name'],len(raw),sha(raw)))
+              for cid in ('newgrf/9787eafe','base-graphics/6f676678'):
+                  if cid in by:
+                      by[cid]['localization_audit']={'english':True,'russian':True,'coverage':'complete-upstream-key-coverage'}
+              m['total_packaged_bytes']=sum(i['packaged_bytes'] for i in m['items']); m['total_installed_bytes']=sum(i['installed_bytes'] for i in m['items'])
+              m.setdefault('notes',{})['localization']='Russian/English are selected natively by NewGRF language tables. Proper names, product names, vehicle model names and generated town names remain original per Yandex moderation guidance.'
+              mp.write_text(json.dumps(m,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+              lines=[f'{sha(p.read_bytes())}  addons/{p.name}' for p in sorted((root/'addons').iterdir()) if p.is_file()]
+              (root/'ADDON-PACKAGE-SHA256SUMS.txt').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+              (root/'LOCALIZATION-REPORT.md').write_text('''# RU/EN localization build\n\nThe optimized OpenTTD runtime is preserved byte-for-byte.\n\nRussian game language uses Russian gameplay/common-noun NewGRF strings. English uses the original English strings. Proper names, brands, vehicle model names, NewGRF product/program names and generated town names remain original according to Yandex moderation guidance.\n\nRebuilt bilingual: FIRS 5.2.0, Iron Horse 4.29.0, Early Vehicle Set 0.0.2, GIST 0.21.10, OpenGFX2 Settings 0.7.\n\nVerified complete upstream Russian key coverage without rebuilding: Road Hog 1.4.1, OpenGFX2 Classic 0.8.1.\n''',encoding='utf-8')
+              assert sha((root/'openttd-runtime.js').read_bytes())==expected[platform]
+          (R/'report/localized-payloads.tsv').write_text('platform\tcontent_id\tname\tinstalled_bytes\tsha256\n'+''.join('\t'.join(map(str,x))+'\n' for x in rows),encoding='utf-8')
+          PY
+
+      - name: Validate localized package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sha256sum /tmp/localized-v14/ya/openttd-runtime.js | awk '{print $1}')" = "$EXPECTED_YA_RUNTIME_SHA256"
+          test "$(sha256sum /tmp/localized-v14/pg/openttd-runtime.js | awk '{print $1}')" = "$EXPECTED_PG_RUNTIME_SHA256"
+          for d in /tmp/localized-v14/ya /tmp/localized-v14/pg; do
+            test -s "$d/LOCALIZATION-REPORT.md"
+            python3 - "$d" <<'PY'
+          import gzip,hashlib,json,sys
+          from pathlib import Path
+          r=Path(sys.argv[1]); m=json.loads((r/'OPENTTD-BUNDLED-ADDONS.json').read_text(encoding='utf-8')); assert len(m['items'])==7
+          for i in m['items']:
+              a=r/i['asset']; p=a.read_bytes(); assert len(p)==i['packaged_bytes']; assert hashlib.sha256(p).hexdigest()==i['packaged_sha256']; raw=gzip.decompress(p); assert len(raw)==i['installed_bytes']; assert hashlib.sha256(raw).hexdigest()==i['sha256']; assert hashlib.md5(raw).hexdigest()==i['md5']
+          by={i['content_id']:i for i in m['items']}
+          for cid in ('newgrf/43411223','newgrf/f1250009','newgrf/474c0501','newgrf/55440100','newgrf/4f475a01'):
+              assert by[cid]['localization']['russian'] and by[cid]['localization']['english']
+          for cid in ('newgrf/9787eafe','base-graphics/6f676678'):
+              assert by[cid]['localization_audit']['coverage']=='complete-upstream-key-coverage'
+          print(r.name,'manifest/hash/gzip validation OK')
+          PY
+          done
+
+      - name: Create final archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/localized-v14
+          (cd "$ROOT/ya" && zip -q -r -9 "$ROOT/out/OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip" .)
+          (cd "$ROOT/pg" && zip -q -r -9 "$ROOT/out/OpenTTD-v14-Playgama-Full-RU-EN-Localization.zip" .)
+          unzip -tq "$ROOT/out/OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip"
+          unzip -tq "$ROOT/out/OpenTTD-v14-Playgama-Full-RU-EN-Localization.zip"
+          (cd "$ROOT/out" && sha256sum OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip OpenTTD-v14-Playgama-Full-RU-EN-Localization.zip > SHA256SUMS.txt)
+          cat > "$ROOT/out/LOCALIZATION-QA.txt" <<EOF
+          Base artifact: ${BASE_ARTIFACT_ID}
+          Yandex runtime SHA256 preserved: ${EXPECTED_YA_RUNTIME_SHA256}
+          Playgama runtime SHA256 preserved: ${EXPECTED_PG_RUNTIME_SHA256}
+          FIRS 5.2.0: strict RU coverage + rebuilt bilingual GRF
+          Iron Horse 4.29.0: strict RU coverage + rebuilt bilingual GRF
+          Early Vehicle Set 0.0.2: strict RU coverage + rebuilt bilingual GRF
+          GIST 0.21.10: two missing gameplay strings completed + rebuilt bilingual GRF
+          OpenGFX2 Settings 0.7: complete RU table + rebuilt bilingual GRF
+          Road Hog 1.4.1: complete upstream RU key coverage audited
+          OpenGFX2 Classic 0.8.1: complete upstream RU key coverage audited
+          Proper/program/model/generated-town names intentionally remain original.
+          EOF
+          cp "$ROOT/report/localized-payloads.tsv" "$ROOT/out/"
+          ls -lh "$ROOT/out"
+
+      - name: Upload final localized archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-full-ru-en-localization-v3
+          path: |
+            /tmp/localized-v14/out/OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip
+            /tmp/localized-v14/out/OpenTTD-v14-Playgama-Full-RU-EN-Localization.zip
+            /tmp/localized-v14/out/SHA256SUMS.txt
+            /tmp/localized-v14/out/LOCALIZATION-QA.txt
+            /tmp/localized-v14/out/localized-payloads.tsv
+          retention-days: 30
