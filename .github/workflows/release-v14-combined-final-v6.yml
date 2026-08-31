@@ -1,0 +1,383 @@
+name: Release v14 combined final v6
+
+on:
+  push:
+    branches:
+      - perf/v14-combined-final-v6
+    paths:
+      - '.github/workflows/release-v14-combined-final-v6.yml'
+      - 'ci/patch-v14-webgl-runtime.py'
+      - 'ci/patch-v14-performance-package.py'
+      - 'ci/patch-v14-playgama-single-file.py'
+      - 'ci/platform-hosted-smoke.mjs'
+      - 'ci/v14-performance-browser.mjs'
+      - 'yandex/neutralize_yandex_runtime.py'
+      - 'playgama/patch-browser-4096-two-sweep.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TWO_SWEEP_NATIVE_ARTIFACT_ID: '9766953838'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+
+    steps:
+      - name: Checkout combined v6 tooling
+        uses: actions/checkout@v4
+
+      - name: Download immutable native and platform baselines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          mkdir -p "$ROOT"/{downloads,native-artifact,native,ya-artifact,pg-artifact,base/ya,base/pg,prod/ya,prod/pg,test/ya,test/pg,out,browser-node}
+          get_artifact() {
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" \
+              -o "$2"
+          }
+          get_artifact "$TWO_SWEEP_NATIVE_ARTIFACT_ID" "$ROOT/downloads/native.zip"
+          get_artifact "$VERIFIED_YA_ARTIFACT_ID" "$ROOT/downloads/ya.zip"
+          get_artifact "$VERIFIED_PG_ARTIFACT_ID" "$ROOT/downloads/pg.zip"
+
+          unzip -q "$ROOT/downloads/native.zip" -d "$ROOT/native-artifact"
+          native_zip="$(find "$ROOT/native-artifact" -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          test -s "$native_zip"
+          unzip -q "$native_zip" -d "$ROOT/native"
+          test -s "$ROOT/native/openttd-runtime.js"
+          test ! -e "$ROOT/native/openttd.wasm"
+          test ! -e "$ROOT/native/openttd.data"
+          grep -Fq '__openttdDirtyRect' "$ROOT/native/openttd-runtime.js"
+          ! grep -Fq '__openttdDirtyRects' "$ROOT/native/openttd-runtime.js"
+          grep -Fq '__openttdAIStats' "$ROOT/native/openttd-runtime.js"
+
+          unzip -q "$ROOT/downloads/ya.zip" -d "$ROOT/ya-artifact"
+          unzip -q "$ROOT/downloads/pg.zip" -d "$ROOT/pg-artifact"
+          YA_ZIP="$(find "$ROOT/ya-artifact" -type f -name '*.zip' -print -quit)"
+          PG_ZIP="$(find "$ROOT/pg-artifact" -type f -name '*.zip' -print -quit)"
+          test -s "$YA_ZIP"; test -s "$PG_ZIP"
+          unzip -q "$YA_ZIP" -d "$ROOT/base/ya"
+          unzip -q "$PG_ZIP" -d "$ROOT/base/pg"
+          cp -a "$ROOT/base/ya/." "$ROOT/prod/ya/"
+          cp -a "$ROOT/base/pg/." "$ROOT/prod/pg/"
+
+      - name: Install two-sweep runtime and promoted WebGL2 presenter
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          python3 -m py_compile \
+            ci/patch-v14-webgl-runtime.py \
+            ci/patch-v14-performance-package.py \
+            ci/patch-v14-playgama-single-file.py \
+            yandex/neutralize_yandex_runtime.py \
+            playgama/patch-browser-4096-two-sweep.py
+
+          grep -Fq 'getContext("webgl2"' ci/patch-v14-webgl-runtime.py
+          grep -Fq 'UNPACK_ROW_LENGTH' ci/patch-v14-webgl-runtime.py
+          grep -Fq 'zeroCopyRectUploads' ci/patch-v14-webgl-runtime.py
+          grep -Fq 'Canvas2D fallback' ci/patch-v14-webgl-runtime.py
+          grep -Fq 'Map::Size() >= 16u * 1024u * 1024u' playgama/patch-browser-4096-two-sweep.py
+          grep -Fq 'browser_tile_warmup_loops = 0x200' playgama/patch-browser-4096-two-sweep.py
+
+          for d in "$ROOT/prod/ya" "$ROOT/prod/pg"; do
+            cp "$ROOT/native/openttd-runtime.js" "$d/openttd-runtime.js"
+            rm -f "$d/openttd.wasm" "$d/openttd.data"
+            python3 ci/patch-v14-webgl-runtime.py "$d/openttd-runtime.js"
+            node --check "$d/openttd-runtime.js"
+            grep -Fq 'UNPACK_ROW_LENGTH' "$d/openttd-runtime.js"
+            grep -Fq 'zeroCopyRectUploads' "$d/openttd-runtime.js"
+            grep -Fq '__openttdDirtyRect' "$d/openttd-runtime.js"
+            ! grep -Fq '__openttdDirtyRects' "$d/openttd-runtime.js"
+            grep -Fq '__openttdAIStats' "$d/openttd-runtime.js"
+          done
+
+          python3 ci/patch-v14-performance-package.py "$ROOT/prod/ya" --platform yandex
+          python3 ci/patch-v14-playgama-single-file.py "$ROOT/prod/pg"
+          python3 yandex/neutralize_yandex_runtime.py "$ROOT/prod/ya"
+
+      - name: Static release and autonomy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          for d in "$ROOT/prod/ya" "$ROOT/prod/pg"; do
+            test -s "$d/openttd-runtime.js"
+            test ! -e "$d/openttd.wasm"
+            test ! -e "$d/openttd.data"
+            test "$(stat -c%s "$d/openttd-runtime.js")" -gt 20000000
+            node --check "$d/openttd-runtime.js"
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq 'UNPACK_ROW_LENGTH' "$d/openttd-runtime.js"
+            grep -Fq 'zeroCopyRectUploads' "$d/openttd-runtime.js"
+            grep -Fq 'Canvas2D fallback' "$d/openttd-runtime.js"
+            grep -Fq '__openttdAIStats' "$d/openttd-runtime.js"
+            ! grep -Fq 'Asyncify.handleSleep' "$d/openttd-runtime.js"
+          done
+
+          grep -Fq '__openttdCloudDedupV2' "$ROOT/prod/ya/yandex-bridge.js"
+          grep -Fq "script.src = '/sdk.js'" "$ROOT/prod/ya/yandex-bootstrap.js"
+          ! grep -Eiq 'https?://[^"[:space:]]+' "$ROOT/prod/ya/index.html"
+          test -s "$ROOT/prod/ya/THIRD-PARTY-LICENSES.md"
+          test ! -e "$ROOT/prod/ya/PLAYGAMA-ALL-LICENSES.md"
+          ! grep -Eiq 'playgama' "$ROOT/prod/ya/openttd-bundled-addons.js"
+
+          ! grep -Fq 'bridge.playgama.com' "$ROOT/prod/pg/index.html"
+          grep -Fq 'https://bridge.playgama.com/v1.31.0/playgama-bridge.js' "$ROOT/prod/pg/platform-bridge-loader.js"
+          grep -Fq 'window.__openttdPlatformStartupIndependent===true' "$ROOT/prod/pg/openttd-runtime.js"
+
+      - name: Build candidate archives before test mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          (cd "$ROOT/prod/ya" && zip -q -r -9 "$ROOT/out/OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip" .)
+          (cd "$ROOT/prod/pg" && zip -q -r -9 "$ROOT/out/OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip" .)
+          unzip -tq "$ROOT/out/OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip"
+          unzip -tq "$ROOT/out/OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip"
+          (cd "$ROOT/out" && sha256sum OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip > SHA256SUMS.txt)
+
+      - name: Prepare isolated hosted test copies and SDK mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          cp -a "$ROOT/prod/ya/." "$ROOT/test/ya/"
+          cp -a "$ROOT/prod/pg/." "$ROOT/test/pg/"
+
+          cat > "$ROOT/test/ya/sdk.js" <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'v6-yandex'; },
+              getName() { return 'V6 Yandex'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'v6-yandex' } },
+              features: { LoadingAPI: { ready() { return Promise.resolve(true); } }, GameplayAPI: { start() { return Promise.resolve(true); }, stop() { return Promise.resolve(true); } } },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { return ysdk; } };
+          })();
+          JS
+
+          cat > "$ROOT/test/pg/platform-bridge-loader.js" <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = {
+              version: 'v6-smoke', engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' }, STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { return true; },
+              platform: { language: 'en', id: 'playgama-v6', isAudioEnabled: true, on() {}, off() {}, async sendMessage() { return true; } },
+              storage: { async isSupported() { return true; }, async isAvailable() { return true; }, async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); }, async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; } },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} },
+              player: { id: 'v6-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } }
+            };
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+          })();
+          JS
+
+      - name: Install hosted browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          "$CHROME_BIN" --version | tee "$ROOT/out/CHROME-VERSION.txt"
+          cd "$ROOT/browser-node"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          node --check ./smoke.mjs
+          node --check ./perf.mjs
+          grep -Fq 'mainThreadProbeBlockedMs: mainThreadBlockedMs' ./perf.mjs
+          grep -Fq "mapLog2 >= 12 ? 'during' : 'after'" ./perf.mjs
+
+      - name: Functional smoke Yandex and Playgama
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          cd "$ROOT/test/ya"
+          python3 -m http.server 8200 --bind 127.0.0.1 >/tmp/v6-ya-smoke-http.log 2>&1 & ya_pid=$!
+          trap 'kill "$ya_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8200/index.html >/dev/null && break; sleep 0.1; done
+          cd "$ROOT/browser-node"
+          node smoke.mjs yandex http://127.0.0.1:8200/index.html "$ROOT/out/yandex-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/yandex-smoke.json"
+          kill "$ya_pid" 2>/dev/null || true; wait "$ya_pid" 2>/dev/null || true; trap - EXIT
+
+          cd "$ROOT/test/pg"
+          python3 -m http.server 8201 --bind 127.0.0.1 >/tmp/v6-pg-smoke-http.log 2>&1 & pg_pid=$!
+          trap 'kill "$pg_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8201/index.html >/dev/null && break; sleep 0.1; done
+          cd "$ROOT/browser-node"
+          node smoke.mjs playgama http://127.0.0.1:8201/index.html "$ROOT/out/playgama-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/playgama-smoke.json"
+          kill "$pg_pid" 2>/dev/null || true; wait "$pg_pid" 2>/dev/null || true; trap - EXIT
+
+      - name: Real 4096x4096 plus 14-AI stress on both platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          run_perf() {
+            local dir="$1" platform="$2" port="$3" output="$4"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/v6-${platform}-perf-http.log" 2>&1 &
+            local pid=$!
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd "$ROOT/browser-node"
+            set +e
+            node perf.mjs "$platform" "http://127.0.0.1:${port}/index.html" "$output" optimized 12 30000 during
+            local rc=$?
+            set -e
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+            return "$rc"
+          }
+
+          run_perf "$ROOT/test/ya" yandex 8210 "$ROOT/out/yandex-performance.json"
+          run_perf "$ROOT/test/pg" playgama 8211 "$ROOT/out/playgama-performance.json"
+
+      - name: Gate combined v6 performance and produce report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          out = Path('/tmp/v6/out')
+          report = {
+              'candidate': 'OpenTTD v14 combined final v6',
+              'nativeArtifactId': 9766953838,
+              'nativeArtifactDigest': 'sha256:f540491aa57f92c7d3c5ea93743c16d73d87aff0bd63844ef3c2ae025f42ab86',
+              'features': ['4096 2-sweep warmup', 'WebGL2 zero-copy row upload', 'WebGL1/Canvas2D fallback', '14-AI aggregate opcode budget'],
+              'platforms': {},
+          }
+          for platform in ('yandex', 'playgama'):
+              d = json.loads((out / f'{platform}-performance.json').read_text())
+              if not d.get('passed'):
+                  raise SystemExit(f'{platform}: benchmark failed: {d.get("failure")}')
+              s = d['ai14']['snapshot']
+              ai = d.get('aiScheduler') or {}
+              renderer = d.get('renderer') or {}
+              upload = renderer.get('upload') or {}
+              gen = d.get('generation') or {}
+              network = d.get('network') or {}
+
+              if ai.get('activeAI') != 14: raise SystemExit(f'{platform}: expected 14 active AI, got {ai}')
+              if ai.get('configuredOpcodeBudget') != 10000 or ai.get('effectiveOpcodeBudget') != 4285:
+                  raise SystemExit(f'{platform}: AI scheduler drift: {ai}')
+              if not renderer.get('active') or upload.get('webgl2') is not True:
+                  raise SystemExit(f'{platform}: WebGL2 presenter not active: {renderer}')
+              if upload.get('zeroCopyRectUploads', 0) <= 0:
+                  raise SystemExit(f'{platform}: no WebGL2 zero-copy rectangle uploads observed')
+              if upload.get('packedRectUploads', 0) != 0:
+                  raise SystemExit(f'{platform}: unexpected packed rectangle fallback: {upload.get("packedRectUploads")}')
+              if network.get('failedRequests'):
+                  raise SystemExit(f'{platform}: failed requests: {network.get("failedRequests")}')
+              if network.get('blockedExternal'):
+                  raise SystemExit(f'{platform}: blocked external requests: {network.get("blockedExternal")}')
+
+              generation_ms = gen.get('wallMsUntilResponsive')
+              blocked_ms = gen.get('mainThreadProbeBlockedMs')
+              heap = s.get('wasmHeapBytes')
+              if generation_ms is None or generation_ms > 26000:
+                  raise SystemExit(f'{platform}: 4096 generation regression: {generation_ms} ms')
+              if blocked_ms is None or blocked_ms > 25500:
+                  raise SystemExit(f'{platform}: main-thread generation regression: {blocked_ms} ms')
+              if s.get('estimatedFps', 0) < 48:
+                  raise SystemExit(f'{platform}: 14-AI FPS below acceptance floor: {s.get("estimatedFps")}')
+              if s.get('p95FrameGapMs', 999) > 33.5 or s.get('p99FrameGapMs', 999) > 50:
+                  raise SystemExit(f'{platform}: frame-tail regression p95={s.get("p95FrameGapMs")} p99={s.get("p99FrameGapMs")}')
+              # Emscripten memory grows in 64 KiB pages. Accept a small number of
+              # extra pages instead of requiring byte-for-byte equality between runs.
+              if heap is None or heap > 448_000_000:
+                  raise SystemExit(f'{platform}: WASM heap regression: {heap}')
+
+              report['platforms'][platform] = {
+                  'passed': True,
+                  'generationMs': generation_ms,
+                  'mainThreadBlockedMs': blocked_ms,
+                  'fps14AI': s.get('estimatedFps'),
+                  'p50FrameGapMs': s.get('p50FrameGapMs'),
+                  'p95FrameGapMs': s.get('p95FrameGapMs'),
+                  'p99FrameGapMs': s.get('p99FrameGapMs'),
+                  'longTaskCount': s.get('longTaskCount'),
+                  'longestLongTaskMs': s.get('longestLongTaskMs'),
+                  'wasmHeapBytes': heap,
+                  'aiScheduler': ai,
+                  'renderer': renderer,
+                  'blockedExternal': network.get('blockedExternal'),
+              }
+
+          (out / 'V6-FINAL-STRESS.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          lines = ['# OpenTTD v14 combined final v6 stress', '']
+          for p, x in report['platforms'].items():
+              lines += [
+                  f'## {p}',
+                  f'- 4096² generation: {x["generationMs"]:.0f} ms',
+                  f'- main-thread block: {x["mainThreadBlockedMs"]:.0f} ms',
+                  f'- 14-AI FPS: {x["fps14AI"]:.2f}',
+                  f'- p95 / p99 frame gap: {x["p95FrameGapMs"]:.2f} / {x["p99FrameGapMs"]:.2f} ms',
+                  f'- post-generation long tasks: {x["longTaskCount"]}, longest {x["longestLongTaskMs"]:.0f} ms',
+                  f'- WASM heap: {x["wasmHeapBytes"]} B',
+                  f'- AI scheduler: {json.dumps(x["aiScheduler"])}',
+                  f'- renderer: WebGL2={x["renderer"]["upload"].get("webgl2")}, zero-copy uploads={x["renderer"]["upload"].get("zeroCopyRectUploads")}',
+                  '',
+              ]
+          (out / 'V6-FINAL-STRESS.md').write_text('\n'.join(lines), encoding='utf-8')
+          print('\n'.join(lines))
+          PY
+
+      - name: Final release integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6
+          grep -Fq '"passed": true' "$ROOT/out/yandex-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/playgama-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/yandex-performance.json"
+          grep -Fq '"passed": true' "$ROOT/out/playgama-performance.json"
+          test -s "$ROOT/out/V6-FINAL-STRESS.json"
+          test -s "$ROOT/out/V6-FINAL-STRESS.md"
+          test -s "$ROOT/out/SHA256SUMS.txt"
+          unzip -tq "$ROOT/out/OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip"
+          unzip -tq "$ROOT/out/OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip"
+          cat "$ROOT/out/SHA256SUMS.txt"
+          ls -lah "$ROOT/out"
+
+      - name: Upload final v6 candidates and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-combined-final-v6
+          compression-level: 0
+          path: /tmp/v6/out/
+          if-no-files-found: warn
