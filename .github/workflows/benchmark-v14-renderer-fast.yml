@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      NATIVE_ARTIFACT_ID: '9748951872'
+      NATIVE_ARTIFACT_ID: '9750384673'
       VERIFIED_YA_ARTIFACT_ID: '9738530154'
       VERIFIED_PG_ARTIFACT_ID: '9738530460'
 
