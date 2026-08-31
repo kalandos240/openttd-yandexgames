@@ -10,6 +10,9 @@ on:
       - 'playgama/smoke-direct-file.cjs'
       - 'playgama/patch-browser-ranking.py'
       - 'playgama/patch-browser-game-speed-selector.py'
+      - 'playgama/patch-playgama-newgrf-main-menu.py'
+      - 'playgama/build-license-bundle.py'
+      - 'playgama/test-cold-start-addon-gate.cjs'
       - 'playgama/openttd-ai-prerun.js'
       - 'playgama/openttd-bundled-addons.js'
       - 'playgama/package_optional_addons.py'
@@ -128,13 +131,29 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
-          # Native feature regression gates on the source that actually built.
-          grep -Fq 'MenuClickGameSpeed' openttd/src/toolbar_gui.cpp
-          grep -Fq '_game_speed = 200' openttd/src/toolbar_gui.cpp
-          grep -Fq '_game_speed = 400' openttd/src/toolbar_gui.cpp
-          grep -Fq '_game_speed = 800' openttd/src/toolbar_gui.cpp
-          grep -Fq 'STR_GAME_SPEED_X8' openttd/src/lang/english.txt
-          grep -Fq 'Ускорение ×8' openttd/src/lang/russian.txt
+          # Native regression gates must match the current browser contract.
+          # Keep stock OpenTTD fast-forward (normal <-> unlimited) and reject
+          # the obsolete fixed x2/x4/x8 selector that older v14 CI expected.
+          grep -Fq 'static CallBackFunction ToolbarFastForwardClick' openttd/src/toolbar_gui.cpp
+          grep -Fq 'ChangeGameSpeed(_game_speed == 100);' openttd/src/toolbar_gui.cpp
+          ! grep -Fq 'MenuClickGameSpeed' openttd/src/toolbar_gui.cpp
+          ! grep -Fq '_game_speed = 200' openttd/src/toolbar_gui.cpp
+          ! grep -Fq '_game_speed = 400' openttd/src/toolbar_gui.cpp
+          ! grep -Fq '_game_speed = 800' openttd/src/toolbar_gui.cpp
+          ! grep -Fq 'STR_GAME_SPEED_X2' openttd/src/lang/english.txt
+          ! grep -Fq 'STR_GAME_SPEED_X4' openttd/src/lang/english.txt
+          ! grep -Fq 'STR_GAME_SPEED_X8' openttd/src/lang/english.txt
+          ! grep -Fq 'STR_GAME_SPEED_X2' openttd/src/lang/russian.txt
+          ! grep -Fq 'STR_GAME_SPEED_X4' openttd/src/lang/russian.txt
+          ! grep -Fq 'STR_GAME_SPEED_X8' openttd/src/lang/russian.txt
+
+          # The browser main menu keeps local NewGRF access but must contain no
+          # custom in-game license viewer or runtime license code.
+          grep -Fq 'if (_all_grfs.empty()) ScanNewGRFFiles(nullptr);' openttd/src/intro_gui.cpp
+          grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
+          ! grep -Fq 'ShowPlaygamaLicenses' openttd/src/intro_gui.cpp
+          ! grep -Fq 'PlaygamaLicensesWindow' openttd/src/intro_gui.cpp
+          ! grep -Fq 'STR_PLAYGAMA_LICENSES' openttd/src/intro_gui.cpp
 
           rm -rf /tmp/v14-native
           mkdir -p /tmp/v14-native
@@ -240,8 +259,9 @@ jobs:
           rm -f dist-v14/openttd.wasm dist-v14/openttd.data
           cp /tmp/rebuilt-runtime/openttd-runtime.js dist-v14/openttd-runtime.js
 
-          # Build legal bundle only after the final AI and localized add-on
-          # manifests are both in place.
+          # Validate static legal notices only after the final AI and localized
+          # add-on manifests are in place. No combined runtime license document
+          # is generated or copied into MEMFS.
           python3 playgama/build-license-bundle.py dist-v14 --repo-license LICENSE
 
           node --check dist-v14/openttd-runtime.js
@@ -253,11 +273,15 @@ jobs:
           test "$(stat -c%s dist-v14/openttd-runtime.js)" -gt 20000000
           test ! -e dist-v14/openttd.wasm
           test ! -e dist-v14/openttd.data
+          test ! -e dist-v14/PLAYGAMA-ALL-LICENSES.md
+          test ! -e dist-v14/THIRD-PARTY-LICENSES.md
+          test ! -e dist-v14/ALL-LICENSES.md
           test -s dist-v14/openttd-full-viewport.js
           test -s dist-v14/openttd-ranking-core.js
           test -s dist-v14/openttd-global-ranking.js
           grep -Fq 'openttd.localRanking.v4' dist-v14/openttd-ranking-core.js
           grep -Fq "return '/newgrf'" dist-v14/openttd-bundled-addons.js
+          ! grep -Fq 'PLAYGAMA-ALL-LICENSES.md' dist-v14/openttd-bundled-addons.js
           ! grep -Fq "personalDir + '/newgrf'" dist-v14/openttd-bundled-addons.js
           ! grep -Fq 'const COMPETITORS =' dist-v14/openttd-playgama-fixes.js
           ! grep -Fq 'const COMPETITOR_INTERVAL =' dist-v14/openttd-playgama-fixes.js
@@ -306,6 +330,9 @@ jobs:
           test -s dist-yandex-v14/openttd-runtime.js
           test ! -e dist-yandex-v14/openttd.wasm
           test ! -e dist-yandex-v14/openttd.data
+          test ! -e dist-yandex-v14/PLAYGAMA-ALL-LICENSES.md
+          test ! -e dist-yandex-v14/THIRD-PARTY-LICENSES.md
+          test ! -e dist-yandex-v14/ALL-LICENSES.md
           test -s dist-yandex-v14/openttd-classic-ai.js
           test -s dist-yandex-v14/openttd-ai-prerun.js
           test -s dist-yandex-v14/openttd-yandex-fixes.js
@@ -326,6 +353,7 @@ jobs:
           grep -Fq 'openttd.localRanking.v4' dist-yandex-v14/openttd-ranking-core.js
           grep -Fq 'BUNDLED_STATIC_CONTENT_PATHS' dist-yandex-v14/openttd-ai-prerun.js
           grep -Fq "return '/newgrf'" dist-yandex-v14/openttd-bundled-addons.js
+          ! grep -Fq 'PLAYGAMA-ALL-LICENSES.md' dist-yandex-v14/openttd-bundled-addons.js
           ! grep -Fq 'bridge.playgama.com' dist-yandex-v14/index.html
           ! grep -Fq 'platform-bridge-loader.js' dist-yandex-v14/index.html
           ! test -e dist-yandex-v14/openttd-playgama-fixes.js
@@ -397,6 +425,8 @@ jobs:
           test ! -e /tmp/smoke-playgama/openttd.data
           test ! -e /tmp/smoke-yandex/openttd.wasm
           test ! -e /tmp/smoke-yandex/openttd.data
+          test ! -e /tmp/smoke-playgama/PLAYGAMA-ALL-LICENSES.md
+          test ! -e /tmp/smoke-yandex/PLAYGAMA-ALL-LICENSES.md
           test -s /tmp/smoke-yandex/openttd-ai-prerun.js
           test -s /tmp/smoke-yandex/openttd-full-viewport.js
           test -s /tmp/smoke-yandex/openttd-ranking-core.js
