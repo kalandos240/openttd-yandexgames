@@ -121,9 +121,11 @@ jobs:
 
           grep -Fq -- '-msimd128' legacy/ci/build-final.sh
           grep -Fq -- '-flto=thin' legacy/ci/build-final.sh
-          grep -Fq 'last_browser_yield_ms' legacy/ci/build-final.sh
+          grep -Fq 'browser_tile_warmup_loops' legacy/ci/build-final.sh
+          grep -Fq 'browser_ai_opcode_budget' legacy/ci/build-final.sh
           ! grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
           ! grep -Fq -- '-sSUPPORT_LONGJMP=wasm' legacy/ci/build-final.sh
+          ! grep -Fq -- '-sASYNCIFY' legacy/ci/build-final.sh
 
       - name: Compile OpenTTD 15.3 optimized single-file runtime
         working-directory: legacy
@@ -133,13 +135,19 @@ jobs:
           bash ci/build-yandex-release.sh
           test -s OpenTTD-YandexGames-Direct.zip
 
-          # Prove that the generated source really uses the optimized code path.
-          grep -Fq '#include <emscripten.h>' openttd/src/genworld_gui.cpp
-          grep -Fq 'last_browser_yield_ms' openttd/src/genworld_gui.cpp
-          grep -Fq 'emscripten_sleep(0)' openttd/src/genworld_gui.cpp
+          # Prove the generated C++ source contains the intended safe browser tuning.
+          grep -Fq 'browser_tile_warmup_loops' openttd/src/genworld.cpp
+          grep -Fq 'Map::Size() >= 8u * 1024u * 1024u' openttd/src/genworld.cpp
+          grep -Fq 'browser_tile_warmup_loops = 0x300' openttd/src/genworld.cpp
+          grep -Fq 'browser_ai_opcode_budget' openttd/src/ai/ai_core.cpp
+          grep -Fq 'AutoRestoreBackup<uint32_t> browser_ai_budget' openttd/src/ai/ai_core.cpp
+          grep -Fq 'browser_active_ai_count > 6' openttd/src/ai/ai_core.cpp
+          grep -Fq 'browser_configured_opcode_budget) * 6u' openttd/src/ai/ai_core.cpp
+
           grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
           grep -Fq -- '-flto=thin' openttd/build/CMakeCache.txt
           ! grep -Fq -- '-fwasm-exceptions' openttd/build/CMakeCache.txt
+          ! grep -Fq -- '-sASYNCIFY' openttd/build/CMakeCache.txt
 
           # Existing tutorial/functionality invariants remain mandatory.
           grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/english.txt
@@ -174,9 +182,9 @@ jobs:
           test "$(stat -c%s /tmp/v14-full-opt-runtime/openttd-runtime.js)" -gt 20000000
           node --check /tmp/v14-full-opt-runtime/openttd-runtime.js
 
-          # Asyncify must remain present for the cooperative map-generation yield
-          # and for compatibility with the tested OpenTTD Emscripten port.
-          grep -Fq 'Asyncify' /tmp/v14-full-opt-runtime/openttd-runtime.js
+          # The optimized runtime intentionally stays synchronous and keeps the
+          # same browser compatibility model as the tested v14 baseline.
+          ! grep -Fq 'Asyncify.handleSleep' /tmp/v14-full-opt-runtime/openttd-runtime.js
 
       - name: Upload verified optimized native runtime
         uses: actions/upload-artifact@v4
