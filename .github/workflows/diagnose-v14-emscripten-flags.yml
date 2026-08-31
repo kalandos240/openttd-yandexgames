@@ -1,0 +1,76 @@
+name: Diagnose v14 Emscripten optimization flags
+
+on:
+  push:
+    branches:
+      - perf/v14-full-optimization
+    paths:
+      - '.github/workflows/diagnose-v14-emscripten-flags.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flags:
+    runs-on: ubuntu-24.04
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Probe O3 SIMD and ThinLTO separately
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/probe.cpp <<'CPP'
+          #include <emscripten.h>
+          #include <cstdint>
+          int main() {
+              uint32_t x = 1;
+              EM_ASM({ Module.__probe = $0; }, x);
+              return 0;
+          }
+          CPP
+
+          echo '=== toolchain ==='
+          em++ --version
+          wasm-ld --version
+
+          echo '=== O3 + SIMD ==='
+          em++ /tmp/probe.cpp -O3 -msimd128 -o /tmp/probe-simd.js
+          node /tmp/probe-simd.js
+
+          echo '=== O3 + SIMD + ThinLTO ==='
+          set +e
+          em++ /tmp/probe.cpp -O3 -msimd128 -flto=thin -o /tmp/probe-thin.js >/tmp/thin.log 2>&1
+          thin_rc=$?
+          set -e
+          cat /tmp/thin.log
+          echo "THINLTO_RC=${thin_rc}"
+          if [ "$thin_rc" -eq 0 ]; then
+            node /tmp/probe-thin.js
+          fi
+
+          echo '=== O3 + SIMD + full LTO ==='
+          set +e
+          em++ /tmp/probe.cpp -O3 -msimd128 -flto -o /tmp/probe-full.js >/tmp/full.log 2>&1
+          full_rc=$?
+          set -e
+          cat /tmp/full.log
+          echo "FULLLTO_RC=${full_rc}"
+          if [ "$full_rc" -eq 0 ]; then
+            node /tmp/probe-full.js
+          fi
+
+          printf 'THINLTO_RC=%s\nFULLLTO_RC=%s\n' "$thin_rc" "$full_rc" | tee /tmp/lto-result.txt
+          test "$thin_rc" -eq 0
+
+      - name: Upload flag diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-emscripten-flag-diagnostic
+          path: |
+            /tmp/lto-result.txt
+            /tmp/thin.log
+            /tmp/full.log
+          if-no-files-found: warn
