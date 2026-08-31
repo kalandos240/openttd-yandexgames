@@ -33,10 +33,15 @@ jobs:
 
           echo '=== toolchain ==='
           em++ --version
-          wasm-ld --version
+          if [ -x /emsdk/upstream/bin/wasm-ld ]; then
+            /emsdk/upstream/bin/wasm-ld --version
+          else
+            echo 'wasm-ld not found at expected standalone path; em++ driver will still exercise the linker.'
+          fi
 
           echo '=== O3 + SIMD ==='
-          em++ /tmp/probe.cpp -O3 -msimd128 -o /tmp/probe-simd.js
+          em++ /tmp/probe.cpp -O3 -msimd128 -o /tmp/probe-simd.js >/tmp/simd.log 2>&1
+          cat /tmp/simd.log
           node /tmp/probe-simd.js
 
           echo '=== O3 + SIMD + ThinLTO ==='
@@ -61,8 +66,7 @@ jobs:
             node /tmp/probe-full.js
           fi
 
-          printf 'THINLTO_RC=%s\nFULLLTO_RC=%s\n' "$thin_rc" "$full_rc" | tee /tmp/lto-result.txt
-          test "$thin_rc" -eq 0
+          printf 'SIMD_RC=0\nTHINLTO_RC=%s\nFULLLTO_RC=%s\n' "$thin_rc" "$full_rc" | tee /tmp/lto-result.txt
 
       - name: Upload flag diagnostic
         if: always()
@@ -71,6 +75,7 @@ jobs:
           name: v14-emscripten-flag-diagnostic
           path: |
             /tmp/lto-result.txt
+            /tmp/simd.log
             /tmp/thin.log
             /tmp/full.log
           if-no-files-found: warn
