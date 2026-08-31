@@ -106,7 +106,8 @@ ai_block = '''#ifdef __EMSCRIPTEN__
 \t}
 
 \t/* Export benchmark evidence only when scheduler state changes, not every
-\t * tick. This keeps the diagnostic cost effectively zero during steady play. */
+\t * tick. Avoid a JavaScript object literal inside EM_ASM: the Emscripten
+\t * variadic macro parser can interpret ':' tokens as C++ and fail compilation. */
 \tstatic uint32_t browser_reported_ai_count = ~uint32_t{0};
 \tstatic uint32_t browser_reported_ai_budget = ~uint32_t{0};
 \tstatic uint32_t browser_reported_configured_budget = ~uint32_t{0};
@@ -117,11 +118,10 @@ ai_block = '''#ifdef __EMSCRIPTEN__
 \t\tbrowser_reported_ai_budget = browser_ai_opcode_budget;
 \t\tbrowser_reported_configured_budget = browser_configured_opcode_budget;
 \t\tEM_ASM({
-\t\t\tModule.__openttdAIStats = {
-\t\t\t\tactiveAI: $0,
-\t\t\t\tconfiguredOpcodeBudget: $1,
-\t\t\t\teffectiveOpcodeBudget: $2
-\t\t\t};
+\t\t\tif (!Module.__openttdAIStats) Module.__openttdAIStats = {};
+\t\t\tModule.__openttdAIStats.activeAI = $0;
+\t\t\tModule.__openttdAIStats.configuredOpcodeBudget = $1;
+\t\t\tModule.__openttdAIStats.effectiveOpcodeBudget = $2;
 \t\t}, browser_active_ai_count, browser_configured_opcode_budget, browser_ai_opcode_budget);
 \t}
 
