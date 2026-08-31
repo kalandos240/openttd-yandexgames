@@ -38,6 +38,20 @@ jobs:
           cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
           cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
 
+          # OpenTTD 15.3 has a deliberate blank line between the AI-count loop
+          # and num_companies. Align the strict source anchor in the legacy
+          # patch with that exact upstream layout before applying it.
+          python3 - <<'PY_FIX_AI_PATCH'
+          from pathlib import Path
+          p = Path('legacy/ci/patch-ai-zero-interval.py')
+          s = p.read_text(encoding='utf-8')
+          old = r"\t\t\t}\n\t\t\tsize_t num_companies"
+          new = r"\t\t\t}\n\n\t\t\tsize_t num_companies"
+          if s.count(old) != 1:
+              raise SystemExit(f'Expected one OpenTTD 15.3 AI anchor in patch script, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY_FIX_AI_PATCH
+
           python3 -m py_compile \
             legacy/ci/patch-playgama-newgrf-main-menu.py \
             legacy/ci/patch-browser-ranking.py \
