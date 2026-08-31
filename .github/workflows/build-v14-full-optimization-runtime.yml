@@ -119,11 +119,11 @@ jobs:
           python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
           python3 playgama/patch-browser-full-performance.py legacy/ci/build-final.sh
 
-          grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
-          grep -Fq -- '-sSUPPORT_LONGJMP=wasm' legacy/ci/build-final.sh
           grep -Fq -- '-msimd128' legacy/ci/build-final.sh
           grep -Fq -- '-flto=thin' legacy/ci/build-final.sh
           grep -Fq 'last_browser_yield_ms' legacy/ci/build-final.sh
+          ! grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
+          ! grep -Fq -- '-sSUPPORT_LONGJMP=wasm' legacy/ci/build-final.sh
 
       - name: Compile OpenTTD 15.3 optimized single-file runtime
         working-directory: legacy
@@ -134,13 +134,12 @@ jobs:
           test -s OpenTTD-YandexGames-Direct.zip
 
           # Prove that the generated source really uses the optimized code path.
-          ! grep -Fq 'DISABLE_EXCEPTION_CATCHING=0' openttd/CMakeLists.txt
           grep -Fq '#include <emscripten.h>' openttd/src/genworld_gui.cpp
           grep -Fq 'last_browser_yield_ms' openttd/src/genworld_gui.cpp
           grep -Fq 'emscripten_sleep(0)' openttd/src/genworld_gui.cpp
-          grep -Fq -- '-fwasm-exceptions' openttd/build/CMakeCache.txt
           grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
           grep -Fq -- '-flto=thin' openttd/build/CMakeCache.txt
+          ! grep -Fq -- '-fwasm-exceptions' openttd/build/CMakeCache.txt
 
           # Existing tutorial/functionality invariants remain mandatory.
           grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/english.txt
@@ -175,12 +174,9 @@ jobs:
           test "$(stat -c%s /tmp/v14-full-opt-runtime/openttd-runtime.js)" -gt 20000000
           node --check /tmp/v14-full-opt-runtime/openttd-runtime.js
 
-          # Legacy JS EH trampolines were the dominant profiler hotspot. They
-          # must not reappear in the generated JS glue after enabling Wasm EH.
-          if grep -Fq '___cxa_find_matching_catch_3' /tmp/v14-full-opt-runtime/openttd-runtime.js; then
-            echo 'Legacy JS exception bridge is still present' >&2
-            exit 1
-          fi
+          # Asyncify must remain present for the cooperative map-generation yield
+          # and for compatibility with the tested OpenTTD Emscripten port.
+          grep -Fq 'Asyncify' /tmp/v14-full-opt-runtime/openttd-runtime.js
 
       - name: Upload verified optimized native runtime
         uses: actions/upload-artifact@v4
