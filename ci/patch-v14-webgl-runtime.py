@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Patch SDL2's generated software framebuffer presenter to a low-GC multi-rect WebGL fast path.
+"""Patch SDL2's generated software framebuffer presenter to a WebGL fast path.
 
-OpenTTD publishes up to 16 merged dirty rectangles. The presenter prefers
-WebGL2 and uses UNPACK_ROW_LENGTH / UNPACK_SKIP_* so rectangular sub-images can
-be uploaded directly from the WASM framebuffer without JavaScript repacking.
-The hot WebGL2 frame path performs no per-rectangle JS array allocations and
-reuses the framebuffer view until WASM memory grows. WebGL1 and the untouched
-Canvas2D presenter remain correctness fallbacks.
+The patch is independent of Emscripten numeric entry IDs.  On optimized builds
+OpenTTD publishes its already-computed SDL dirty rectangle as
+Module.__openttdDirtyRect; after the first full texture upload this presenter uses
+that rectangle to upload only changed pixels.  The stock Canvas2D body remains as
+an untouched fallback when WebGL cannot be created.
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ from pathlib import Path
 
 
 def find_presenter(text: str) -> tuple[int, int, list[str], str, str]:
+    """Return body start/end, argument names, original body and entry ID."""
     candidate = None
     for hit in re.finditer(r"\.putImageData\(", text):
         pos = hit.start()
@@ -50,222 +50,16 @@ def find_presenter(text: str) -> tuple[int, int, list[str], str, str]:
 
 
 def webgl_fast_path(w: str, h: str, pixels: str) -> str:
-    js = r'''
-var __otW=__OT_W__,__otH=__OT_H__,__otPixels=__OT_PIXELS__;
-Module.SDL2||(Module.SDL2={});
-var __otSDL=Module.SDL2,__otCanvas=Module.canvas;
-if(__otSDL.__openttdPresenterCanvas!==__otCanvas){
-  __otSDL.__openttdPresenterCanvas=__otCanvas;
-  __otSDL.__openttdWebGLPresenter=null;
-  try{
-    var __otAttrs={alpha:false,antialias:false,depth:false,stencil:false,preserveDrawingBuffer:false,premultipliedAlpha:false};
-    var __otGl=__otCanvas.getContext("webgl2",__otAttrs);
-    var __otIsWebGL2=!!__otGl;
-    if(!__otGl)__otGl=__otCanvas.getContext("webgl",__otAttrs)||__otCanvas.getContext("experimental-webgl",__otAttrs);
-    if(__otGl){
-      var __otCompile=function(type,source){
-        var shader=__otGl.createShader(type);
-        __otGl.shaderSource(shader,source);
-        __otGl.compileShader(shader);
-        if(!__otGl.getShaderParameter(shader,__otGl.COMPILE_STATUS))throw new Error(__otGl.getShaderInfoLog(shader)||"shader compile failed");
-        return shader;
-      };
-      var __otVsSource=__otIsWebGL2?
-        "#version 300 es\nin vec2 a;out vec2 v;void main(){gl_Position=vec4(a,0.0,1.0);v=vec2((a.x+1.0)*0.5,(1.0-a.y)*0.5);}":
-        "attribute vec2 a;varying vec2 v;void main(){gl_Position=vec4(a,0.0,1.0);v=vec2((a.x+1.0)*0.5,(1.0-a.y)*0.5);}";
-      var __otFsSource=__otIsWebGL2?
-        "#version 300 es\nprecision mediump float;in vec2 v;uniform sampler2D t;out vec4 outColor;void main(){vec3 c=texture(t,v).rgb;outColor=vec4(c,1.0);}":
-        "precision mediump float;varying vec2 v;uniform sampler2D t;void main(){vec3 c=texture2D(t,v).rgb;gl_FragColor=vec4(c,1.0);}";
-      var __otVs=__otCompile(__otGl.VERTEX_SHADER,__otVsSource),__otFs=__otCompile(__otGl.FRAGMENT_SHADER,__otFsSource),__otProgram=__otGl.createProgram();
-      __otGl.attachShader(__otProgram,__otVs);
-      __otGl.attachShader(__otProgram,__otFs);
-      __otGl.linkProgram(__otProgram);
-      if(!__otGl.getProgramParameter(__otProgram,__otGl.LINK_STATUS))throw new Error(__otGl.getProgramInfoLog(__otProgram)||"program link failed");
-      __otGl.useProgram(__otProgram);
-      var __otBuffer=__otGl.createBuffer();
-      __otGl.bindBuffer(__otGl.ARRAY_BUFFER,__otBuffer);
-      __otGl.bufferData(__otGl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),__otGl.STATIC_DRAW);
-      var __otLoc=__otGl.getAttribLocation(__otProgram,"a");
-      __otGl.enableVertexAttribArray(__otLoc);
-      __otGl.vertexAttribPointer(__otLoc,2,__otGl.FLOAT,false,0,0);
-      var __otTexture=__otGl.createTexture();
-      __otGl.activeTexture(__otGl.TEXTURE0);
-      __otGl.bindTexture(__otGl.TEXTURE_2D,__otTexture);
-      __otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_MIN_FILTER,__otGl.NEAREST);
-      __otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_MAG_FILTER,__otGl.NEAREST);
-      __otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_WRAP_S,__otGl.CLAMP_TO_EDGE);
-      __otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_WRAP_T,__otGl.CLAMP_TO_EDGE);
-      __otGl.uniform1i(__otGl.getUniformLocation(__otProgram,"t"),0);
-      __otGl.pixelStorei(__otGl.UNPACK_ALIGNMENT,4);
-      __otSDL.__openttdWebGLPresenter={
-        gl:__otGl,program:__otProgram,buffer:__otBuffer,texture:__otTexture,w:0,h:0,
-        scratch:null,isWebGL2:__otIsWebGL2,rowUploadDisabled:false,rowUploadWarned:false,
-        fullView:null,fullViewBuffer:null,fullViewPtr:0,fullViewBytes:0,lastRect:new Int32Array(4)
-      };
-      Module.__openttdUploadStats={
-        fullUploads:0,partialUploads:0,rectUploads:0,zeroCopyRectUploads:0,packedRectUploads:0,
-        bytesUploaded:0,bytesSaved:0,maxDirtyRects:0,multiRectFrames:0,lastRect:null,lastRectCount:0,
-        webgl2:__otIsWebGL2,viewRefreshes:0
-      };
-    }
-  }catch(e){console.warn("[OpenTTD perf] WebGL framebuffer presenter unavailable; using Canvas2D fallback.",e)}
-}
-var __otPresenter=__otSDL.__openttdWebGLPresenter;
-if(__otPresenter){
-  var __otGl=__otPresenter.gl;
-  __otGl.viewport(0,0,__otCanvas.width,__otCanvas.height);
-  __otGl.useProgram(__otPresenter.program);
-  __otGl.bindBuffer(__otGl.ARRAY_BUFFER,__otPresenter.buffer);
-  __otGl.bindTexture(__otGl.TEXTURE_2D,__otPresenter.texture);
-  var __otStats=Module.__openttdUploadStats||(Module.__openttdUploadStats={
-    fullUploads:0,partialUploads:0,rectUploads:0,zeroCopyRectUploads:0,packedRectUploads:0,
-    bytesUploaded:0,bytesSaved:0,maxDirtyRects:0,multiRectFrames:0,lastRect:null,lastRectCount:0,
-    webgl2:__otPresenter.isWebGL2,viewRefreshes:0
-  });
-  __otStats.webgl2=!!__otPresenter.isWebGL2;
-  var __otFullBytes=__otW*__otH*4,__otFullPixels=__otW*__otH;
-  if(!__otPresenter.fullView||__otPresenter.fullViewBuffer!==HEAPU8.buffer||__otPresenter.fullViewPtr!==__otPixels||__otPresenter.fullViewBytes!==__otFullBytes){
-    __otPresenter.fullView=HEAPU8.subarray(__otPixels,__otPixels+__otFullBytes);
-    __otPresenter.fullViewBuffer=HEAPU8.buffer;
-    __otPresenter.fullViewPtr=__otPixels;
-    __otPresenter.fullViewBytes=__otFullBytes;
-    __otStats.viewRefreshes++;
-  }
-  var __otFullView=__otPresenter.fullView;
-  if(__otPresenter.w!==__otW||__otPresenter.h!==__otH){
-    __otGl.texImage2D(__otGl.TEXTURE_2D,0,__otGl.RGBA,__otW,__otH,0,__otGl.RGBA,__otGl.UNSIGNED_BYTE,__otFullView);
-    __otPresenter.w=__otW;
-    __otPresenter.h=__otH;
-    __otStats.fullUploads++;
-    __otStats.rectUploads++;
-    __otStats.bytesUploaded+=__otFullBytes;
-    __otStats.lastRectCount=1;
-    __otPresenter.lastRect[0]=0;__otPresenter.lastRect[1]=0;__otPresenter.lastRect[2]=__otW;__otPresenter.lastRect[3]=__otH;
-    __otStats.lastRect=__otPresenter.lastRect;
-  }else{
-    var __otRects=Module.__openttdDirtyRects,__otRectCount=Module.__openttdDirtyRectCount|0;
-    var __otUseMulti=!!(__otRects&&__otRectCount>0&&__otRectCount<=16&&__otRects.length>=__otRectCount*4);
-    var __otValid=__otUseMulti,__otTotalPixels=0,__otAllContiguous=true;
-    var __otLX=0,__otLY=0,__otLW=0,__otLH=0;
-    if(__otUseMulti){
-      for(var __otI=0;__otI<__otRectCount;__otI++){
-        var __otBase=__otI*4,__otX=__otRects[__otBase]|0,__otY=__otRects[__otBase+1]|0,__otDW=__otRects[__otBase+2]|0,__otDH=__otRects[__otBase+3]|0;
-        if(__otX<0||__otY<0||__otDW<=0||__otDH<=0||__otX+__otDW>__otW||__otY+__otDH>__otH){__otValid=false;break}
-        __otTotalPixels+=__otDW*__otDH;
-        if(__otX!==0||__otDW!==__otW)__otAllContiguous=false;
-      }
-    }
-    if(!__otValid){
-      __otUseMulti=false;
-      __otRectCount=0;
-      __otTotalPixels=0;
-      __otAllContiguous=false;
-      var __otR=Module.__openttdDirtyRect;
-      if(__otR&&__otR.length===4){
-        __otLX=__otR[0]|0;__otLY=__otR[1]|0;__otLW=__otR[2]|0;__otLH=__otR[3]|0;
-        if(__otLX>=0&&__otLY>=0&&__otLW>0&&__otLH>0&&__otLX+__otLW<=__otW&&__otLY+__otLH<=__otH){
-          __otValid=true;
-          __otRectCount=1;
-          __otTotalPixels=__otLW*__otLH;
-          __otAllContiguous=(__otLX===0&&__otLW===__otW);
-        }
-      }
-    }
-    var __otUseRowUpload=!!(__otPresenter.isWebGL2&&!__otPresenter.rowUploadDisabled);
-    var __otCheapPartial=__otUseRowUpload||__otAllContiguous;
-    var __otCallPenalty=(__otRectCount>1?__otRectCount-1:0)*(__otCheapPartial?2048:8192);
-    var __otPartialThreshold=__otCheapPartial?0.94:0.72;
-    var __otUsePartial=__otValid&&__otTotalPixels>0&&(__otTotalPixels+__otCallPenalty)<__otFullPixels*__otPartialThreshold;
-    var __otPartialOk=false,__otFrameBytes=0,__otFrameZeroCopy=0,__otFramePacked=0,__otFrameRectUploads=0;
-    if(__otUsePartial){
-      try{
-        if(__otUseRowUpload)__otGl.pixelStorei(__otGl.UNPACK_ROW_LENGTH,__otW);
-        for(var __otI=0;__otI<__otRectCount;__otI++){
-          var __otX,__otY,__otDW,__otDH;
-          if(__otUseMulti){
-            var __otBase=__otI*4;
-            __otX=__otRects[__otBase]|0;__otY=__otRects[__otBase+1]|0;__otDW=__otRects[__otBase+2]|0;__otDH=__otRects[__otBase+3]|0;
-          }else{
-            __otX=__otLX;__otY=__otLY;__otDW=__otLW;__otDH=__otLH;
-          }
-          var __otBytes=__otDW*__otDH*4,__otUpload;
-          if(__otUseRowUpload){
-            __otGl.pixelStorei(__otGl.UNPACK_SKIP_PIXELS,__otX);
-            __otGl.pixelStorei(__otGl.UNPACK_SKIP_ROWS,__otY);
-            __otUpload=__otFullView;
-            __otFrameZeroCopy++;
-          }else if(__otX===0&&__otDW===__otW){
-            var __otStart=__otPixels+__otY*__otW*4;
-            __otUpload=HEAPU8.subarray(__otStart,__otStart+__otBytes);
-            __otFrameZeroCopy++;
-          }else{
-            if(!__otPresenter.scratch||__otPresenter.scratch.length<__otBytes)__otPresenter.scratch=new Uint8Array(__otBytes);
-            var __otRowBytes=__otDW*4;
-            for(var __otRow=0;__otRow<__otDH;__otRow++){
-              var __otStart=__otPixels+((__otY+__otRow)*__otW+__otX)*4;
-              __otPresenter.scratch.set(HEAPU8.subarray(__otStart,__otStart+__otRowBytes),__otRow*__otRowBytes);
-            }
-            __otUpload=__otPresenter.scratch;
-            __otFramePacked++;
-          }
-          __otGl.texSubImage2D(__otGl.TEXTURE_2D,0,__otX,__otY,__otDW,__otDH,__otGl.RGBA,__otGl.UNSIGNED_BYTE,__otUpload);
-          __otFrameBytes+=__otBytes;
-          __otFrameRectUploads++;
-        }
-        __otPartialOk=true;
-      }catch(e){
-        if(__otUseRowUpload){
-          __otPresenter.rowUploadDisabled=true;
-          if(!__otPresenter.rowUploadWarned){__otPresenter.rowUploadWarned=true;console.warn("[OpenTTD perf] WebGL2 zero-copy rectangle upload disabled; using packed fallback.",e)}
-        }else throw e;
-      }finally{
-        if(__otUseRowUpload){
-          __otGl.pixelStorei(__otGl.UNPACK_ROW_LENGTH,0);
-          __otGl.pixelStorei(__otGl.UNPACK_SKIP_PIXELS,0);
-          __otGl.pixelStorei(__otGl.UNPACK_SKIP_ROWS,0);
-        }
-      }
-    }
-    if(__otPartialOk){
-      __otStats.partialUploads++;
-      __otStats.rectUploads+=__otFrameRectUploads;
-      __otStats.zeroCopyRectUploads+=__otFrameZeroCopy;
-      __otStats.packedRectUploads+=__otFramePacked;
-      __otStats.bytesUploaded+=__otFrameBytes;
-      __otStats.bytesSaved+=Math.max(0,__otFullBytes-__otFrameBytes);
-      if(__otRectCount>__otStats.maxDirtyRects)__otStats.maxDirtyRects=__otRectCount;
-      if(__otRectCount>1)__otStats.multiRectFrames++;
-      __otStats.lastRectCount=__otRectCount;
-      if(__otRectCount===1){
-        var __otX,__otY,__otDW,__otDH;
-        if(__otUseMulti){__otX=__otRects[0]|0;__otY=__otRects[1]|0;__otDW=__otRects[2]|0;__otDH=__otRects[3]|0}
-        else{__otX=__otLX;__otY=__otLY;__otDW=__otLW;__otDH=__otLH}
-        __otPresenter.lastRect[0]=__otX;__otPresenter.lastRect[1]=__otY;__otPresenter.lastRect[2]=__otDW;__otPresenter.lastRect[3]=__otDH;
-        __otStats.lastRect=__otPresenter.lastRect;
-      }else{
-        __otStats.lastRect=null;
-      }
-    }else{
-      __otGl.texSubImage2D(__otGl.TEXTURE_2D,0,0,0,__otW,__otH,__otGl.RGBA,__otGl.UNSIGNED_BYTE,__otFullView);
-      __otStats.fullUploads++;
-      __otStats.rectUploads++;
-      __otStats.bytesUploaded+=__otFullBytes;
-      __otStats.lastRectCount=1;
-      __otPresenter.lastRect[0]=0;__otPresenter.lastRect[1]=0;__otPresenter.lastRect[2]=__otW;__otPresenter.lastRect[3]=__otH;
-      __otStats.lastRect=__otPresenter.lastRect;
-    }
-  }
-  __otGl.drawArrays(__otGl.TRIANGLE_STRIP,0,4);
-  return;
-}
-'''
-    return js.replace("__OT_W__", w).replace("__OT_H__", h).replace("__OT_PIXELS__", pixels)
+    # Keep this compact because it is injected into an already minified generated
+    # runtime.  The 70% threshold avoids spending CPU packing a dirty rectangle
+    # when almost the entire screen changed anyway.
+    return f'''var __otW={w},__otH={h},__otPixels={pixels};Module.SDL2||(Module.SDL2={{}});var __otSDL=Module.SDL2,__otCanvas=Module.canvas;if(__otSDL.__openttdPresenterCanvas!==__otCanvas){{__otSDL.__openttdPresenterCanvas=__otCanvas;__otSDL.__openttdWebGLPresenter=null;try{{var __otAttrs={{alpha:false,antialias:false,depth:false,stencil:false,preserveDrawingBuffer:false,premultipliedAlpha:false}},__otGl=__otCanvas.getContext("webgl",__otAttrs)||__otCanvas.getContext("experimental-webgl",__otAttrs);if(__otGl){{var __otCompile=function(type,source){{var shader=__otGl.createShader(type);__otGl.shaderSource(shader,source);__otGl.compileShader(shader);if(!__otGl.getShaderParameter(shader,__otGl.COMPILE_STATUS))throw new Error(__otGl.getShaderInfoLog(shader)||"shader compile failed");return shader}},__otVs=__otCompile(__otGl.VERTEX_SHADER,"attribute vec2 a;varying vec2 v;void main(){{gl_Position=vec4(a,0.0,1.0);v=vec2((a.x+1.0)*0.5,(1.0-a.y)*0.5);}}"),__otFs=__otCompile(__otGl.FRAGMENT_SHADER,"precision mediump float;varying vec2 v;uniform sampler2D t;void main(){{vec3 c=texture2D(t,v).rgb;gl_FragColor=vec4(c,1.0);}}"),__otProgram=__otGl.createProgram();__otGl.attachShader(__otProgram,__otVs);__otGl.attachShader(__otProgram,__otFs);__otGl.linkProgram(__otProgram);if(!__otGl.getProgramParameter(__otProgram,__otGl.LINK_STATUS))throw new Error(__otGl.getProgramInfoLog(__otProgram)||"program link failed");__otGl.useProgram(__otProgram);var __otBuffer=__otGl.createBuffer();__otGl.bindBuffer(__otGl.ARRAY_BUFFER,__otBuffer);__otGl.bufferData(__otGl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),__otGl.STATIC_DRAW);var __otLoc=__otGl.getAttribLocation(__otProgram,"a");__otGl.enableVertexAttribArray(__otLoc);__otGl.vertexAttribPointer(__otLoc,2,__otGl.FLOAT,false,0,0);var __otTexture=__otGl.createTexture();__otGl.activeTexture(__otGl.TEXTURE0);__otGl.bindTexture(__otGl.TEXTURE_2D,__otTexture);__otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_MIN_FILTER,__otGl.NEAREST);__otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_MAG_FILTER,__otGl.NEAREST);__otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_WRAP_S,__otGl.CLAMP_TO_EDGE);__otGl.texParameteri(__otGl.TEXTURE_2D,__otGl.TEXTURE_WRAP_T,__otGl.CLAMP_TO_EDGE);__otGl.uniform1i(__otGl.getUniformLocation(__otProgram,"t"),0);__otGl.pixelStorei(__otGl.UNPACK_ALIGNMENT,4);__otSDL.__openttdWebGLPresenter={{gl:__otGl,program:__otProgram,buffer:__otBuffer,texture:__otTexture,w:0,h:0,scratch:null}};Module.__openttdUploadStats={{fullUploads:0,partialUploads:0,bytesUploaded:0,lastRect:null}};}}}}catch(e){{console.warn("[OpenTTD perf] WebGL framebuffer presenter unavailable; using Canvas2D fallback.",e)}}}}var __otPresenter=__otSDL.__openttdWebGLPresenter;if(__otPresenter){{var __otGl=__otPresenter.gl;__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height);__otGl.useProgram(__otPresenter.program);__otGl.bindBuffer(__otGl.ARRAY_BUFFER,__otPresenter.buffer);__otGl.bindTexture(__otGl.TEXTURE_2D,__otPresenter.texture);var __otStats=Module.__openttdUploadStats||(Module.__openttdUploadStats={{fullUploads:0,partialUploads:0,bytesUploaded:0,lastRect:null}}),__otFullBytes=__otW*__otH*4;if(__otPresenter.w!==__otW||__otPresenter.h!==__otH){{var __otSrc=HEAPU8.subarray(__otPixels,__otPixels+__otFullBytes);__otGl.texImage2D(__otGl.TEXTURE_2D,0,__otGl.RGBA,__otW,__otH,0,__otGl.RGBA,__otGl.UNSIGNED_BYTE,__otSrc);__otPresenter.w=__otW;__otPresenter.h=__otH;__otStats.fullUploads++;__otStats.bytesUploaded+=__otFullBytes;__otStats.lastRect=[0,0,__otW,__otH]}}else{{var __otR=Module.__openttdDirtyRect,__otX=0,__otY=0,__otDW=__otW,__otDH=__otH,__otPartial=false;if(__otR&&__otR.length===4){{var __otRX=__otR[0]|0,__otRY=__otR[1]|0,__otRW=__otR[2]|0,__otRH=__otR[3]|0;if(__otRX>=0&&__otRY>=0&&__otRW>0&&__otRH>0&&__otRX+__otRW<=__otW&&__otRY+__otRH<=__otH&&__otRW*__otRH<__otW*__otH*.7){{__otX=__otRX;__otY=__otRY;__otDW=__otRW;__otDH=__otRH;__otPartial=true}}}}var __otBytes=__otDW*__otDH*4,__otUpload;if(__otPartial&&__otX===0&&__otDW===__otW){{var __otStart=__otPixels+__otY*__otW*4;__otUpload=HEAPU8.subarray(__otStart,__otStart+__otBytes)}}else if(__otPartial){{if(!__otPresenter.scratch||__otPresenter.scratch.length<__otBytes)__otPresenter.scratch=new Uint8Array(__otBytes);var __otRowBytes=__otDW*4;for(var __otRow=0;__otRow<__otDH;__otRow++){{var __otStart=__otPixels+((__otY+__otRow)*__otW+__otX)*4;__otPresenter.scratch.set(HEAPU8.subarray(__otStart,__otStart+__otRowBytes),__otRow*__otRowBytes)}}__otUpload=__otPresenter.scratch.subarray(0,__otBytes)}}else __otUpload=HEAPU8.subarray(__otPixels,__otPixels+__otFullBytes);__otGl.texSubImage2D(__otGl.TEXTURE_2D,0,__otX,__otY,__otDW,__otDH,__otGl.RGBA,__otGl.UNSIGNED_BYTE,__otUpload);if(__otPartial)__otStats.partialUploads++;else __otStats.fullUploads++;__otStats.bytesUploaded+=__otBytes;__otStats.lastRect=[__otX,__otY,__otDW,__otDH]}}__otGl.drawArrays(__otGl.TRIANGLE_STRIP,0,4);return}}'''
 
 
 def patch_renderer(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if "viewRefreshes" in text and "UNPACK_ROW_LENGTH" in text and "lastRectCount" in text:
-        print("Low-GC multi-rect WebGL2 presenter already present")
+    if "__openttdUploadStats" in text:
+        print("Dirty-rect WebGL presenter already present")
         return
     if "__openttdWebGLPresenter" in text:
         raise SystemExit("Older WebGL presenter already present; apply this patch to a clean generated runtime")
@@ -273,24 +67,12 @@ def patch_renderer(path: Path) -> None:
     body_start, body_end, args, original, entry_id = find_presenter(text)
     fast = webgl_fast_path(args[0], args[1], args[2])
     text = text[:body_start] + fast + original + text[body_end:]
-    required = (
-        "__openttdWebGLPresenter",
-        "__openttdDirtyRects",
-        "__openttdDirtyRectCount",
-        "__openttdUploadStats",
-        "UNPACK_ROW_LENGTH",
-        "zeroCopyRectUploads",
-        "multiRectFrames",
-        "viewRefreshes",
-        "lastRectCount",
-        "texSubImage2D",
-        "Canvas2D fallback",
-    )
+    required = ("__openttdWebGLPresenter", "__openttdDirtyRect", "__openttdUploadStats", "texSubImage2D", "Canvas2D fallback")
     for token in required:
         if token not in text:
             raise SystemExit(f"WebGL presenter patch missing invariant: {token}")
     path.write_text(text, encoding="utf-8")
-    print(f"Low-GC multi-rect WebGL2 presenter patched in Emscripten entry {entry_id}; WebGL1/Canvas2D fallback preserved")
+    print(f"Dirty-rect WebGL presenter patched in Emscripten entry {entry_id}; Canvas2D fallback preserved")
 
 
 def main() -> None:
