@@ -7,10 +7,10 @@ browser: two small distant updates can become an almost full-screen upload.
 
 This browser-only patch keeps the stock bounding rectangle for native SDL
 behaviour, while additionally tracking up to 16 merged dirty rectangles for the
-WebGL presenter. To keep pathological invalidation bursts (notably synchronous
-4096x4096 world generation) O(1) after a small bounded amount of work, tracking
-saturates after 64 MakeDirty calls in one present interval and falls back to the
-stock bounding rectangle for the remainder of that frame.
+WebGL presenter. Browser multi-rect bookkeeping is completely bypassed while a
+modal progress operation (notably synchronous world generation) is active; the
+stock bounding rectangle remains the correctness path there. During ordinary
+gameplay tracking is bounded to 64 MakeDirty calls per present interval.
 """
 from __future__ import annotations
 
@@ -64,11 +64,19 @@ replacement = '''void VideoDriver_SDL_Base::MakeDirty(int left, int top, int wid
 \tthis->dirty_rect = BoundingRect(this->dirty_rect, r);
 
 #ifdef __EMSCRIPTEN__
-\t/* Multi-rect tracking is useful during ordinary gameplay but MakeDirty can
-\t * fire an enormous number of times while a 4096x4096 world is generated.
-\t * Bound bookkeeping per present interval: after a modest number of events,
-\t * stop doing O(rect_count) spatial merges and let the stock bounding rect be
-\t * the correctness fallback for the rest of this frame. */
+\t/* World generation already runs synchronously under a modal progress
+\t * operation. It can emit a huge number of invalidations and has no benefit
+\t * from maintaining spatial browser dirty rectangles. Keep the stock bounding
+\t * rect above, mark browser tracking saturated, and do no additional work. */
+\tif (HasModalProgress()) {
+\t\tthis->browser_dirty_rect_count = 0;
+\t\tthis->browser_dirty_rect_saturated = true;
+\t\treturn;
+\t}
+
+\t/* Multi-rect tracking is useful during ordinary gameplay. Still bound its
+\t * bookkeeping per present interval so other pathological invalidation bursts
+\t * cannot scale with the total number of MakeDirty calls. */
 \tif (!this->browser_dirty_rect_saturated) {
 \t\tthis->browser_dirty_event_count++;
 \t\tif (this->browser_dirty_event_count > BROWSER_DIRTY_EVENT_LIMIT) {
@@ -212,6 +220,7 @@ def main() -> None:
     required = (
         "BROWSER_DIRTY_RECT_LIMIT",
         "BROWSER_DIRTY_EVENT_LIMIT",
+        "HasModalProgress()",
         "browser_dirty_rect_count",
         "browser_dirty_rect_saturated",
         "Module.__openttdDirtyRects",
@@ -221,7 +230,7 @@ def main() -> None:
         if token not in text:
             raise SystemExit(f"Multi dirty-rect source invariant missing after patch: {token}")
     path.write_text(text, encoding="utf-8")
-    print("Browser multi-dirty-rect bridge enabled with bounded per-frame tracking cost.")
+    print("Browser multi-dirty-rect bridge enabled; modal world generation bypasses spatial tracking.")
 
 
 if __name__ == "__main__":
