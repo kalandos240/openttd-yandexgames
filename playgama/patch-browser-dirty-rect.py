@@ -34,9 +34,15 @@ replacement = '''#ifdef __EMSCRIPTEN__
 \t/* SDL2's Emscripten software framebuffer ignores the rect list and normally
 \t * copies the complete surface into JavaScript. Publish OpenTTD's already
 \t * calculated dirty rectangle so our browser presenter can perform a partial
-\t * texture upload. A zero-sized rectangle deliberately means "unknown/full". */
+\t * texture upload. A zero-sized rectangle deliberately means "unknown/full".
+\t * Avoid JS array literals here: commas inside EM_ASM's first macro argument
+\t * are parsed by the C preprocessor as variadic argument separators. */
 \tEM_ASM({
-\t\tModule.__openttdDirtyRect = [$0, $1, $2, $3];
+\t\tif (!Module.__openttdDirtyRect) Module.__openttdDirtyRect = new Int32Array(4);
+\t\tModule.__openttdDirtyRect[0] = $0;
+\t\tModule.__openttdDirtyRect[1] = $1;
+\t\tModule.__openttdDirtyRect[2] = $2;
+\t\tModule.__openttdDirtyRect[3] = $3;
 \t}, r.x, r.y, r.w, r.h);
 #endif
 \tSDL_UpdateWindowSurfaceRects(this->sdl_window, &r, 1);\n'''
