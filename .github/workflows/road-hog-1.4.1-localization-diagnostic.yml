@@ -1,0 +1,53 @@
+name: Road Hog 1.4.1 localization diagnostic
+
+on:
+  push:
+    branches:
+      - localization/full-ru-en-v14
+    paths:
+      - '.github/workflows/road-hog-1.4.1-localization-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download exact Road Hog 1.4.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/road-hog
+          curl -fL --retry 5 --retry-all-errors \
+            https://bundles.openttdcoop.org/road-hog/releases/LATEST/road-hog-1.4.1-source.tar.xz \
+            -o /tmp/road-hog-source.tar.xz
+          tar -xJf /tmp/road-hog-source.tar.xz -C /tmp/road-hog
+          echo '=== language files ==='
+          find /tmp/road-hog -type f \( -name 'english.lng' -o -name 'russian.lng' \) -print
+          EN="$(find /tmp/road-hog -type f -name english.lng -print0 | xargs -0 -r wc -l | sort -nr | awk 'NR==1{print $2}')"
+          RU="${EN%/english.lng}/russian.lng"
+          test -s "$EN"; test -s "$RU"
+          echo "EN=$EN"
+          echo "RU=$RU"
+          echo '=== missing English values ==='
+          python3 - "$EN" "$RU" <<'PY'
+          from pathlib import Path
+          import sys
+          def read(path):
+              out={}
+              for raw in Path(path).read_text(encoding='utf-8-sig').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or ':' not in s: continue
+                  k,v=s.split(':',1); k=k.strip()
+                  if k.startswith('STR_'): out[k]=v.strip()
+              return out
+          en,ru=read(sys.argv[1]),read(sys.argv[2])
+          for k in sorted(set(en)-set(ru)):
+              print(f'{k}:{en[k]}')
+          print('EN_COUNT',len(en),'RU_COUNT',len(ru),'MISSING',len(set(en)-set(ru)))
+          PY
+          echo '=== build files ==='
+          find /tmp/road-hog -maxdepth 3 -type f \( -name 'Makefile' -o -name 'makefile' -o -name 'build.py' -o -name '*.nml' \) -print | head -80
