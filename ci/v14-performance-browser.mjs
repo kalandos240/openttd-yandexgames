@@ -200,11 +200,16 @@ async function consoleCommand(command, postDelay = 150) {
   if (postDelay) await sleep(postDelay);
 }
 
+async function waitForAllAIs(timeout = 180000) {
+  await page.waitForFunction(() => window.Module?.__openttdAIStats?.activeAI === 14, { timeout, polling: 100 });
+}
+
 async function startAIsAfterGeneration() {
   await openConsole();
   for (let i = 0; i < 14; i++) {
     await consoleCommand('start_ai SimpleAI', 50);
   }
+  await waitForAllAIs();
   await sleep(1500);
 }
 
@@ -242,19 +247,36 @@ try {
   const generationWallStart = Date.now();
   await consoleCommand('newgame 42424242', 0);
 
-  await page.waitForFunction((gapThreshold) => {
+  /* The old harness inferred completion from an arbitrary rAF-gap threshold.
+   * That can false-fail when generation is faster than the threshold, or when
+   * the measured gap lands just below it. OpenTTD's Emscripten build is
+   * synchronous: while world generation owns the browser main thread, a new
+   * Runtime.callFunctionOn cannot execute. Give switch-mode time to enter the
+   * generator, then probe the JS main thread directly. This call returns only
+   * once the browser is responsive again. */
+  await sleep(500);
+  const mainThreadProbeStarted = Date.now();
+  const browserNowAfterGeneration = await page.evaluate(() => performance.now());
+  const mainThreadBlockedMs = Date.now() - mainThreadProbeStarted;
+
+  await page.waitForFunction(() => {
     const p = window.__otPerfProbe;
-    return p && p.maxFrameGap >= gapThreshold && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
-  }, { timeout: 720000, polling: 250 }, requiredBlockingGapMs);
+    return p && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
+  }, { timeout: 60000, polling: 100 });
+
   const generationWallMs = Date.now() - generationWallStart;
   await sleep(3000);
   result.generation = {
     wallMsUntilResponsive: generationWallMs,
+    mainThreadProbeBlockedMs: mainThreadBlockedMs,
+    browserNowAfterGeneration,
     snapshot: await snapshot(`${mapEdge}-generated`),
   };
 
   if (aiMode === 'after') {
     await startAIsAfterGeneration();
+  } else {
+    await waitForAllAIs();
   }
 
   await resetFrameProbe();
