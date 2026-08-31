@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Apply the v14 high-performance Emscripten profile to the tested build pipeline.
+"""Apply profiler-driven browser performance tuning to the tested v14 pipeline.
 
-This is intentionally layered after patch-browser-build-performance.py so the
-stable AI/startup fixes remain intact. The high-performance profile targets the
-actual Firefox profiler hotspots:
-  * native WebAssembly C++ exceptions instead of JS exception trampolines;
-  * wasm SIMD + ThinLTO at -O3;
-  * cooperative browser yields while synchronous world generation reports
-    progress, preventing multi-second browser LongTasks on very large maps.
+This patch deliberately keeps OpenTTD's proven Asyncify/JS exception model for
+browser compatibility. Native Wasm exceptions are not mixed with ASYNCIFY.
+The safe performance layer consists of:
+  * -O3 + wasm SIMD + ThinLTO for C/C++ and the final link;
+  * cooperative event-loop yields during synchronous world generation so very
+    large maps no longer become one giant browser LongTask.
 """
 from __future__ import annotations
 
@@ -21,9 +20,7 @@ def inject_source_patch(text: str) -> str:
     if SOURCE_PATCH_MARKER.strip() in text:
         return text
 
-    anchor = (
-        "git clone --depth 1 --branch 15.3 https://github.com/OpenTTD/OpenTTD.git openttd\n"
-    )
+    anchor = "git clone --depth 1 --branch 15.3 https://github.com/OpenTTD/OpenTTD.git openttd\n"
     if text.count(anchor) != 1:
         raise SystemExit(f"Expected one OpenTTD clone anchor, got {text.count(anchor)}")
 
@@ -31,22 +28,11 @@ def inject_source_patch(text: str) -> str:
 python3 - <<'PY_FULL_PERF_SOURCE'
 from pathlib import Path
 
-# Native Wasm EH removes the JS exception bridge that dominated the Firefox
-# profile. -fwasm-exceptions is supplied at compile/link time below; remove
-# the legacy JS exception-catching switch from upstream's Emscripten block.
-cmake = Path('openttd/CMakeLists.txt')
-s = cmake.read_text(encoding='utf-8')
-legacy_eh = '        -s DISABLE_EXCEPTION_CATCHING=0\n'
-if s.count(legacy_eh) != 1:
-    raise SystemExit(f'Expected one legacy Emscripten exception flag, got {s.count(legacy_eh)}')
-s = s.replace(legacy_eh, '', 1)
-cmake.write_text(s, encoding='utf-8')
-
 # World generation is synchronous in this browser port. The stock progress
 # code pumps OpenTTD's paused loop but does not return to the browser event loop,
-# so a 4096x4096 generation can become one enormous LongTask. ASYNCIFY is
-# already enabled upstream; yield at most once every 32 ms from the progress
-# path so input/compositor work can run without changing generation semantics.
+# so a 4096x4096 generation can become one enormous LongTask. ASYNCIFY is part
+# of the tested upstream Emscripten configuration; yield at most once every
+# 32 ms from the progress path without changing generation semantics.
 gui = Path('openttd/src/genworld_gui.cpp')
 g = gui.read_text(encoding='utf-8')
 include_anchor = '#include "video/video_driver.hpp"\n'
@@ -99,9 +85,9 @@ def tune_release_flags(text: str) -> str:
     -DHOST_BINARY_DIR=../build-host \\
     -DCMAKE_BUILD_TYPE=Release \\
     -DOPTION_USE_ASSERTS=OFF \\
-    -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128 -flto=thin -sSUPPORT_LONGJMP=wasm" \\
-    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128 -flto=thin -fwasm-exceptions" \\
-    -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-O3 -msimd128 -flto=thin -fwasm-exceptions -sSUPPORT_LONGJMP=wasm"
+    -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128 -flto=thin" \\
+    -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -msimd128 -flto=thin" \\
+    -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-O3 -msimd128 -flto=thin"
 '''
     if tuned in text:
         return text
@@ -120,19 +106,17 @@ def main() -> None:
     text = inject_source_patch(text)
     text = tune_release_flags(text)
 
-    required = (
-        '-fwasm-exceptions',
-        '-sSUPPORT_LONGJMP=wasm',
-        '-msimd128',
-        '-flto=thin',
-        'last_browser_yield_ms',
-    )
+    for forbidden in ('-fwasm-exceptions', '-sSUPPORT_LONGJMP=wasm'):
+        if forbidden in text:
+            raise SystemExit(f'Incompatible native-EH tuning must not be present: {forbidden}')
+
+    required = ('-msimd128', '-flto=thin', 'last_browser_yield_ms')
     for token in required:
         if token not in text:
             raise SystemExit(f'Missing performance invariant in patched build: {token}')
 
     path.write_text(text, encoding='utf-8')
-    print('Full browser performance profile enabled: native Wasm EH, SIMD, ThinLTO, cooperative mapgen yields.')
+    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, cooperative mapgen yields; Asyncify compatibility retained.')
 
 
 if __name__ == '__main__':
