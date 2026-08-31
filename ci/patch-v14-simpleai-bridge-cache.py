@@ -25,7 +25,7 @@ ARCHIVE_KEY = "ai/534d504c-SimpleAI-14.tar"
 ARCHIVE_FILENAME = "534d504c-SimpleAI-14.tar"
 AI_PATH = "SimpleAI-14/pathfinder.nut"
 MARKER = "Web port modification 2026-08-31: cache bridge-type availability per game date."
-UPSTREAM_MD5 = "b3137bbd0c73641cf510ead06e36dab6"
+UPSTREAM_BANANAS_MD5 = "b3137bbd0c73641cf510ead06e36dab6"
 
 CLASS_OLD = '''class MyRoadPF extends RoadPathFinder
 {
@@ -84,6 +84,14 @@ LOOP_NEW = '''\tlocal current_date = AIDate.GetCurrentDate();
 \t\t}
 \t}
 '''
+
+
+def tar_source(raw: bytes) -> str:
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
+        member = tf.extractfile(AI_PATH)
+        if member is None:
+            raise SystemExit(f"Missing {AI_PATH}")
+        return member.read().decode("utf-8")
 
 
 def repack_with_patch(raw: bytes) -> bytes:
@@ -147,22 +155,23 @@ def patch_bundle(path: Path) -> None:
 
     if ARCHIVE_KEY not in archives:
         raise SystemExit(f"Missing bundled {ARCHIVE_KEY}")
-    original = base64.b64decode(archives[ARCHIVE_KEY], validate=True)
-    original_md5 = hashlib.md5(original).hexdigest()
-    if original_md5 != UPSTREAM_MD5 and MARKER not in tar_source(original):
-        raise SystemExit(f"Unexpected SimpleAI-14 input MD5: {original_md5}")
-
-    patched = repack_with_patch(original)
-    archives[ARCHIVE_KEY] = base64.b64encode(patched).decode("ascii")
-
     matches = [item for item in manifest if item.get("filename") == ARCHIVE_FILENAME]
     if len(matches) != 1:
         raise SystemExit(f"Expected one SimpleAI manifest row, got {len(matches)}")
     row = matches[0]
-    row["md5"] = hashlib.md5(patched).hexdigest()
-    row["bytes"] = len(patched)
+    # BaNaNaS md5 is release metadata/content identity, not necessarily the MD5
+    # of the tar bytes returned by the download wrapper. Preserve it verbatim.
+    if str(row.get("md5", "")).lower() != UPSTREAM_BANANAS_MD5:
+        raise SystemExit(f"Unexpected SimpleAI-14 BaNaNaS revision: {row.get('md5')}")
+
+    original = base64.b64decode(archives[ARCHIVE_KEY], validate=True)
+    patched = repack_with_patch(original)
+    archives[ARCHIVE_KEY] = base64.b64encode(patched).decode("ascii")
+
     row["web_patch"] = "bridge-type-cache-per-game-date-2026-08-31"
-    row["upstream_md5"] = UPSTREAM_MD5
+    row["upstream_md5"] = UPSTREAM_BANANAS_MD5
+    row["web_payload_md5"] = hashlib.md5(patched).hexdigest()
+    row["web_payload_bytes"] = len(patched)
 
     encoded_archives = json.dumps(archives, separators=(",", ":"), sort_keys=True)
     encoded_manifest = json.dumps(manifest, separators=(",", ":"), sort_keys=True)
@@ -171,20 +180,24 @@ def patch_bundle(path: Path) -> None:
     final = path.read_text(encoding="utf-8")
     fa0 = final.index(archives_prefix) + len(archives_prefix)
     fa1 = final.index(";\n", fa0)
+    fm0 = final.index(manifest_prefix, fa1) + len(manifest_prefix)
+    fm1 = final.index(";", fm0)
     final_archives = json.loads(final[fa0:fa1])
+    final_manifest = json.loads(final[fm0:fm1])
     final_tar = base64.b64decode(final_archives[ARCHIVE_KEY], validate=True)
     if MARKER not in tar_source(final_tar):
         raise SystemExit("Final embedded SimpleAI source did not retain bridge cache")
+    final_row = [item for item in final_manifest if item.get("filename") == ARCHIVE_FILENAME][0]
+    if final_row.get("md5") != UPSTREAM_BANANAS_MD5:
+        raise SystemExit("Final manifest lost upstream SimpleAI release identity")
+    if final_row.get("web_payload_md5") != hashlib.md5(final_tar).hexdigest():
+        raise SystemExit("Final patched SimpleAI payload checksum mismatch")
 
-    print(f"SimpleAI bridge availability cache applied: {len(original)} -> {len(patched)} bytes, md5={row['md5']}.")
-
-
-def tar_source(raw: bytes) -> str:
-    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
-        member = tf.extractfile(AI_PATH)
-        if member is None:
-            raise SystemExit(f"Missing {AI_PATH}")
-        return member.read().decode("utf-8")
+    print(
+        "SimpleAI bridge availability cache applied: "
+        f"{len(original)} -> {len(patched)} bytes, "
+        f"upstream={UPSTREAM_BANANAS_MD5}, web_payload={final_row['web_payload_md5']}."
+    )
 
 
 def main() -> None:
