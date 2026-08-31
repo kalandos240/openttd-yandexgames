@@ -189,7 +189,13 @@ async function snapshot(label) {
 }
 
 async function openConsole() {
-  await page.click('#canvas');
+  const focused = await page.evaluate(() => {
+    const canvas = document.getElementById('canvas');
+    if (!canvas) return false;
+    canvas.focus();
+    return document.activeElement === canvas;
+  });
+  if (!focused) throw new Error('Could not focus OpenTTD canvas before opening console');
   await page.keyboard.press('Backquote');
   await sleep(150);
 }
@@ -247,13 +253,11 @@ try {
   const generationWallStart = Date.now();
   await consoleCommand('newgame 42424242', 0);
 
-  /* The old harness inferred completion from an arbitrary rAF-gap threshold.
-   * That can false-fail when generation is faster than the threshold, or when
-   * the measured gap lands just below it. OpenTTD's Emscripten build is
-   * synchronous: while world generation owns the browser main thread, a new
-   * Runtime.callFunctionOn cannot execute. Give switch-mode time to enter the
-   * generator, then probe the JS main thread directly. This call returns only
-   * once the browser is responsive again. */
+  /* OpenTTD's Emscripten world generation is synchronous. Once the mode switch
+   * enters generation, the browser main thread cannot execute CDP evaluation
+   * until generation returns. We also require several fresh rAF frames after
+   * that point so the test cannot confuse a menu/transition frame with a live
+   * post-generation game loop. */
   await sleep(500);
   const mainThreadProbeStarted = Date.now();
   const browserNowAfterGeneration = await page.evaluate(() => performance.now());
@@ -268,7 +272,7 @@ try {
   await sleep(3000);
   result.generation = {
     wallMsUntilResponsive: generationWallMs,
-    mainThreadProbeBlockedMs: mainThreadBlockedMs,
+    mainThreadProbeBlockedMs,
     browserNowAfterGeneration,
     snapshot: await snapshot(`${mapEdge}-generated`),
   };
