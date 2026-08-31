@@ -10,6 +10,7 @@ const source = fs.readFileSync(scriptPath, 'utf8');
 
 const fetched = [];
 const writes = [];
+const fileSizes = new Map();
 let previousRestoreCalls = 0;
 let persisted = 0;
 
@@ -20,6 +21,7 @@ global.requestIdleCallback = (callback) => {
   setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 0);
   return 1;
 };
+global.requestAnimationFrame = (callback) => setTimeout(() => callback(Date.now()), 0);
 global.openttd_syncfs = (callback) => {
   persisted += 1;
   if (callback) callback(null);
@@ -48,7 +50,7 @@ global.fetch = async (url) => {
   const value = String(url);
   fetched.push(value);
   if (value.endsWith('/PLAYGAMA-ALL-LICENSES.md')) {
-    return mockResponse(new Uint8Array(2048));
+    throw new Error('Runtime license fetch must stay removed');
   }
   if (value.endsWith('/OPENTTD-BUNDLED-ADDONS.json')) {
     return mockResponse({
@@ -88,10 +90,31 @@ global.yandexRestoreOpenTTDCloud = async () => {
   previousRestoreCalls += 1;
 };
 
+// Minimal Emscripten-FS-compatible mock. Chunked writes are recorded on close
+// so the test verifies the same API path used by large real NewGRFs.
 const fakeFS = {
   mkdir() {},
-  stat() { throw new Error('not found'); },
-  writeFile(target, data) { writes.push({ target, bytes: data.byteLength }); },
+  stat(target) {
+    if (!fileSizes.has(target)) throw new Error('not found');
+    return { size: fileSizes.get(target) };
+  },
+  open(target, mode) {
+    assert.equal(mode, 'w');
+    fileSizes.set(target, 0);
+    return { target };
+  },
+  write(stream, data, offset, length, position) {
+    assert.ok(data instanceof Uint8Array);
+    assert.ok(offset >= 0 && length >= 0 && position >= 0);
+    fileSizes.set(stream.target, Math.max(fileSizes.get(stream.target) || 0, position + length));
+    return length;
+  },
+  close(stream) {
+    writes.push({ target: stream.target, bytes: fileSizes.get(stream.target) || 0 });
+  },
+  unlink(target) {
+    fileSizes.delete(target);
+  },
 };
 
 function sleep(ms) {
@@ -117,21 +140,25 @@ function sleep(ms) {
   assert.deepEqual(fetched, [], 'the first menu frames must render before optional add-on I/O starts');
   assert.deepEqual(writes, [], 'the first menu frames must render before optional add-on writes start');
 
-  await sleep(1150);
-  assert.ok(fetched.some((url) => url.endsWith('/PLAYGAMA-ALL-LICENSES.md')));
+  await sleep(2650);
+  assert.ok(!fetched.some((url) => url.endsWith('/PLAYGAMA-ALL-LICENSES.md')),
+    'runtime must never fetch the removed combined license document');
   assert.ok(fetched.some((url) => url.endsWith('/OPENTTD-BUNDLED-ADDONS.json')));
   assert.ok(fetched.some((url) => url.endsWith('/addons/test.grf')));
   assert.ok(fetched.some((url) => url.endsWith('/addons/test-base.tar')));
   assert.equal(global.__openttdBundledAddonsState, 'ready');
 
   const targets = writes.map((row) => row.target).sort();
-  assert.deepEqual(targets, ['/baseset/test-base.tar', '/docs/PLAYGAMA-LICENSES.md', '/newgrf/test.grf']);
+  assert.deepEqual(targets, ['/baseset/test-base.tar', '/newgrf/test.grf']);
   assert.ok(targets.every((target) => !target.startsWith('/home/web_user/.openttd/')),
     'immutable bundled content must never be written into the persistent personal directory');
+  assert.ok(targets.every((target) => !target.startsWith('/docs/')),
+    'runtime license documents must not be materialized in MEMFS');
   assert.equal(global.__openttdBundledAddonsStatus.persistent, false);
+  assert.equal(global.__openttdBundledAddonsStatus.chunked_writes, true);
   assert.equal(persisted, 0, 'bundled static content must never trigger an IDBFS persistence pass');
 
-  console.log('PASS: bundled NewGRF/base graphics stay out of cold-start IDBFS and start only after main().');
+  console.log('PASS: bundled add-ons stay out of cold-start IDBFS; runtime licenses stay removed; writes are chunk-capable.');
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
