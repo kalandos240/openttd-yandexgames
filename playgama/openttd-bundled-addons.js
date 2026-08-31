@@ -6,8 +6,9 @@
  * (including /newgrf and /baseset) natively when the NewGRF menu rescans.
  *
  * Heavy assets are installed only after OpenTTD enters main(), one at a time,
- * with a browser yield before every fetch/decompression step. This prevents a
- * large NewGRF (notably train/industry sets) from monopolising the UI thread.
+ * with browser yields around fetch/decompression and chunked MEMFS writes. This
+ * prevents a large NewGRF (notably train/industry sets) from monopolising the UI
+ * thread for one large write/copy operation.
  */
 (() => {
   'use strict';
@@ -17,9 +18,10 @@
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
   const FETCH_TIMEOUT_MS = 8000;
   const RESTORE_STARTUP_GATE_MS = 1500;
-  const POST_START_DELAY_MS = 1200;
+  const POST_START_DELAY_MS = 2500;
   const POST_START_IDLE_TIMEOUT_MS = 5000;
   const BETWEEN_ASSET_IDLE_TIMEOUT_MS = 2000;
+  const WRITE_CHUNK_BYTES = 1024 * 1024;
 
   let manifestPromise = null;
 
@@ -94,6 +96,37 @@
     setTimeout(resolve, 16);
   });
 
+  const yieldFrame = () => new Promise((resolve) => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => setTimeout(resolve, 0));
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+
+  const writeFileChunked = async (FS, target, data) => {
+    let stream = null;
+    let complete = false;
+    try {
+      stream = FS.open(target, 'w');
+      let position = 0;
+      while (position < data.byteLength) {
+        const length = Math.min(WRITE_CHUNK_BYTES, data.byteLength - position);
+        FS.write(stream, data, position, length, position);
+        position += length;
+        if (position < data.byteLength) await yieldFrame();
+      }
+      complete = true;
+    } finally {
+      if (stream !== null) {
+        try { FS.close(stream); } catch (_) {}
+      }
+      if (!complete) {
+        try { FS.unlink(target); } catch (_) {}
+      }
+    }
+  };
+
   const installOne = async (FS, item) => {
     const root = installRootFor(item);
     ensureDir(FS, root);
@@ -114,7 +147,7 @@
     const response = await fetchWithTimeout(assetUrl, { cache: 'force-cache' });
     if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${item.content_id}`);
 
-    const packed = new Uint8Array(await response.arrayBuffer());
+    let packed = new Uint8Array(await response.arrayBuffer());
     const transparentlyDecoded = (item.compression || 'none') === 'gzip' &&
       !isGzipPayload(packed) && packed.byteLength === installedBytes;
     if (!transparentlyDecoded && Number.isFinite(packagedBytes) && packagedBytes > 0 && packed.byteLength !== packagedBytes) {
@@ -122,10 +155,17 @@
     }
 
     const data = await decodeAsset(item, packed, installedBytes);
+    packed = null;
     if (data.byteLength !== installedBytes) {
       throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
     }
-    FS.writeFile(target, data);
+
+    await writeFileChunked(FS, target, data);
+    const written = FS.stat(target);
+    if (Number(written.size) !== installedBytes) {
+      try { FS.unlink(target); } catch (_) {}
+      throw new Error(`MEMFS size mismatch for ${item.content_id}: expected ${installedBytes}, got ${written.size}`);
+    }
     return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target };
   };
 
@@ -159,6 +199,7 @@
       failed,
       results,
       persistent: false,
+      chunked_writes: true,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
