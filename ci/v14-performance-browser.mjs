@@ -1,9 +1,9 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 
-const [platform, url, output] = process.argv.slice(2);
-if (!platform || !url || !output) {
-  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json>');
+const [platform, url, output, profile = 'optimized'] = process.argv.slice(2);
+if (!platform || !url || !output || !['baseline', 'optimized'].includes(profile)) {
+  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized]');
 }
 const executablePath = process.env.CHROME_BIN;
 if (!executablePath) throw new Error('CHROME_BIN is not set');
@@ -92,6 +92,7 @@ await page.evaluateOnNewDocument(() => {
 
 const result = {
   platform,
+  profile,
   url,
   startedAt: new Date().toISOString(),
   startup: {},
@@ -133,6 +134,7 @@ async function snapshot(label) {
     const pct = q => gaps.length ? gaps[Math.min(gaps.length - 1, Math.floor((gaps.length - 1) * q))] : 0;
     const elapsed = p.startedAt && p.lastFrame ? Math.max(0, p.lastFrame - p.startedAt) : 0;
     const upload = window.Module?.__openttdUploadStats ? { ...window.Module.__openttdUploadStats } : null;
+    const aiStats = window.Module?.__openttdAIStats ? { ...window.Module.__openttdAIStats } : null;
     let wasmHeapBytes = 0;
     try {
       if (typeof HEAPU8 !== 'undefined') wasmHeapBytes = HEAPU8.byteLength;
@@ -157,6 +159,7 @@ async function snapshot(label) {
       longestLongTaskMs: Array.isArray(p.longTasks) ? p.longTasks.reduce((a, e) => Math.max(a, e.duration), 0) : 0,
       longTasksTop10: Array.isArray(p.longTasks) ? [...p.longTasks].sort((a, b) => b.duration - a.duration).slice(0, 10) : [],
       upload,
+      aiStats,
       rendererActive: Boolean(window.Module?.SDL2?.__openttdWebGLPresenter),
       dirtyRect: window.Module?.__openttdDirtyRect || null,
       wasmHeapBytes,
@@ -226,8 +229,8 @@ try {
     snapshot: await snapshot('4096-generated'),
   };
 
-  // Let all 14 zero-interval competitors initialize and run. This is the exact
-  // real-world stress case that previously caused severe browser slowdown.
+  // Let all zero-interval competitors initialize and run. On optimized builds
+  // native telemetry proves the exact active-AI count and scheduler budget.
   await resetFrameProbe();
   const aiSampleStart = Date.now();
   await sleep(30000);
@@ -241,11 +244,12 @@ try {
     upload: result.ai14.snapshot.upload,
     partialUploadRatio: (() => {
       const s = result.ai14.snapshot.upload;
-      if (!s) return 0;
+      if (!s) return null;
       const n = (s.partialUploads || 0) + (s.fullUploads || 0);
       return n ? (s.partialUploads || 0) / n : 0;
     })(),
   };
+  result.aiScheduler = result.ai14.snapshot.aiStats;
   result.memory = {
     wasmHeapBytes: result.ai14.snapshot.wasmHeapBytes,
     browserMemory: result.ai14.snapshot.browserMemory,
@@ -262,13 +266,19 @@ try {
     tail: consoleLines.slice(-250),
   };
 
-  // Hard pass criteria: production runtime alive, no JS crash, real WebGL fast
-  // path active, dirty-rect telemetry present, and the page remained responsive
-  // after a genuine 4096^2 generation stall plus 30 seconds of 14-AI gameplay.
+  // Common hard pass criteria are intentionally the same for baseline and
+  // optimized packages. Extra optimized-only gates verify the new mechanisms.
   if (!result.renderer.active) throw new Error('WebGL framebuffer presenter did not activate');
-  if (!result.renderer.upload) throw new Error('WebGL upload telemetry is missing');
-  if ((result.renderer.upload.partialUploads || 0) < 1) throw new Error('No dirty-rect partial uploads were observed');
   if (pageErrors.length) throw new Error(`page errors during benchmark: ${pageErrors.join('\n')}`);
+  if (profile === 'optimized') {
+    if (!result.renderer.upload) throw new Error('WebGL upload telemetry is missing');
+    if ((result.renderer.upload.partialUploads || 0) < 1) throw new Error('No dirty-rect partial uploads were observed');
+    if (!result.aiScheduler) throw new Error('AI scheduler telemetry is missing');
+    if (result.aiScheduler.activeAI !== 14) throw new Error(`Expected 14 active AI, got ${result.aiScheduler.activeAI}`);
+    if (!(result.aiScheduler.effectiveOpcodeBudget > 0 && result.aiScheduler.effectiveOpcodeBudget < result.aiScheduler.configuredOpcodeBudget)) {
+      throw new Error(`AI opcode budget did not scale down: ${JSON.stringify(result.aiScheduler)}`);
+    }
+  }
 
   await page.screenshot({ path: output.replace(/\.json$/i, '-final.png'), fullPage: true });
 } catch (error) {
