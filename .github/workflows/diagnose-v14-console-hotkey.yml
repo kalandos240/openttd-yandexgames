@@ -1,0 +1,140 @@
+name: Diagnose v14 console hotkey
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/diagnose-v14-console-hotkey.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NATIVE_ARTIFACT_ID: '9742752495'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble exact final Yandex test package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/conprobe/{a/native,a/ya,native,base,prod,test,out,node}
+          get_artifact() {
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" -o "$2"
+          }
+          get_artifact "$NATIVE_ARTIFACT_ID" /tmp/conprobe/native.zip
+          get_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/conprobe/ya.zip
+          unzip -q /tmp/conprobe/native.zip -d /tmp/conprobe/a/native
+          unzip -q /tmp/conprobe/ya.zip -d /tmp/conprobe/a/ya
+          NZ="$(find /tmp/conprobe/a/native -name 'OpenTTD-YandexGames-Direct.zip' -type f -print -quit)"
+          YZ="$(find /tmp/conprobe/a/ya -name '*.zip' -type f -print -quit)"
+          test -s "$NZ"; test -s "$YZ"
+          unzip -q "$NZ" -d /tmp/conprobe/native
+          unzip -q "$YZ" -d /tmp/conprobe/base
+          cp -a /tmp/conprobe/base/. /tmp/conprobe/prod/
+          cp /tmp/conprobe/native/openttd-runtime.js /tmp/conprobe/prod/openttd-runtime.js
+          rm -f /tmp/conprobe/prod/openttd.wasm /tmp/conprobe/prod/openttd.data
+          python3 ci/patch-v14-webgl-runtime.py /tmp/conprobe/prod/openttd-runtime.js
+          python3 ci/patch-v14-simpleai-bridge-cache.py /tmp/conprobe/prod
+          python3 ci/patch-v14-performance-package.py /tmp/conprobe/prod --platform yandex
+          python3 yandex/neutralize_yandex_runtime.py /tmp/conprobe/prod
+          cp -a /tmp/conprobe/prod/. /tmp/conprobe/test/
+          cp ci/v14-yandex-sdk-mock.js /tmp/conprobe/test/sdk.js
+
+      - name: Install controller and write probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/conprobe/node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cat > probe.mjs <<'JS'
+          import puppeteer from 'puppeteer-core';
+          import fs from 'node:fs';
+          const executablePath = process.env.CHROME_BIN;
+          const browser = await puppeteer.launch({
+            executablePath, headless: true, protocolTimeout: 120000,
+            args: ['--no-sandbox','--disable-dev-shm-usage','--enable-unsafe-swiftshader','--use-angle=swiftshader-webgl']
+          });
+          const page = await browser.newPage();
+          await page.setViewport({width:1600,height:900});
+          const events=[];
+          page.on('console', m => events.push(`[${m.type()}] ${m.text()}`));
+          await page.goto('http://127.0.0.1:8590/index.html',{waitUntil:'domcontentloaded',timeout:120000});
+          await page.waitForFunction(()=>window.Module?.calledRun===true,{timeout:120000});
+          await new Promise(r=>setTimeout(r,2500));
+          const snap=async name=>page.screenshot({path:`/tmp/conprobe/out/${name}.png`});
+          const state=async label=>({label,...await page.evaluate(()=>({activeId:document.activeElement?.id||'',activeTag:document.activeElement?.tagName||'',canvasTabIndex:document.getElementById('canvas')?.tabIndex}))});
+          const states=[];
+          states.push(await state('initial'));
+          await snap('00-initial');
+
+          await page.evaluate(()=>document.getElementById('canvas')?.focus());
+          states.push(await state('after-focus'));
+          await page.keyboard.press('Backquote');
+          await new Promise(r=>setTimeout(r,500));
+          await snap('01-focus-backquote');
+          await page.keyboard.type('echo PUPPETEER_BACKQUOTE_WORKS',{delay:2});
+          await page.keyboard.press('Enter');
+          await new Promise(r=>setTimeout(r,500));
+          await snap('02-focus-backquote-command');
+
+          await page.keyboard.press('Backquote');
+          await new Promise(r=>setTimeout(r,300));
+          await page.keyboard.press('Shift+Backquote');
+          await new Promise(r=>setTimeout(r,500));
+          await snap('03-shift-backquote');
+
+          await page.keyboard.press('Shift+Backquote');
+          await new Promise(r=>setTimeout(r,300));
+          await page.evaluate(()=>{
+            const opts={key:'`',code:'Backquote',keyCode:192,which:192,bubbles:true,cancelable:true};
+            const c=document.getElementById('canvas');
+            c?.dispatchEvent(new KeyboardEvent('keydown',opts));
+            c?.dispatchEvent(new KeyboardEvent('keyup',opts));
+          });
+          await new Promise(r=>setTimeout(r,500));
+          await snap('04-dom-canvas-keyevent');
+
+          fs.writeFileSync('/tmp/conprobe/out/probe.json',JSON.stringify({states,events:events.slice(-100)},null,2));
+          console.log(JSON.stringify({states,events:events.slice(-30)},null,2));
+          await browser.close();
+          JS
+          node --check probe.mjs
+
+      - name: Run console delivery probe
+        shell: bash
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          set -euo pipefail
+          if [ ! -x "$CHROME_BIN" ]; then export CHROME_BIN="$(command -v google-chrome-stable || command -v chromium)"; fi
+          cd /tmp/conprobe/test
+          python3 -m http.server 8590 --bind 127.0.0.1 >/tmp/conprobe/http.log 2>&1 & pid=$!
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8590/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/conprobe/node
+          node probe.mjs
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          cat /tmp/conprobe/out/probe.json
+
+      - name: Upload console screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-console-hotkey-diagnostics
+          path: /tmp/conprobe/out/
+          if-no-files-found: error
