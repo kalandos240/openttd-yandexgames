@@ -1,0 +1,412 @@
+name: Test v14 final packages
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/test-v14-final-packages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  assemble-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      NATIVE_ARTIFACT_ID: '9742752495'
+      NATIVE_SOURCE_RUN: '33347711436'
+      NATIVE_SOURCE_SHA: 'e04b47766a330f84ab8bbe78420f39e080e64672'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+
+    steps:
+      - name: Checkout final package tooling
+        uses: actions/checkout@v4
+
+      - name: Download exact native runtime and verified platform baselines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/v14final/{artifact/native,artifact/ya,artifact/pg,native,baseline/ya,baseline/pg,prod/ya,prod/pg,test,out,browser-node}
+
+          download_artifact() {
+            local id="$1" out="$2"
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
+              -o "$out"
+          }
+
+          download_artifact "$NATIVE_ARTIFACT_ID" /tmp/v14final/native-artifact.zip
+          download_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/v14final/ya-artifact.zip
+          download_artifact "$VERIFIED_PG_ARTIFACT_ID" /tmp/v14final/pg-artifact.zip
+
+          unzip -q /tmp/v14final/native-artifact.zip -d /tmp/v14final/artifact/native
+          unzip -q /tmp/v14final/ya-artifact.zip -d /tmp/v14final/artifact/ya
+          unzip -q /tmp/v14final/pg-artifact.zip -d /tmp/v14final/artifact/pg
+
+          NATIVE_ZIP="$(find /tmp/v14final/artifact/native -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          YA_ZIP="$(find /tmp/v14final/artifact/ya -type f -name '*.zip' -print -quit)"
+          PG_ZIP="$(find /tmp/v14final/artifact/pg -type f -name '*.zip' -print -quit)"
+          test -s "$NATIVE_ZIP"; test -s "$YA_ZIP"; test -s "$PG_ZIP"
+
+          unzip -q "$NATIVE_ZIP" -d /tmp/v14final/native
+          unzip -q "$YA_ZIP" -d /tmp/v14final/baseline/ya
+          unzip -q "$PG_ZIP" -d /tmp/v14final/baseline/pg
+          cp -a /tmp/v14final/baseline/ya/. /tmp/v14final/prod/ya/
+          cp -a /tmp/v14final/baseline/pg/. /tmp/v14final/prod/pg/
+
+          test -s /tmp/v14final/native/openttd-runtime.js
+          test ! -e /tmp/v14final/native/openttd.wasm
+          test ! -e /tmp/v14final/native/openttd.data
+          grep -Fq '__openttdDirtyRect' /tmp/v14final/native/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/v14final/native/openttd-runtime.js
+
+      - name: Assemble final Yandex and Playgama packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            ci/patch-v14-webgl-runtime.py \
+            ci/patch-v14-performance-package.py \
+            ci/patch-v14-playgama-single-file.py \
+            ci/patch-v14-simpleai-bridge-cache.py \
+            ci/patch-v14-performance-harness.py \
+            yandex/neutralize_yandex_runtime.py
+
+          for d in /tmp/v14final/prod/ya /tmp/v14final/prod/pg; do
+            cp /tmp/v14final/native/openttd-runtime.js "$d/openttd-runtime.js"
+            rm -f "$d/openttd.wasm" "$d/openttd.data"
+            python3 ci/patch-v14-webgl-runtime.py "$d/openttd-runtime.js"
+            python3 ci/patch-v14-simpleai-bridge-cache.py "$d"
+            node --check "$d/openttd-runtime.js"
+            node --check "$d/openttd-classic-ai.js"
+          done
+
+          python3 ci/patch-v14-performance-package.py /tmp/v14final/prod/ya --platform yandex
+          python3 ci/patch-v14-playgama-single-file.py /tmp/v14final/prod/pg
+          python3 yandex/neutralize_yandex_runtime.py /tmp/v14final/prod/ya
+
+      - name: Static final-package regression and autonomy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in /tmp/v14final/prod/ya /tmp/v14final/prod/pg; do
+            test -s "$d/openttd-runtime.js"
+            test -s "$d/openttd-classic-ai.js"
+            test ! -e "$d/openttd.wasm"
+            test ! -e "$d/openttd.data"
+            node --check "$d/openttd-runtime.js"
+            node --check "$d/openttd-classic-ai.js"
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq '__openttdDirtyRect' "$d/openttd-runtime.js"
+            grep -Fq '__openttdUploadStats' "$d/openttd-runtime.js"
+            grep -Fq '__openttdAIStats' "$d/openttd-runtime.js"
+            grep -Fq 'texSubImage2D' "$d/openttd-runtime.js"
+            grep -Fq 'bridge-type-cache-per-game-date-2026-08-31' "$d/openttd-classic-ai.js"
+            grep -Fq 'web_payload_md5' "$d/openttd-classic-ai.js"
+            grep -Fq 'b3137bbd0c73641cf510ead06e36dab6' "$d/openttd-classic-ai.js"
+            grep -Fq 'const MAX_SCORE = 1000' "$d/openttd-global-ranking.js"
+            grep -Fq 'Module.calledRun === true' "$d/openttd-ranking-core.js"
+          done
+
+          # Yandex: local SDK path only, no Playgama runtime naming, and no
+          # unused external provenance/download URLs in the add-on manifest.
+          grep -Fq "script.src = '/sdk.js'" /tmp/v14final/prod/ya/yandex-bootstrap.js
+          test -s /tmp/v14final/prod/ya/THIRD-PARTY-LICENSES.md
+          test ! -e /tmp/v14final/prod/ya/PLAYGAMA-ALL-LICENSES.md
+          ! grep -Eiq 'playgama' /tmp/v14final/prod/ya/openttd-bundled-addons.js
+          ! grep -Eiq 'https?://' /tmp/v14final/prod/ya/OPENTTD-BUNDLED-ADDONS.json
+          ! grep -Eiq 'https?://[^"[:space:]]+' /tmp/v14final/prod/ya/index.html
+
+          # Playgama keeps its official external Bridge loader; game assets stay local.
+          ! grep -Fq 'bridge.playgama.com' /tmp/v14final/prod/pg/index.html
+          grep -Fq 'https://bridge.playgama.com/v1.31.0/playgama-bridge.js' /tmp/v14final/prod/pg/platform-bridge-loader.js
+          grep -Fq 'window.__openttdPlatformStartupIndependent===true' /tmp/v14final/prod/pg/openttd-runtime.js
+
+          # Native tutorial/ranking gates were compiled in the source run recorded below.
+          cat > /tmp/v14final/out/BUILD-PROVENANCE.txt <<EOF
+          OpenTTD v14 final web packages
+          Native source run: ${NATIVE_SOURCE_RUN}
+          Native source SHA: ${NATIVE_SOURCE_SHA}
+          Native artifact ID: ${NATIVE_ARTIFACT_ID}
+          Native artifact API digest: sha256:8721f9a3a4bd8954aeba11df40f8cc934f3b6462f3c7ddbc3c56940282290ca5
+          Verified Yandex baseline artifact: ${VERIFIED_YA_ARTIFACT_ID}
+          Verified Playgama baseline artifact: ${VERIFIED_PG_ARTIFACT_ID}
+          Final package branch SHA: ${GITHUB_SHA}
+          EOF
+
+      - name: Build candidate archives and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/v14final/prod/ya && zip -q -r -9 /tmp/v14final/out/openttd-yandexgames-v14-final.zip .)
+          (cd /tmp/v14final/prod/pg && zip -q -r -9 /tmp/v14final/out/openttd-playgama-v14-final.zip .)
+          unzip -tq /tmp/v14final/out/openttd-yandexgames-v14-final.zip
+          unzip -tq /tmp/v14final/out/openttd-playgama-v14-final.zip
+          (cd /tmp/v14final/out && sha256sum openttd-yandexgames-v14-final.zip openttd-playgama-v14-final.zip > SHA256SUMS.txt)
+
+      - name: Prepare isolated browser test copies and SDK mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in baseline-ya baseline-pg final-ya final-pg; do mkdir -p "/tmp/v14final/test/${spec}"; done
+          cp -a /tmp/v14final/baseline/ya/. /tmp/v14final/test/baseline-ya/
+          cp -a /tmp/v14final/baseline/pg/. /tmp/v14final/test/baseline-pg/
+          cp -a /tmp/v14final/prod/ya/. /tmp/v14final/test/final-ya/
+          cp -a /tmp/v14final/prod/pg/. /tmp/v14final/test/final-pg/
+
+          cat > /tmp/v14final/yandex-sdk-mock.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const scores = [];
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'v14-final-smoke-user'; },
+              getName() { return 'V14 Final Smoke'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'v14-final-smoke' } },
+              features: { LoadingAPI: { ready() { document.documentElement.dataset.yandexLoadingReady = 'ready'; return Promise.resolve(true); } }, GameplayAPI: { start() { document.documentElement.dataset.yandexGameplay = 'started'; return Promise.resolve(true); }, stop() { document.documentElement.dataset.yandexGameplay = 'stopped'; return Promise.resolve(true); } } },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: scores }; }, async setScore(name, score) { scores.push({ name, score }); return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { document.documentElement.dataset.yandexSdk = 'ready'; return ysdk; } };
+          })();
+          JS
+          cp /tmp/v14final/yandex-sdk-mock.js /tmp/v14final/test/baseline-ya/sdk.js
+          cp /tmp/v14final/yandex-sdk-mock.js /tmp/v14final/test/final-ya/sdk.js
+
+          cat > /tmp/v14final/playgama-loader-mock.js <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = {
+              version: 'v14-final-smoke', engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' }, STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { return true; },
+              platform: { language: 'en', id: 'playgama-v14-final-smoke', isAudioEnabled: true, on() {}, off() {}, async sendMessage() { return true; } },
+              storage: { async isSupported() { return true; }, async isAvailable() { return true; }, async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); }, async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; } },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} },
+              player: { id: 'v14-final-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } }
+            };
+            document.documentElement.dataset.playgamaBridge = 'ready';
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+          })();
+          JS
+          cp /tmp/v14final/playgama-loader-mock.js /tmp/v14final/test/baseline-pg/platform-bridge-loader.js
+          cp /tmp/v14final/playgama-loader-mock.js /tmp/v14final/test/final-pg/platform-bridge-loader.js
+
+      - name: Install browser controller and corrected A-B harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          cd /tmp/v14final/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          cp "$GITHUB_WORKSPACE/ci/v14-viewport-smoke.mjs" ./viewport.mjs
+          python3 "$GITHUB_WORKSPACE/ci/patch-v14-performance-harness.py" ./perf.mjs
+          node --check ./smoke.mjs
+          node --check ./perf.mjs
+          node --check ./viewport.mjs
+
+      - name: Hosted Chromium functional and multi-viewport smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          run_server_test() {
+            local dir="$1" platform="$2" port="$3"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/v14final-${platform}-${port}.http.log" 2>&1 &
+            local pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' RETURN
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd /tmp/v14final/browser-node
+            node smoke.mjs "$platform" "http://127.0.0.1:${port}/index.html" "/tmp/v14final/out/${platform}-smoke.json"
+            node viewport.mjs "$platform" "http://127.0.0.1:${port}/index.html" "/tmp/v14final/out/viewport-${platform}"
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - RETURN
+          }
+
+          run_server_test /tmp/v14final/test/final-ya yandex 8253
+          run_server_test /tmp/v14final/test/final-pg playgama 8254
+          grep -Fq '"passed": true' /tmp/v14final/out/yandex-smoke.json
+          grep -Fq '"passed": true' /tmp/v14final/out/playgama-smoke.json
+          grep -Fq '"passed": true' /tmp/v14final/out/viewport-yandex/yandex-viewport.json
+          grep -Fq '"passed": true' /tmp/v14final/out/viewport-playgama/playgama-viewport.json
+
+      - name: Real 4096x4096 plus 14-AI baseline versus final benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          run_perf() {
+            local dir="$1" platform="$2" profile="$3" port="$4" name="$5"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/v14final-${name}.http.log" 2>&1 &
+            local pid=$!
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd /tmp/v14final/browser-node
+            set +e
+            node perf.mjs "$platform" "http://127.0.0.1:${port}/index.html" "/tmp/v14final/out/${name}.json" "$profile"
+            local rc=$?
+            set -e
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return "$rc"
+          }
+
+          run_perf /tmp/v14final/test/baseline-ya yandex baseline 8260 perf-baseline-yandex
+          run_perf /tmp/v14final/test/final-ya yandex optimized 8261 perf-final-yandex
+          run_perf /tmp/v14final/test/baseline-pg playgama baseline 8262 perf-baseline-playgama
+          run_perf /tmp/v14final/test/final-pg playgama optimized 8263 perf-final-playgama
+
+      - name: Validate benchmark evidence and produce comparison report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+
+          out = Path('/tmp/v14final/out')
+          report = {
+              'native_source_run': 33347711436,
+              'native_source_sha': 'e04b47766a330f84ab8bbe78420f39e080e64672',
+              'native_artifact_id': 9742752495,
+              'platforms': {},
+          }
+          bad_console = re.compile(r'(script died|AI[^\n]{0,40}crash|squirrel[^\n]{0,40}error|fatal error|runtimeerror|uncaught)', re.I)
+
+          def improvement(base, final, lower=False):
+              if not base:
+                  return None
+              raw = (final - base) / base * 100.0
+              return -raw if lower else raw
+
+          for platform in ('yandex', 'playgama'):
+              base = json.loads((out / f'perf-baseline-{platform}.json').read_text())
+              final = json.loads((out / f'perf-final-{platform}.json').read_text())
+              if not base.get('passed'):
+                  raise SystemExit(f'Baseline benchmark failed for {platform}: {base.get("failure")}')
+              if not final.get('passed'):
+                  raise SystemExit(f'Final benchmark failed for {platform}: {final.get("failure")}')
+              scheduler = final.get('aiScheduler') or {}
+              if scheduler.get('activeAI') != 14:
+                  raise SystemExit(f'{platform}: expected 14 active AI, got {scheduler}')
+              if not (0 < scheduler.get('effectiveOpcodeBudget', 0) < scheduler.get('configuredOpcodeBudget', 0)):
+                  raise SystemExit(f'{platform}: AI budget telemetry invalid: {scheduler}')
+              renderer = final.get('renderer') or {}
+              upload = renderer.get('upload') or {}
+              if not renderer.get('active') or upload.get('partialUploads', 0) < 1:
+                  raise SystemExit(f'{platform}: dirty-rect WebGL evidence missing: {renderer}')
+              console_text = '\n'.join((final.get('console') or {}).get('tail') or [])
+              if bad_console.search(console_text):
+                  raise SystemExit(f'{platform}: suspicious AI/runtime console output:\n{console_text[-8000:]}')
+
+              b = base['ai14']['snapshot']; f = final['ai14']['snapshot']
+              bg = base['generation4096']['wallMsUntilResponsive']; fg = final['generation4096']['wallMsUntilResponsive']
+              report['platforms'][platform] = {
+                  'baseline': {
+                      'rendererActive': base.get('renderer', {}).get('active'),
+                      'generation4096Ms': bg,
+                      'estimatedFps': b['estimatedFps'],
+                      'p95FrameGapMs': b['p95FrameGapMs'],
+                      'p99FrameGapMs': b['p99FrameGapMs'],
+                      'longestLongTaskMs': b['longestLongTaskMs'],
+                      'longTaskCount': b['longTaskCount'],
+                      'wasmHeapBytes': b['wasmHeapBytes'],
+                  },
+                  'final': {
+                      'rendererActive': renderer.get('active'),
+                      'generation4096Ms': fg,
+                      'estimatedFps': f['estimatedFps'],
+                      'p95FrameGapMs': f['p95FrameGapMs'],
+                      'p99FrameGapMs': f['p99FrameGapMs'],
+                      'longestLongTaskMs': f['longestLongTaskMs'],
+                      'longTaskCount': f['longTaskCount'],
+                      'wasmHeapBytes': f['wasmHeapBytes'],
+                      'aiScheduler': scheduler,
+                      'renderer': renderer,
+                  },
+                  'improvementPercent': {
+                      'generation4096Faster': improvement(bg, fg, True),
+                      'estimatedFpsHigher': improvement(b['estimatedFps'], f['estimatedFps']),
+                      'p95FrameGapLower': improvement(b['p95FrameGapMs'], f['p95FrameGapMs'], True),
+                      'p99FrameGapLower': improvement(b['p99FrameGapMs'], f['p99FrameGapMs'], True),
+                      'longestLongTaskLower': improvement(b['longestLongTaskMs'], f['longestLongTaskMs'], True),
+                  },
+              }
+
+          (out / 'FINAL-PERFORMANCE-COMPARISON.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+          lines = ['# OpenTTD v14 final browser benchmark', '']
+          for platform, data in report['platforms'].items():
+              b, f, i = data['baseline'], data['final'], data['improvementPercent']
+              lines += [
+                  f'## {platform}', '',
+                  '| Metric | Baseline | Final |', '|---|---:|---:|',
+                  f"| 4096² generation to responsive | {b['generation4096Ms']:.0f} ms | {f['generation4096Ms']:.0f} ms |",
+                  f"| 14-AI estimated FPS | {b['estimatedFps']:.2f} | {f['estimatedFps']:.2f} |",
+                  f"| 14-AI p95 frame gap | {b['p95FrameGapMs']:.2f} ms | {f['p95FrameGapMs']:.2f} ms |",
+                  f"| 14-AI p99 frame gap | {b['p99FrameGapMs']:.2f} ms | {f['p99FrameGapMs']:.2f} ms |",
+                  f"| 14-AI longest long task | {b['longestLongTaskMs']:.2f} ms | {f['longestLongTaskMs']:.2f} ms |",
+                  f"| 14-AI long-task count | {b['longTaskCount']} | {f['longTaskCount']} |",
+                  f"| WASM heap | {b['wasmHeapBytes']} B | {f['wasmHeapBytes']} B |",
+                  '',
+                  f"Generation improvement: {i['generation4096Faster']:.2f}%",
+                  f"FPS improvement: {i['estimatedFpsHigher']:.2f}%",
+                  f"p95 frame-gap improvement: {i['p95FrameGapLower']:.2f}%",
+                  f"p99 frame-gap improvement: {i['p99FrameGapLower']:.2f}%",
+                  '',
+                  f"AI scheduler: `{json.dumps(f['aiScheduler'])}`",
+                  f"Renderer: `{json.dumps(f['renderer'])}`",
+                  '',
+              ]
+          (out / 'FINAL-PERFORMANCE-COMPARISON.md').write_text('\n'.join(lines), encoding='utf-8')
+          print('\n'.join(lines))
+          PY
+
+      - name: Final release integrity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in /tmp/v14final/out/perf-*.json; do grep -Fq '"passed": true' "$f"; done
+          grep -Fq '"passed": true' /tmp/v14final/out/yandex-smoke.json
+          grep -Fq '"passed": true' /tmp/v14final/out/playgama-smoke.json
+          grep -Fq '"passed": true' /tmp/v14final/out/viewport-yandex/yandex-viewport.json
+          grep -Fq '"passed": true' /tmp/v14final/out/viewport-playgama/playgama-viewport.json
+          test -s /tmp/v14final/out/FINAL-PERFORMANCE-COMPARISON.json
+          test -s /tmp/v14final/out/FINAL-PERFORMANCE-COMPARISON.md
+          test -s /tmp/v14final/out/SHA256SUMS.txt
+          test -s /tmp/v14final/out/BUILD-PROVENANCE.txt
+          unzip -tq /tmp/v14final/out/openttd-yandexgames-v14-final.zip
+          unzip -tq /tmp/v14final/out/openttd-playgama-v14-final.zip
+          ls -lah /tmp/v14final/out
+
+      - name: Upload final tested v14 releases and all measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-final-tested
+          compression-level: 0
+          path: /tmp/v14final/out/
+          if-no-files-found: error
