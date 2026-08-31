@@ -10,7 +10,9 @@ consists of:
     maps from five complete tile-update sweeps to three. Every tile is still
     warmed multiple times; normal simulation after game start is unchanged;
   * a fair aggregate Squirrel opcode budget when many AIs are active, preventing
-    AI CPU cost from scaling linearly to 14 full VM slices per eligible tick.
+    AI CPU cost from scaling linearly to 14 full VM slices per eligible tick;
+  * change-only browser telemetry for active AI count / effective opcode budget,
+    so the production benchmark can prove that all requested competitors run.
 """
 from __future__ import annotations
 
@@ -75,6 +77,17 @@ genworld.write_text(g, encoding='utf-8')
 # AIs, each still receives ~42.9% of a normal slice every eligible AI tick.
 ai = Path('openttd/src/ai/ai_core.cpp')
 a = ai.read_text(encoding='utf-8')
+include_anchor = '#include "../framerate_type.h"\n'
+include_block = '''#include "../framerate_type.h"
+#ifdef __EMSCRIPTEN__
+#\tinclude <emscripten.h>
+#endif
+'''
+if '#\tinclude <emscripten.h>' not in a:
+    if a.count(include_anchor) != 1:
+        raise SystemExit(f'Expected one AI framerate include anchor, got {a.count(include_anchor)}')
+    a = a.replace(include_anchor, include_block, 1)
+
 ai_anchor = '''\tBackup<CompanyID> cur_company(_current_company);
 \tfor (const Company *c : Company::Iterate()) {
 '''
@@ -91,6 +104,27 @@ ai_block = '''#ifdef __EMSCRIPTEN__
 \t\t\t(static_cast<uint64_t>(browser_configured_opcode_budget) * 6u) / browser_active_ai_count);
 \t\tif (browser_ai_opcode_budget == 0) browser_ai_opcode_budget = 1;
 \t}
+
+\t/* Export benchmark evidence only when scheduler state changes, not every
+\t * tick. This keeps the diagnostic cost effectively zero during steady play. */
+\tstatic uint32_t browser_reported_ai_count = ~uint32_t{0};
+\tstatic uint32_t browser_reported_ai_budget = ~uint32_t{0};
+\tstatic uint32_t browser_reported_configured_budget = ~uint32_t{0};
+\tif (browser_reported_ai_count != browser_active_ai_count ||
+\t\t\tbrowser_reported_ai_budget != browser_ai_opcode_budget ||
+\t\t\tbrowser_reported_configured_budget != browser_configured_opcode_budget) {
+\t\tbrowser_reported_ai_count = browser_active_ai_count;
+\t\tbrowser_reported_ai_budget = browser_ai_opcode_budget;
+\t\tbrowser_reported_configured_budget = browser_configured_opcode_budget;
+\t\tEM_ASM({
+\t\t\tModule.__openttdAIStats = {
+\t\t\t\tactiveAI: $0,
+\t\t\t\tconfiguredOpcodeBudget: $1,
+\t\t\t\teffectiveOpcodeBudget: $2
+\t\t\t};
+\t\t}, browser_active_ai_count, browser_configured_opcode_budget, browser_ai_opcode_budget);
+\t}
+
 \tAutoRestoreBackup<uint32_t> browser_ai_budget(
 \t\t_settings_game.script.script_max_opcode_till_suspend, browser_ai_opcode_budget);
 #endif
@@ -145,13 +179,13 @@ def main() -> None:
         if forbidden in text:
             raise SystemExit(f'Unsupported experimental runtime flag must not be present: {forbidden}')
 
-    required = ('-msimd128', '-flto=thin', 'browser_tile_warmup_loops', 'browser_ai_opcode_budget')
+    required = ('-msimd128', '-flto=thin', 'browser_tile_warmup_loops', 'browser_ai_opcode_budget', '__openttdAIStats')
     for token in required:
         if token not in text:
             raise SystemExit(f'Missing performance invariant in patched build: {token}')
 
     path.write_text(text, encoding='utf-8')
-    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, large-map warmup reduction, fair aggregate AI VM budget.')
+    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, large-map warmup reduction, fair aggregate AI VM budget, change-only AI telemetry.')
 
 
 if __name__ == '__main__':
