@@ -6,7 +6,9 @@ browser compatibility. Native Wasm exceptions are not mixed with ASYNCIFY.
 The safe performance layer consists of:
   * -O3 + wasm SIMD + ThinLTO for C/C++ and the final link;
   * cooperative event-loop yields during synchronous world generation so very
-    large maps no longer become one giant browser LongTask.
+    large maps no longer become one giant browser LongTask;
+  * a fair aggregate Squirrel opcode budget when more than four AIs are active,
+    preventing AI CPU cost from scaling linearly to 14 full VM slices per tick.
 """
 from __future__ import annotations
 
@@ -70,6 +72,44 @@ if 'last_browser_yield_ms' not in g:
         raise SystemExit(f'Expected one world-progress function, got {g.count(old_progress)}')
     g = g.replace(old_progress, new_progress, 1)
 gui.write_text(g, encoding='utf-8')
+
+# With many competitors the stock AI scheduler gives every Squirrel VM a full
+# script_max_opcode_till_suspend slice in the same tick. At 14 AIs this makes
+# script work scale roughly 14x on one browser main thread. Keep every AI
+# scheduled every eligible tick, but cap the aggregate browser VM work to the
+# equivalent of four full configured slices. This only changes the amount of
+# script computation per tick; companies, sleep counters and scheduling remain
+# active and fair for every AI. The user's configured limit is never increased.
+ai = Path('openttd/src/ai/ai_core.cpp')
+a = ai.read_text(encoding='utf-8')
+ai_anchor = '''\tBackup<CompanyID> cur_company(_current_company);
+\tfor (const Company *c : Company::Iterate()) {
+'''
+ai_block = '''#ifdef __EMSCRIPTEN__
+\tuint32_t browser_active_ai_count = 0;
+\tfor (const Company *c : Company::Iterate()) {
+\t\tif (c->is_ai && c->ai_instance != nullptr) browser_active_ai_count++;
+\t}
+
+\tconst uint32_t browser_configured_opcode_budget = _settings_game.script.script_max_opcode_till_suspend;
+\tuint32_t browser_ai_opcode_budget = browser_configured_opcode_budget;
+\tif (browser_active_ai_count > 4 && browser_configured_opcode_budget > 0) {
+\t\tbrowser_ai_opcode_budget = static_cast<uint32_t>(
+\t\t\t(static_cast<uint64_t>(browser_configured_opcode_budget) * 4u) / browser_active_ai_count);
+\t\tif (browser_ai_opcode_budget == 0) browser_ai_opcode_budget = 1;
+\t}
+\tAutoRestoreBackup<uint32_t> browser_ai_budget(
+\t\t_settings_game.script.script_max_opcode_till_suspend, browser_ai_opcode_budget);
+#endif
+
+\tBackup<CompanyID> cur_company(_current_company);
+\tfor (const Company *c : Company::Iterate()) {
+'''
+if 'browser_ai_opcode_budget' not in a:
+    if a.count(ai_anchor) != 1:
+        raise SystemExit(f'Expected one AI scheduler anchor, got {a.count(ai_anchor)}')
+    a = a.replace(ai_anchor, ai_block, 1)
+ai.write_text(a, encoding='utf-8')
 PY_FULL_PERF_SOURCE
 """
     return text.replace(anchor, anchor + patch, 1)
@@ -110,13 +150,13 @@ def main() -> None:
         if forbidden in text:
             raise SystemExit(f'Incompatible native-EH tuning must not be present: {forbidden}')
 
-    required = ('-msimd128', '-flto=thin', 'last_browser_yield_ms')
+    required = ('-msimd128', '-flto=thin', 'last_browser_yield_ms', 'browser_ai_opcode_budget')
     for token in required:
         if token not in text:
             raise SystemExit(f'Missing performance invariant in patched build: {token}')
 
     path.write_text(text, encoding='utf-8')
-    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, cooperative mapgen yields; Asyncify compatibility retained.')
+    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, cooperative mapgen yields, fair aggregate AI VM budget; Asyncify compatibility retained.')
 
 
 if __name__ == '__main__':
