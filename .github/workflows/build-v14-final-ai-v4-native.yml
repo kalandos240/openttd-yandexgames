@@ -1,0 +1,167 @@
+name: Build v14 final AI-v4 native runtime
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/build-v14-final-ai-v4-native.yml'
+      - 'playgama/patch-browser-ai-runtime-v4.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout optimized browser edition
+        uses: actions/checkout@v4
+
+      - name: Checkout tested single-file pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire final source patch stack with AI v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+
+          cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp playgama/patch-browser-ai-runtime-v4.py legacy/ci/patch-browser-ai-runtime-v4.py
+
+          python3 -m py_compile \
+            legacy/ci/patch-playgama-newgrf-main-menu.py \
+            legacy/ci/patch-browser-ranking.py \
+            legacy/ci/patch-browser-ai-runtime-v4.py \
+            playgama/patch-browser-build-performance.py \
+            playgama/patch-browser-full-performance.py \
+            playgama/patch-browser-dirty-rect.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected one legacy AI-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one source patch anchor, got {text.count(anchor)}')
+          addition = (
+              "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
+              "    'python3 ci/patch-browser-ai-runtime-v4.py\\n'\n"
+          )
+          p.write_text(text.replace(anchor, anchor + addition, 1), encoding='utf-8')
+
+          build = Path('legacy/ci/build-final.sh')
+          b = build.read_text(encoding='utf-8')
+          fonts_anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          fonts_copy = (
+              fonts_anchor
+              + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf '
+              + 'openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf '
+              + 'openttd/build/yandex_baseset/\n'
+          )
+          if b.count(fonts_anchor) != 1:
+              raise SystemExit('Could not find font staging anchor')
+          build.write_text(b.replace(fonts_anchor, fonts_copy, 1), encoding='utf-8')
+          PY
+
+          # Performance patch runs immediately after clone. AI-v4 runs later in
+          # the source hook and is required to preserve its aggregate VM budget.
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 playgama/patch-browser-full-performance.py legacy/ci/build-final.sh
+          python3 playgama/patch-browser-dirty-rect.py legacy/ci/build-final.sh
+
+          grep -Fq -- '-msimd128' legacy/ci/build-final.sh
+          grep -Fq -- '-flto=thin' legacy/ci/build-final.sh
+          grep -Fq 'browser_tile_warmup_loops' legacy/ci/build-final.sh
+          grep -Fq 'browser_ai_opcode_budget' legacy/ci/build-final.sh
+          grep -Fq '__openttdAIStats' legacy/ci/build-final.sh
+          grep -Fq 'Module.__openttdDirtyRect' legacy/ci/build-final.sh
+          grep -Fq 'patch-browser-ai-runtime-v4.py' legacy/ci/build-yandex-release.sh
+          ! grep -Fq -- '-fwasm-exceptions' legacy/ci/build-final.sh
+          ! grep -Fq -- '-sASYNCIFY' legacy/ci/build-final.sh
+
+      - name: Compile OpenTTD 15.3 final AI-v4 single-file runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+
+          # Exact compiled-source invariants.
+          grep -Fq 'browser_tile_warmup_loops' openttd/src/genworld.cpp
+          grep -Fq 'Map::Size() >= 8u * 1024u * 1024u' openttd/src/genworld.cpp
+          grep -Fq 'browser_tile_warmup_loops = 0x300' openttd/src/genworld.cpp
+          grep -Fq 'Module.__openttdDirtyRect' openttd/src/video/sdl2_default_v.cpp
+
+          grep -Fq 'browser-ai-slot-v4' openttd/src/script/script_gui.cpp
+          grep -Fq 'browser-zero-ai-stagger-v4' openttd/src/company_cmd.cpp
+          grep -Fq 'timeout = 8;' openttd/src/company_cmd.cpp
+          grep -Fq 'browser-ai-phase-spread-v4' openttd/src/ai/ai_core.cpp
+          grep -Fq 'const uint run_mask =' openttd/src/ai/ai_core.cpp
+          grep -Fq 'AI::frame_counter + c->index.base()' openttd/src/ai/ai_core.cpp
+          grep -Fq 'browser_ai_opcode_budget' openttd/src/ai/ai_core.cpp
+          grep -Fq 'AutoRestoreBackup<uint32_t> browser_ai_budget' openttd/src/ai/ai_core.cpp
+          grep -Fq 'browser_active_ai_count > 6' openttd/src/ai/ai_core.cpp
+          grep -Fq 'Module.__openttdAIStats' openttd/src/ai/ai_core.cpp
+          grep -Fq 'Browser AI start v4:' openttd/src/ai/ai_core.cpp
+          grep -Fq 'Browser AI died v4:' openttd/src/ai/ai_instance.cpp
+
+          grep -Fq -- '-msimd128' openttd/build/CMakeCache.txt
+          grep -Fq -- '-flto=thin' openttd/build/CMakeCache.txt
+          ! grep -Fq -- '-sASYNCIFY' openttd/build/CMakeCache.txt
+
+          # Preserve the proven v14 tutorial/UI features.
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/english.txt
+          grep -Fq 'STR_BROWSER_TUTORIAL_LEVEL_28' openttd/src/lang/russian.txt
+          grep -Fq 'BrowserTutorialResolveTarget' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialTarget::RailToolbar' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialTarget::WaterToolbar' openttd/src/intro_gui.cpp
+          grep -Fq 'BrowserTutorialTarget::AirToolbar' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_RAT_AUTORAIL' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_RAT_BUILD_STATION' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_RAT_BUILD_SIGNALS' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_DT_STATION' openttd/src/intro_gui.cpp
+          grep -Fq 'WID_AT_AIRPORT' openttd/src/intro_gui.cpp
+          grep -Fq 'ChangeGameSpeed(_game_speed == 100);' openttd/src/toolbar_gui.cpp
+
+      - name: Validate generated AI-v4 single-file runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v14-ai-v4-runtime
+          mkdir -p /tmp/v14-ai-v4-runtime
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/v14-ai-v4-runtime
+          test -s /tmp/v14-ai-v4-runtime/openttd-runtime.js
+          test ! -e /tmp/v14-ai-v4-runtime/openttd.wasm
+          test ! -e /tmp/v14-ai-v4-runtime/openttd.data
+          test "$(stat -c%s /tmp/v14-ai-v4-runtime/openttd-runtime.js)" -gt 20000000
+          node --check /tmp/v14-ai-v4-runtime/openttd-runtime.js
+          ! grep -Fq 'Asyncify.handleSleep' /tmp/v14-ai-v4-runtime/openttd-runtime.js
+          grep -Fq '__openttdDirtyRect' /tmp/v14-ai-v4-runtime/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/v14-ai-v4-runtime/openttd-runtime.js
+
+      - name: Upload verified final AI-v4 native runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-final-ai-v4-native-runtime
+          compression-level: 0
+          path: legacy/OpenTTD-YandexGames-Direct.zip
+          if-no-files-found: error
