@@ -9,10 +9,7 @@ OpenTTD zero-interval patch remains part of the legacy source pipeline.
 from __future__ import annotations
 
 import argparse
-import py_compile
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 
@@ -28,6 +25,10 @@ def remove_legacy_ai_sanitizers(build_script: Path) -> None:
         raise SystemExit('Native competitors_interval=0 patch is missing from the release source hook')
 
     text = cleanup.read_text(encoding='utf-8')
+
+    # The obsolete offline cleanup modified os/emscripten/pre.js so releaseStartup()
+    # rewrote max_no_competitors=0 immediately before OpenTTD main(). That was the
+    # root cause of empty companies whose AI script never woke up.
     pattern = re.compile(
         r'''\n    # Old local/cloud configuration.*?'''
         r'''    text = replace_once\(text, old_release, new_release, 'offline AI startup config'\)\n''',
@@ -37,6 +38,8 @@ def remove_legacy_ai_sanitizers(build_script: Path) -> None:
     if count != 1:
         raise SystemExit(f'Expected one late AI startup sanitizer, found {count}')
 
+    # The same cleanup also forced zero during cloud config read/write. Remove the
+    # complete patch block so restored player settings survive unchanged.
     start = text.find("    old_read = '''  function readConfig(FS, personalDir) {")
     end_marker = "    text = replace_once(text, old_write, new_write, 'cloud config restore sanitizer')\n"
     end = text.find(end_marker, start)
@@ -59,6 +62,8 @@ def main() -> None:
     path = args.build_script
     text = path.read_text(encoding='utf-8')
 
+    # Support both a clean legacy checkout and a locally re-patched script, but
+    # always leave the build on the known-good 64 MiB baseline.
     text = text.replace('INITIAL_MEMORY=134217728', 'INITIAL_MEMORY=67108864')
     if text.count('INITIAL_MEMORY=67108864') != 1:
         raise SystemExit(f'Expected one stable 64 MiB initial-memory setting, got {text.count("INITIAL_MEMORY=67108864")}')
@@ -85,19 +90,16 @@ def main() -> None:
             raise SystemExit(f'Unstable browser tuning remains in build script: {forbidden}')
 
     path.write_text(text, encoding='utf-8')
+
+    # Remove the legacy late AI-zero rewrites before build-yandex-release.sh runs.
     remove_legacy_ai_sanitizers(path)
 
-    palette_patch = Path(__file__).with_name('patch-browser-palette-dirty.py')
-    if palette_patch.is_file():
-        py_compile.compile(str(palette_patch), doraise=True)
-        subprocess.run([sys.executable, str(palette_patch), str(path)], check=True)
-        patched = path.read_text(encoding='utf-8')
-        if 'V14_BROWSER_PALETTE_DIRTY_PATCH' not in patched:
-            raise SystemExit('Palette dirty-region source patch did not wire into build-final.sh')
-        if 'if (IsEmptyRect(this->dirty_rect)) return;' not in patched:
-            raise SystemExit('Palette empty-present browser guard is missing from build-final.sh')
-        print('Browser palette dirty-region patch compiled, wired, and empty-present guard verified.')
-
+    # The direct-file build mutates a temporary copy of build-final.sh. Validate
+    # the artifact that is actually delivered after that generated build has
+    # completed. SINGLE_FILE=1 may legitimately leave no intermediate
+    # openttd/build/openttd.js: patch-yandex-runtime-cleanup.py extracts the
+    # executable single-file payload into dist/openttd-runtime.js. Requiring the
+    # optional intermediate file caused a false failure after a successful build.
     direct = path.with_name('build-direct-file.sh')
     if direct.is_file():
         d = direct.read_text(encoding='utf-8')
