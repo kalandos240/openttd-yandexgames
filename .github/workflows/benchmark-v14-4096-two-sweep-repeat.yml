@@ -1,0 +1,92 @@
+name: Benchmark v14 4096 two-sweep repeat
+
+on:
+  push:
+    branches:
+      - perf/v14-4096-generation-v4
+    paths:
+      - '.github/workflows/benchmark-v14-4096-two-sweep-repeat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      NATIVE_ARTIFACT_ID: '9766953838'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble repeated two-sweep candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/twosweep2
+          mkdir -p "$ROOT"/{native-artifact,native,ya-artifact,prod,out,browser-node}
+          get_artifact() { curl -fL --retry 5 --retry-all-errors -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" -o "$2"; }
+          get_artifact "$NATIVE_ARTIFACT_ID" "$ROOT/native.zip"
+          get_artifact "$VERIFIED_YA_ARTIFACT_ID" "$ROOT/ya.zip"
+          unzip -q "$ROOT/native.zip" -d "$ROOT/native-artifact"
+          native_zip="$(find "$ROOT/native-artifact" -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          unzip -q "$native_zip" -d "$ROOT/native"
+          unzip -q "$ROOT/ya.zip" -d "$ROOT/ya-artifact"
+          ya_zip="$(find "$ROOT/ya-artifact" -type f -name '*.zip' -print -quit)"
+          unzip -q "$ya_zip" -d "$ROOT/prod"
+          cp "$ROOT/native/openttd-runtime.js" "$ROOT/prod/openttd-runtime.js"
+          rm -f "$ROOT/prod/openttd.wasm" "$ROOT/prod/openttd.data"
+          python3 ci/patch-v14-webgl-runtime-proven.py "$ROOT/prod/openttd-runtime.js"
+          python3 ci/patch-v14-performance-package.py "$ROOT/prod" --platform yandex
+          python3 yandex/neutralize_yandex_runtime.py "$ROOT/prod"
+          node --check "$ROOT/prod/openttd-runtime.js"
+          cat > "$ROOT/prod/sdk.js" <<'JS'
+          (()=>{const d=Object.create(null),p={async getData(k){const o={};for(const x of(k||[]))if(Object.prototype.hasOwnProperty.call(d,x))o[x]=d[x];return o},async setData(v){Object.assign(d,v||{});return true},getMode(){return'full'},getUniqueID(){return'two-sweep-repeat'},getName(){return'Two Sweep Repeat'},isAuthorized(){return true}},y={environment:{i18n:{lang:'en'},app:{id:'two-sweep-repeat'}},features:{LoadingAPI:{ready(){return Promise.resolve(true)}},GameplayAPI:{start(){return Promise.resolve(true)},stop(){return Promise.resolve(true)}}},adv:{showFullscreenAdv({callbacks}={}){callbacks?.onOpen?.();callbacks?.onClose?.(true)}},leaderboards:{async getEntries(){return{entries:[]}},async setScore(){return true}},async getPlayer(){return p},isAvailableMethod(){return Promise.resolve(true)},on(){},off(){}};window.YaGames={async init(){return y}}})();
+          JS
+      - name: Install proven harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/twosweep2/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          grep -Fq 'mainThreadProbeBlockedMs: mainThreadBlockedMs' ./perf.mjs
+      - name: Stress repeat
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          "$CHROME_BIN" --version
+          cd /tmp/twosweep2/prod
+          python3 -m http.server 8198 --bind 127.0.0.1 >/tmp/twosweep2-http.log 2>&1 & pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8198/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/twosweep2/browser-node
+          node perf.mjs yandex http://127.0.0.1:8198/index.html /tmp/twosweep2/out/two-sweep-repeat.json optimized 12 30000 during
+      - name: Gate and summarize
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path('/tmp/twosweep2/out/two-sweep-repeat.json').read_text())
+          s=d['ai14']['snapshot']; u=d['renderer']['upload']
+          summary={'passed':d['passed'],'generationMs':d['generation']['wallMsUntilResponsive'],'blockedMs':d['generation']['mainThreadProbeBlockedMs'],'fps':s['estimatedFps'],'p95':s['p95FrameGapMs'],'p99':s['p99FrameGapMs'],'longestLongTaskMs':s['longestLongTaskMs'],'wasmHeapBytes':s['wasmHeapBytes'],'aiScheduler':d['aiScheduler'],'bytesUploaded':u['bytesUploaded'],'partialUploadRatio':d['renderer']['partialUploadRatio']}
+          Path('/tmp/twosweep2/out/TWO-SWEEP-REPEAT-SUMMARY.json').write_text(json.dumps(summary,indent=2))
+          print(json.dumps(summary,indent=2))
+          if not d['passed'] or d['aiScheduler']['activeAI'] != 14: raise SystemExit('repeat failed')
+          if s['wasmHeapBytes'] != 445841408: raise SystemExit('heap changed')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openttd-v14-4096-two-sweep-repeat
+          compression-level: 0
+          path: /tmp/twosweep2/out/
+          if-no-files-found: warn
