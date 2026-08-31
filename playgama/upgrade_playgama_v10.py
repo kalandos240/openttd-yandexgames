@@ -127,6 +127,45 @@ def patch_runtime_fixes(dist: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def install_addon_loader(dist: Path, loader: Path) -> None:
+    """Copy the optimized loader exactly and validate its release invariants."""
+    if not loader.is_file():
+        raise SystemExit(f"Bundled add-on loader is missing: {loader}")
+
+    target = dist / "openttd-bundled-addons.js"
+    shutil.copy2(loader, target)
+
+    source_bytes = loader.read_bytes()
+    packaged_bytes = target.read_bytes()
+    if packaged_bytes != source_bytes:
+        raise SystemExit("Packaged bundled add-on loader differs from source bytes")
+
+    text = packaged_bytes.decode("utf-8")
+    required = (
+        "return '/newgrf'",
+        "WRITE_CHUNK_BYTES = 1024 * 1024",
+        "chunked_writes: true",
+        "waiting-for-main",
+    )
+    missing = [marker for marker in required if marker not in text]
+    if missing:
+        raise SystemExit(f"Optimized bundled add-on loader markers are missing: {missing}")
+
+    forbidden = (
+        "PLAYGAMA-ALL-LICENSES.md",
+        "personalDir + '/newgrf'",
+        "INSTALL_CONCURRENCY = 2",
+    )
+    leftovers = [marker for marker in forbidden if marker in text]
+    if leftovers:
+        raise SystemExit(f"Legacy bundled add-on runtime markers remain: {leftovers}")
+
+    print(
+        "Bundled add-on loader verified byte-for-byte: post-main idle install, "
+        "1 MiB chunked MEMFS writes, no runtime license fetch/IDBFS NewGRF path."
+    )
+
+
 def install_shared_helpers(dist: Path) -> None:
     root = Path(__file__).resolve().parent
     for filename in ("openttd-full-viewport.js", "openttd-ranking-core.js", "openttd-global-ranking.js"):
@@ -189,7 +228,7 @@ def main() -> None:
         raise SystemExit("OPENTTD-BUNDLED-ADDONS.json is missing")
 
     normalize_addon_assets(dist)
-    shutil.copy2(args.loader, dist / "openttd-bundled-addons.js")
+    install_addon_loader(dist, args.loader)
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
     install_shared_helpers(dist)
@@ -200,7 +239,8 @@ def main() -> None:
         "OpenTTD browser v12 ranking-ready base\n"
         "======================================\n"
         "- Uses the documented stable platform bridge.\n"
-        "- Optional NewGRF/license downloads never block OpenTTD startup.\n"
+        "- Optional NewGRF loading never blocks OpenTTD startup.\n"
+        "- Combined runtime license documents/fetches are removed; legal notices remain static.\n"
         "- Uses the entire browser viewport instead of forcing a 16:9 letterbox.\n"
         "- Resizes the SDL backing surface to viewport CSS pixels, avoiding stretched graphics.\n"
         "- Uses standards-mode HTML with a valid <!DOCTYPE html>.\n"
