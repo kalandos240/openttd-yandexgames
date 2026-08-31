@@ -3,7 +3,7 @@
 
 OpenTTD already tracks the minimal dirty rectangle in VideoDriver_SDL_Default::Paint,
 but SDL2's Emscripten framebuffer backend ignores the rects and sends the entire
-surface to JavaScript.  This browser-only source patch publishes the rectangle just
+surface to JavaScript. This browser-only source patch publishes the rectangle just
 before SDL_UpdateWindowSurfaceRects(), allowing the later WebGL presenter patch to
 upload only changed pixels while keeping SDL's stock call and fallback intact.
 """
@@ -23,7 +23,7 @@ def patch_build_script(text: str) -> str:
     if text.count(anchor) != 1:
         raise SystemExit(f"Expected one OpenTTD clone anchor, got {text.count(anchor)}")
 
-    source_patch = r'''# V14_DIRTY_RECT_SOURCE_PATCH
+    source_patch = r"""# V14_DIRTY_RECT_SOURCE_PATCH
 python3 - <<'PY_DIRTY_RECT_SOURCE'
 from pathlib import Path
 
@@ -46,7 +46,7 @@ if 'Module.__openttdDirtyRect' not in text:
     text = text.replace(anchor, replacement, 1)
 path.write_text(text, encoding='utf-8')
 PY_DIRTY_RECT_SOURCE
-'''
+"""
     return text.replace(anchor, anchor + source_patch, 1)
 
 
