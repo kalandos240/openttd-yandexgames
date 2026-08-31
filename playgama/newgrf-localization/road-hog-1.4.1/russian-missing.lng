@@ -1,0 +1,29 @@
+# Missing gameplay strings in upstream Road Hog 1.4.1 Russian localization.
+# Append to the pinned upstream src/lang/russian.lng before rebuilding.
+STR_AUTOREPLACE_TEXT_ELECTRIC_TRAMWAY:Электрические трамваи
+STR_AUTOREPLACE_TEXT_HEAVY_HAUL_ROAD:Тяжёлый автотранспорт
+STR_AUTOREPLACE_TEXT_TRAMWAY:Трамваи
+STR_BUILD_WINDOW_CAPTION_ELECTRIC_TRAMWAY:Новые электрические трамваи
+STR_BUILD_WINDOW_CAPTION_HEAVY_HAUL_ROAD:Новый тяжёлый автотранспорт
+STR_BUILD_WINDOW_CAPTION_TRAMWAY:Новые трамваи
+STR_MENU_TEXT_ELECTRIC_TRAMWAY:Строительство электрических трамвайных путей
+STR_MENU_TEXT_HEAVY_HAUL_ROAD:Строительство дорог для тяжёлого автотранспорта
+STR_MENU_TEXT_TRAMWAY:Строительство трамвайных путей
+STR_NAME_ELECTRIC_TRAMWAY:Электрическая трамвайная линия
+STR_NAME_HEAVY_HAUL_ROAD:Дорога для тяжёлого автотранспорта
+STR_NAME_SUFFIX_DIESEL:Дизельный
+STR_NAME_SUFFIX_ELECTRIC:Электрический
+STR_NAME_SUFFIX_FRUIT_VEG_TRAM:Трамвай для фруктов и овощей
+STR_NAME_SUFFIX_LOG_TRUCK:Лесовоз
+STR_NAME_SUFFIX_MAIL_TRAM:Почтовый трамвай
+STR_NAME_SUFFIX_MAIL_TRUCK:Почтовый грузовик
+STR_NAME_SUFFIX_METAL_TRAM:Литейный трамвай
+STR_NAME_SUFFIX_METAL_TRUCK:Литейный грузовик
+STR_NAME_SUFFIX_STEAM:Паровой
+STR_NAME_TRAMWAY:Трамвайная линия
+STR_NEW_ENGINE_TEXT_ELECTRIC_TRAMWAY:электрический трамвай
+STR_NEW_ENGINE_TEXT_HEAVY_HAUL_ROAD:тяжёлый автотранспорт
+STR_NEW_ENGINE_TEXT_TRAMWAY:трамвай
+STR_TOOLBAR_CAPTION_ELECTRIC_TRAMWAY:Строительство электрических трамвайных путей
+STR_TOOLBAR_CAPTION_HEAVY_HAUL_ROAD:Строительство дорог для тяжёлого автотранспорта
+STR_TOOLBAR_CAPTION_TRAMWAY:Строительство трамвайных путей
