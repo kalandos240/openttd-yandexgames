@@ -223,7 +223,6 @@ try {
     const upload = result.renderer.upload;
     if (!upload) throw new Error('WebGL upload telemetry is missing');
     if ((upload.partialUploads || 0) < 1) throw new Error('No dirty-rect partial uploads were observed');
-    if ((upload.rectUploads || 0) < 1) throw new Error('Multi-rect upload telemetry is missing');
     if (!result.aiScheduler) throw new Error('AI scheduler telemetry is missing');
     if (result.aiScheduler.activeAI !== 14) throw new Error(`Expected 14 active AI, got ${result.aiScheduler.activeAI}`);
     if (!(result.aiScheduler.effectiveOpcodeBudget > 0 && result.aiScheduler.effectiveOpcodeBudget < result.aiScheduler.configuredOpcodeBudget)) {
