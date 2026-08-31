@@ -24,7 +24,18 @@ const responses = new Map();
 const pageErrors = [];
 const failedRequests = [];
 const blockedExternal = [];
+const externalWebSockets = [];
 const consoleLines = [];
+
+const isExternalNetworkUrl = raw => {
+  try {
+    const u = new URL(raw);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(u.protocol)) return false;
+    return u.hostname !== '127.0.0.1' && u.hostname !== 'localhost';
+  } catch (_) {
+    return false;
+  }
+};
 
 page.on('response', response => {
   try {
@@ -36,13 +47,21 @@ page.on('pageerror', error => pageErrors.push(String(error?.stack || error)));
 page.on('requestfailed', request => failedRequests.push(`${request.url()} :: ${request.failure()?.errorText || 'failed'}`));
 page.on('console', message => consoleLines.push(`[${message.type()}] ${message.text()}`));
 
+/* Request interception catches HTTP(S) dependencies. CDP is also enabled so a
+   WebSocket attempt cannot bypass the autonomy gate. */
+const cdp = await page.createCDPSession();
+await cdp.send('Network.enable');
+cdp.on('Network.webSocketCreated', event => {
+  if (isExternalNetworkUrl(event.url) && !externalWebSockets.includes(event.url)) externalWebSockets.push(event.url);
+});
+
 await page.setRequestInterception(true);
 page.on('request', request => {
   const requestUrl = request.url();
   try {
     const u = new URL(requestUrl);
-    if ((u.protocol === 'http:' || u.protocol === 'https:') && u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
-      blockedExternal.push(requestUrl);
+    if ((u.protocol === 'http:' || u.protocol === 'https:') && isExternalNetworkUrl(requestUrl)) {
+      if (!blockedExternal.includes(requestUrl)) blockedExternal.push(requestUrl);
       request.abort('blockedbyclient');
       return;
     }
@@ -98,6 +117,16 @@ try {
   if (platform === 'yandex' && result.yandexSdk !== 'ready') throw new Error(`Yandex SDK path did not initialize: ${JSON.stringify(result)}`);
   if (platform === 'playgama' && result.playgamaBridge !== 'ready') throw new Error(`Playgama Bridge path did not initialize: ${JSON.stringify(result)}`);
   if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('\n')}`);
+
+  /* For the Yandex build, merely aborting an external request is not enough:
+     attempting one is a release failure. The package must be autonomous apart
+     from the same-origin /sdk.js supplied by Yandex Games. */
+  if (platform === 'yandex' && blockedExternal.length) {
+    throw new Error(`Yandex package attempted external HTTP(S) requests:\n${blockedExternal.join('\n')}`);
+  }
+  if (platform === 'yandex' && externalWebSockets.length) {
+    throw new Error(`Yandex package attempted external WebSocket connections:\n${externalWebSockets.join('\n')}`);
+  }
 } catch (error) {
   failure = String(error?.stack || error);
   try { await page.screenshot({ path: output.replace(/\.json$/i, '.png'), fullPage: true }); } catch (_) {}
@@ -113,6 +142,7 @@ const report = {
   pageErrors,
   failedRequests,
   blockedExternal,
+  externalWebSockets,
   consoleTail: consoleLines.slice(-160),
 };
 fs.writeFileSync(output, JSON.stringify(report, null, 2));
@@ -121,3 +151,4 @@ await browser.close();
 if (failure) process.exit(1);
 
 // v14 platform-verified release trigger: 2026-08-30
+// Yandex autonomy gate hardened: HTTP(S) attempts and WebSockets are fatal.
