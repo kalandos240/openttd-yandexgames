@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Build one native-viewable Markdown document containing all distributed licenses."""
+"""Validate the minimal static legal payload for browser releases.
+
+Older builds generated one large PLAYGAMA-ALL-LICENSES.md document so a custom
+native main-menu window could display every license inside OpenTTD. The runtime
+window and its fetch/copy path have been removed. Keeping the combined document
+would only duplicate texts already distributed under licenses/ and increase the
+package/runtime surface.
+
+This script therefore does *not* build an in-game document. It normalizes the
+small platform notices, verifies that the legally required static license/source
+files are still present, and deletes stale combined license documents left by an
+older package base.
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,11 +23,21 @@ PORT_SOURCE_POINTER = "https://api.github.com/repositories/1328069895"
 LEGACY_PORT_SOURCE_URL = "https://github.com/kalandos240/openttd-yandexgames"
 LEGAL_REPLACEMENTS = (
     ("Yandex Games WebAssembly edition", "Playgama WebAssembly edition"),
-    ("Yandex Games port source, patches and reproducible build scripts:",
-     "Web/Playgama port source, patches and reproducible build scripts:"),
-    ("Yandex Games integration and WebAssembly build modifications",
-     "Playgama integration and WebAssembly build modifications"),
+    (
+        "Yandex Games port source, patches and reproducible build scripts:",
+        "Web/Playgama port source, patches and reproducible build scripts:",
+    ),
+    (
+        "Yandex Games integration and WebAssembly build modifications",
+        "Playgama integration and WebAssembly build modifications",
+    ),
     (LEGACY_PORT_SOURCE_URL, PORT_SOURCE_POINTER),
+)
+
+STALE_COMBINED_DOCUMENTS = (
+    "PLAYGAMA-ALL-LICENSES.md",
+    "THIRD-PARTY-LICENSES.md",
+    "ALL-LICENSES.md",
 )
 
 
@@ -30,13 +52,7 @@ def normalize_playgama_legal_text(text: str) -> str:
 
 
 def normalize_legacy_legal_files(dist: Path) -> None:
-    """Remove legacy platform branding from Playgama-facing legal documents.
-
-    The port originates from a previously tested browser build, so NOTICE.txt and
-    SOURCE_CODE.txt can carry obsolete platform wording. Keep all licensing/source
-    obligations intact while making the distributed Playgama package platform-
-    neutral except for its active Playgama integration notice.
-    """
+    """Remove obsolete platform branding without removing legal obligations."""
     for name in ("NOTICE.txt", "SOURCE_CODE.txt"):
         path = dist / name
         if not path.is_file():
@@ -68,10 +84,12 @@ def main() -> None:
     ai_manifest_path = dist / "OPENTTD-CLASSIC-AI-MANIFEST.json"
     addon_manifest_path = dist / "OPENTTD-BUNDLED-ADDONS.json"
     if not ai_manifest_path.is_file() or not addon_manifest_path.is_file():
-        raise SystemExit("AI/add-on manifests are required before building licenses")
+        raise SystemExit("AI/add-on manifests are required before legal validation")
 
     ai_manifest = json.loads(read_text(ai_manifest_path))
     addons = json.loads(read_text(addon_manifest_path))
+    if not isinstance(ai_manifest, list) or not ai_manifest:
+        raise SystemExit("AI manifest is empty or invalid")
 
     required_addons = {
         "newgrf/43411223",
@@ -85,8 +103,10 @@ def main() -> None:
     addon_rows = {row["content_id"]: row for row in addons["items"]}
     missing = required_addons - addon_rows.keys()
     if missing:
-        raise SystemExit(f"License bundle cannot be complete; missing add-ons: {sorted(missing)}")
+        raise SystemExit(f"Legal validation cannot be complete; missing add-ons: {sorted(missing)}")
 
+    # These remain distribution-only files. Nothing in the browser runtime
+    # reads them, mounts them into IDBFS, or copies them into MEMFS.
     required_legal_files = [
         licenses / "Port" / "LICENSE-GPL-2.0.txt",
         licenses / "OpenTTD" / "COPYING.md",
@@ -109,79 +129,28 @@ def main() -> None:
     ]
     missing_files = [str(p.relative_to(dist)) for p in required_legal_files if not p.is_file()]
     if missing_files:
-        raise SystemExit(f"Required license files are missing: {missing_files}")
+        raise SystemExit(f"Required static legal files are missing: {missing_files}")
 
-    out: list[str] = []
-    out.append("# OpenTTD Playgama — licenses and third-party notices")
-    out.append("")
-    out.append("This document is bundled with the game and can be opened from the main menu using the Licenses / Лицензии button.")
-    out.append("It lists the license of the port, OpenTTD, bundled base sets, AI packages, AI libraries and every optional NewGRF/base-graphics add-on shipped in this build.")
-    out.append("")
+    for required_notice in ("NOTICE.txt", "SOURCE_CODE.txt"):
+        path = dist / required_notice
+        if not path.is_file() or path.stat().st_size == 0:
+            raise SystemExit(f"Required distribution notice is missing: {required_notice}")
 
-    out.append("# Component index")
-    out.append("")
-    out.append("## Core and port")
-    out.append("- OpenTTD 15.3 browser/Playgama port — GNU GPL v2; see licenses/Port/LICENSE-GPL-2.0.txt and licenses/OpenTTD/COPYING.md.")
-    out.append("- OpenTTD third-party libraries — see the individual Catch2, fmt, ICU, LLVM CMake, nlohmann/json, social-integration API and Squirrel notices below.")
-    out.append("- OpenGFX 8.0, OpenSFX 1.0.3 and OpenMSX 0.4.2 — see their complete bundled license files below.")
-    out.append("")
-
-    out.append("## Bundled AI and AI libraries")
-    seen_ai = set()
-    for row in ai_manifest:
-        key = (row.get("content_id"), row.get("filename"), row.get("license"))
-        if key in seen_ai:
-            continue
-        seen_ai.add(key)
-        out.append(f"- {row.get('filename')} ({row.get('content_id')}) — {row.get('license')}; GNU GPL v2 text is included below.")
-    out.append("")
-
-    out.append("## Optional add-ons (disabled by default)")
-    for cid in sorted(required_addons):
-        row = addon_rows[cid]
-        source = row.get("source", "")
-        out.append(f"- {row.get('name')} {row.get('version', '')} ({cid}) — {row.get('license')}; source: {source}")
-    out.append("")
-    out.append("FIRS Industries 5 and GIST are alternative industry sets and should not be enabled together in the same new game.")
-    out.append("")
-
-    out.append("# Source-code and distribution notices")
-    for name in ("SOURCE_CODE.txt", "THIRD-PARTY-ADDONS.md", "NOTICE.txt", "PLAYGAMA-INTEGRATION.txt"):
+    removed = []
+    for name in STALE_COMBINED_DOCUMENTS:
         path = dist / name
-        if path.is_file():
-            out.append(f"## {name}")
-            out.append("")
-            out.append(read_text(path).strip())
-            out.append("")
+        if path.exists():
+            path.unlink()
+            removed.append(name)
 
-    out.append("# Full license texts")
-    out.append("")
-    for path in required_legal_files:
-        rel = path.relative_to(dist).as_posix()
-        out.append(f"## {rel}")
-        out.append("")
-        out.append(read_text(path).strip())
-        out.append("")
+    leftovers = [name for name in STALE_COMBINED_DOCUMENTS if (dist / name).exists()]
+    if leftovers:
+        raise SystemExit(f"Combined runtime license documents remain: {leftovers}")
 
-    output = "\n".join(out).rstrip() + "\n"
-    target = dist / "PLAYGAMA-ALL-LICENSES.md"
-    target.write_text(output, encoding="utf-8")
-
-    if target.stat().st_size < 100_000:
-        raise SystemExit(f"Combined license document is suspiciously small: {target.stat().st_size} bytes")
-
-    text = read_text(target)
-    lowered = text.lower()
-    if "yandex" in lowered or "яндекс" in lowered:
-        raise SystemExit("Legacy platform branding remains in combined Playgama license document")
-
-    required_names = [addon_rows[cid]["name"] for cid in required_addons]
-    required_names += ["SimpleAI", "OpenTTD", "OpenGFX", "OpenSFX", "OpenMSX"]
-    absent = [name for name in required_names if name not in text]
-    if absent:
-        raise SystemExit(f"Combined license index is incomplete: {absent}")
-
-    print(f"Complete in-game license bundle: {target} ({target.stat().st_size} bytes)")
+    print(
+        "Static legal payload validated; no in-game/combined license document generated. "
+        f"Removed stale documents: {removed or 'none'}"
+    )
 
 
 if __name__ == "__main__":
