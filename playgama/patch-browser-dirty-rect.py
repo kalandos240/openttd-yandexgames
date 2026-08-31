@@ -7,9 +7,10 @@ browser: two small distant updates can become an almost full-screen upload.
 
 This browser-only patch keeps the stock bounding rectangle for native SDL
 behaviour, while additionally tracking up to 16 merged dirty rectangles for the
-WebGL presenter. When the list is full, the new rectangle is merged into the
-existing rectangle with the smallest area growth instead of falling back to a
-all-screen bounding box.
+WebGL presenter. To keep pathological invalidation bursts (notably synchronous
+4096x4096 world generation) O(1) after a small bounded amount of work, tracking
+saturates after 64 MakeDirty calls in one present interval and falls back to the
+stock bounding rectangle for the remainder of that frame.
 """
 from __future__ import annotations
 
@@ -36,8 +37,11 @@ text = header.read_text(encoding='utf-8')
 anchor = '''\tRect dirty_rect{}; ///< Rectangle encompassing the dirty area of the video buffer.\n'''
 replacement = anchor + '''#ifdef __EMSCRIPTEN__
 \tstatic constexpr size_t BROWSER_DIRTY_RECT_LIMIT = 16;
+\tstatic constexpr size_t BROWSER_DIRTY_EVENT_LIMIT = 64;
 \tRect browser_dirty_rects[BROWSER_DIRTY_RECT_LIMIT]{};
 \tsize_t browser_dirty_rect_count = 0;
+\tsize_t browser_dirty_event_count = 0;
+\tbool browser_dirty_rect_saturated = false;
 #endif
 '''
 if 'BROWSER_DIRTY_RECT_LIMIT' not in text:
@@ -60,47 +64,56 @@ replacement = '''void VideoDriver_SDL_Base::MakeDirty(int left, int top, int wid
 \tthis->dirty_rect = BoundingRect(this->dirty_rect, r);
 
 #ifdef __EMSCRIPTEN__
-\t/* Preserve spatial locality instead of collapsing every invalidation into
-\t * one bounding box. Nearby rectangles are merged to keep GL call count low.
-\t * When all slots are occupied, merge into the slot with the least area
-\t * growth; this is still much cheaper than promoting the entire frame. */
-\tconstexpr int browser_merge_gap = 4;
-\tRect merged = r;
-\tfor (size_t i = 0; i < this->browser_dirty_rect_count;) {
-\t\tconst Rect &candidate = this->browser_dirty_rects[i];
-\t\tconst bool nearby =
-\t\t\tmerged.left <= candidate.right + browser_merge_gap &&
-\t\t\tmerged.right + browser_merge_gap >= candidate.left &&
-\t\t\tmerged.top <= candidate.bottom + browser_merge_gap &&
-\t\t\tmerged.bottom + browser_merge_gap >= candidate.top;
-\t\tif (!nearby) {
-\t\t\t++i;
-\t\t\tcontinue;
-\t\t}
+\t/* Multi-rect tracking is useful during ordinary gameplay but MakeDirty can
+\t * fire an enormous number of times while a 4096x4096 world is generated.
+\t * Bound bookkeeping per present interval: after a modest number of events,
+\t * stop doing O(rect_count) spatial merges and let the stock bounding rect be
+\t * the correctness fallback for the rest of this frame. */
+\tif (!this->browser_dirty_rect_saturated) {
+\t\tthis->browser_dirty_event_count++;
+\t\tif (this->browser_dirty_event_count > BROWSER_DIRTY_EVENT_LIMIT) {
+\t\t\tthis->browser_dirty_rect_count = 0;
+\t\t\tthis->browser_dirty_rect_saturated = true;
+\t\t} else {
+\t\t\tconstexpr int browser_merge_gap = 4;
+\t\t\tRect merged = r;
+\t\t\tfor (size_t i = 0; i < this->browser_dirty_rect_count;) {
+\t\t\t\tconst Rect &candidate = this->browser_dirty_rects[i];
+\t\t\t\tconst bool nearby =
+\t\t\t\t\tmerged.left <= candidate.right + browser_merge_gap &&
+\t\t\t\t\tmerged.right + browser_merge_gap >= candidate.left &&
+\t\t\t\t\tmerged.top <= candidate.bottom + browser_merge_gap &&
+\t\t\t\t\tmerged.bottom + browser_merge_gap >= candidate.top;
+\t\t\t\tif (!nearby) {
+\t\t\t\t\t++i;
+\t\t\t\t\tcontinue;
+\t\t\t\t}
 
-\t\tmerged = BoundingRect(merged, candidate);
-\t\tthis->browser_dirty_rects[i] = this->browser_dirty_rects[this->browser_dirty_rect_count - 1];
-\t\t--this->browser_dirty_rect_count;
-\t\ti = 0;
-\t}
+\t\t\t\tmerged = BoundingRect(merged, candidate);
+\t\t\t\tthis->browser_dirty_rects[i] = this->browser_dirty_rects[this->browser_dirty_rect_count - 1];
+\t\t\t\t--this->browser_dirty_rect_count;
+\t\t\t\ti = 0;
+\t\t\t}
 
-\tif (this->browser_dirty_rect_count < BROWSER_DIRTY_RECT_LIMIT) {
-\t\tthis->browser_dirty_rects[this->browser_dirty_rect_count++] = merged;
-\t} else {
-\t\tauto area = [](const Rect &rect) -> int64_t {
-\t\t\treturn static_cast<int64_t>(rect.right - rect.left) * static_cast<int64_t>(rect.bottom - rect.top);
-\t\t};
-\t\tsize_t best = 0;
-\t\tint64_t best_growth = INT64_MAX;
-\t\tfor (size_t i = 0; i < this->browser_dirty_rect_count; ++i) {
-\t\t\tconst Rect combined = BoundingRect(this->browser_dirty_rects[i], merged);
-\t\t\tconst int64_t growth = area(combined) - area(this->browser_dirty_rects[i]);
-\t\t\tif (growth < best_growth) {
-\t\t\t\tbest = i;
-\t\t\t\tbest_growth = growth;
+\t\t\tif (this->browser_dirty_rect_count < BROWSER_DIRTY_RECT_LIMIT) {
+\t\t\t\tthis->browser_dirty_rects[this->browser_dirty_rect_count++] = merged;
+\t\t\t} else {
+\t\t\t\tauto area = [](const Rect &rect) -> int64_t {
+\t\t\t\t\treturn static_cast<int64_t>(rect.right - rect.left) * static_cast<int64_t>(rect.bottom - rect.top);
+\t\t\t\t};
+\t\t\t\tsize_t best = 0;
+\t\t\t\tint64_t best_growth = INT64_MAX;
+\t\t\t\tfor (size_t i = 0; i < this->browser_dirty_rect_count; ++i) {
+\t\t\t\t\tconst Rect combined = BoundingRect(this->browser_dirty_rects[i], merged);
+\t\t\t\t\tconst int64_t growth = area(combined) - area(this->browser_dirty_rects[i]);
+\t\t\t\t\tif (growth < best_growth) {
+\t\t\t\t\t\tbest = i;
+\t\t\t\t\t\tbest_growth = growth;
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t\tthis->browser_dirty_rects[best] = BoundingRect(this->browser_dirty_rects[best], merged);
 \t\t\t}
 \t\t}
-\t\tthis->browser_dirty_rects[best] = BoundingRect(this->browser_dirty_rects[best], merged);
 \t}
 #endif
 }
@@ -117,9 +130,9 @@ anchor = '''\tSDL_UpdateWindowSurfaceRects(this->sdl_window, &r, 1);\n'''
 replacement = '''#ifdef __EMSCRIPTEN__
 \t/* Publish the browser-only rectangle list immediately before SDL invokes its
 \t * generated presenter. Keep the original single bounding rectangle too for
-\t * compatibility with older runtime patches and as a correctness fallback. */
+\t * compatibility and as a correctness fallback when tracking saturated. */
 \tSDL_Rect browser_rects[BROWSER_DIRTY_RECT_LIMIT];
-\tsize_t browser_rect_count = this->browser_dirty_rect_count;
+\tsize_t browser_rect_count = this->browser_dirty_rect_saturated ? 0 : this->browser_dirty_rect_count;
 \tif (browser_rect_count == 0) {
 \t\tbrowser_rects[0] = r;
 \t\tbrowser_rect_count = 1;
@@ -154,6 +167,8 @@ replacement = '''#ifdef __EMSCRIPTEN__
 \tSDL_UpdateWindowSurfaceRects(this->sdl_window, &r, 1);
 #ifdef __EMSCRIPTEN__
 \tthis->browser_dirty_rect_count = 0;
+\tthis->browser_dirty_event_count = 0;
+\tthis->browser_dirty_rect_saturated = false;
 #endif
 '''
 if 'Module.__openttdDirtyRects' not in text:
@@ -173,6 +188,8 @@ if reset_pos < 0:
 reset_end = reset_pos + len(resize_anchor)
 reset_code = '''#ifdef __EMSCRIPTEN__
 \tthis->browser_dirty_rect_count = 0;
+\tthis->browser_dirty_event_count = 0;
+\tthis->browser_dirty_rect_saturated = false;
 #endif
 '''
 if reset_code not in text[allocate_pos:]:
@@ -194,7 +211,9 @@ def main() -> None:
     text = patch_build_script(text)
     required = (
         "BROWSER_DIRTY_RECT_LIMIT",
+        "BROWSER_DIRTY_EVENT_LIMIT",
         "browser_dirty_rect_count",
+        "browser_dirty_rect_saturated",
         "Module.__openttdDirtyRects",
         "V14_MULTI_DIRTY_RECT_SOURCE_PATCH",
     )
@@ -202,7 +221,7 @@ def main() -> None:
         if token not in text:
             raise SystemExit(f"Multi dirty-rect source invariant missing after patch: {token}")
     path.write_text(text, encoding="utf-8")
-    print("Browser multi-dirty-rect bridge enabled for SDL2 framebuffer presentation.")
+    print("Browser multi-dirty-rect bridge enabled with bounded per-frame tracking cost.")
 
 
 if __name__ == "__main__":
