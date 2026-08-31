@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Apply profiler-driven browser performance tuning to the tested v14 pipeline.
 
-This patch deliberately keeps OpenTTD's proven Asyncify/JS exception model for
-browser compatibility. Native Wasm exceptions are not mixed with ASYNCIFY.
-The safe performance layer consists of:
+The release stays on OpenTTD's proven synchronous Emscripten runtime; we do not
+turn on global Asyncify merely to make map generation yield, because that would
+instrument a large part of the normal game hot path. The safe performance layer
+consists of:
   * -O3 + wasm SIMD + ThinLTO for C/C++ and the final link;
-  * cooperative event-loop yields during synchronous world generation so very
-    large maps no longer become one giant browser LongTask;
-  * a fair aggregate Squirrel opcode budget when more than four AIs are active,
-    preventing AI CPU cost from scaling linearly to 14 full VM slices per tick.
+  * a browser-only reduction of the *pre-game* tile-loop warmup on very large
+    maps from five complete tile-update sweeps to three. Every tile is still
+    warmed multiple times; normal simulation after game start is unchanged;
+  * a fair aggregate Squirrel opcode budget when many AIs are active, preventing
+    AI CPU cost from scaling linearly to 14 full VM slices per eligible tick.
 """
 from __future__ import annotations
 
@@ -30,56 +32,47 @@ def inject_source_patch(text: str) -> str:
 python3 - <<'PY_FULL_PERF_SOURCE'
 from pathlib import Path
 
-# World generation is synchronous in this browser port. The stock progress
-# code pumps OpenTTD's paused loop but does not return to the browser event loop,
-# so a 4096x4096 generation can become one enormous LongTask. ASYNCIFY is part
-# of the tested upstream Emscripten configuration; yield at most once every
-# 32 ms from the progress path without changing generation semantics.
-gui = Path('openttd/src/genworld_gui.cpp')
-g = gui.read_text(encoding='utf-8')
-include_anchor = '#include "video/video_driver.hpp"\n'
-include_block = include_anchor + '#ifdef __EMSCRIPTEN__\n#include <emscripten.h>\n#endif\n'
-if '#include <emscripten.h>' not in g:
-    if g.count(include_anchor) != 1:
-        raise SystemExit('Could not locate genworld Emscripten include anchor')
-    g = g.replace(include_anchor, include_block, 1)
-
-old_progress = '''void IncreaseGeneratingWorldProgress(GenWorldProgress cls)
-{
-\t/* In fact the param 'class' isn't needed.. but for some security reasons, we want it around */
-\t_SetGeneratingWorldProgress(cls, 1, 0);
-}
+# OpenTTD warms a newly generated non-empty map with 0x500 (1280) calls to
+# RunTileLoop(). RunTileLoop is guaranteed to visit every tile once per 256
+# ticks, so stock performs five complete pre-game sweeps. On an 8M-16M tile web
+# map that means tens of millions of synchronous tile callbacks before the first
+# playable frame. For very large browser maps, three complete sweeps preserve
+# multiple snow/ground/tree settling passes while cutting this warmup work by
+# 40%. Normal post-start tile simulation is untouched.
+genworld = Path('openttd/src/genworld.cpp')
+g = genworld.read_text(encoding='utf-8')
+old_warmup = '''\t\t\tSetGeneratingWorldProgress(GWP_RUNTILELOOP, 0x500);
+\t\t\tfor (i = 0; i < 0x500; i++) {
+\t\t\t\tRunTileLoop();
+\t\t\t\tTimerGameTick::counter++;
+\t\t\t\tIncreaseGeneratingWorldProgress(GWP_RUNTILELOOP);
+\t\t\t}
 '''
-new_progress = '''void IncreaseGeneratingWorldProgress(GenWorldProgress cls)
-{
-\t/* In fact the param 'class' isn't needed.. but for some security reasons, we want it around */
-\t_SetGeneratingWorldProgress(cls, 1, 0);
+new_warmup = '''\t\t\tuint browser_tile_warmup_loops = 0x500;
 #ifdef __EMSCRIPTEN__
-\t/* Keep very large synchronous map generations responsive in the browser.
-\t * ASYNCIFY already instruments emscripten_sleep(), so this returns to the
-\t * event loop and resumes exactly where generation left off. */
-\tstatic double last_browser_yield_ms = 0.0;
-\tconst double now_ms = emscripten_get_now();
-\tif (last_browser_yield_ms == 0.0 || now_ms - last_browser_yield_ms >= 32.0) {
-\t\tlast_browser_yield_ms = now_ms;
-\t\temscripten_sleep(0);
-\t}
+\t\t\t/* 256 RunTileLoop calls are one complete tile-update sweep. Keep the
+\t\t\t * stock five sweeps for normal maps and use three only from 8M tiles. */
+\t\t\tif (Map::Size() >= 8u * 1024u * 1024u) browser_tile_warmup_loops = 0x300;
 #endif
-}
+\t\t\tSetGeneratingWorldProgress(GWP_RUNTILELOOP, browser_tile_warmup_loops);
+\t\t\tfor (i = 0; i < browser_tile_warmup_loops; i++) {
+\t\t\t\tRunTileLoop();
+\t\t\t\tTimerGameTick::counter++;
+\t\t\t\tIncreaseGeneratingWorldProgress(GWP_RUNTILELOOP);
+\t\t\t}
 '''
-if 'last_browser_yield_ms' not in g:
-    if g.count(old_progress) != 1:
-        raise SystemExit(f'Expected one world-progress function, got {g.count(old_progress)}')
-    g = g.replace(old_progress, new_progress, 1)
-gui.write_text(g, encoding='utf-8')
+if 'browser_tile_warmup_loops' not in g:
+    if g.count(old_warmup) != 1:
+        raise SystemExit(f'Expected one stock world warmup loop, got {g.count(old_warmup)}')
+    g = g.replace(old_warmup, new_warmup, 1)
+genworld.write_text(g, encoding='utf-8')
 
 # With many competitors the stock AI scheduler gives every Squirrel VM a full
-# script_max_opcode_till_suspend slice in the same tick. At 14 AIs this makes
-# script work scale roughly 14x on one browser main thread. Keep every AI
-# scheduled every eligible tick, but cap the aggregate browser VM work to the
-# equivalent of four full configured slices. This only changes the amount of
-# script computation per tick; companies, sleep counters and scheduling remain
-# active and fair for every AI. The user's configured limit is never increased.
+# script_max_opcode_till_suspend slice in the same eligible tick. On a browser
+# main thread, 14 AIs therefore scale script work roughly 14x. Keep every AI
+# scheduled every eligible tick, but cap aggregate VM work to the equivalent of
+# six full configured slices. <= 6 active AIs are completely unchanged. At 14
+# AIs, each still receives ~42.9% of a normal slice every eligible AI tick.
 ai = Path('openttd/src/ai/ai_core.cpp')
 a = ai.read_text(encoding='utf-8')
 ai_anchor = '''\tBackup<CompanyID> cur_company(_current_company);
@@ -93,9 +86,9 @@ ai_block = '''#ifdef __EMSCRIPTEN__
 
 \tconst uint32_t browser_configured_opcode_budget = _settings_game.script.script_max_opcode_till_suspend;
 \tuint32_t browser_ai_opcode_budget = browser_configured_opcode_budget;
-\tif (browser_active_ai_count > 4 && browser_configured_opcode_budget > 0) {
+\tif (browser_active_ai_count > 6 && browser_configured_opcode_budget > 0) {
 \t\tbrowser_ai_opcode_budget = static_cast<uint32_t>(
-\t\t\t(static_cast<uint64_t>(browser_configured_opcode_budget) * 4u) / browser_active_ai_count);
+\t\t\t(static_cast<uint64_t>(browser_configured_opcode_budget) * 6u) / browser_active_ai_count);
 \t\tif (browser_ai_opcode_budget == 0) browser_ai_opcode_budget = 1;
 \t}
 \tAutoRestoreBackup<uint32_t> browser_ai_budget(
@@ -146,17 +139,19 @@ def main() -> None:
     text = inject_source_patch(text)
     text = tune_release_flags(text)
 
-    for forbidden in ('-fwasm-exceptions', '-sSUPPORT_LONGJMP=wasm'):
+    # Native Wasm EH is deliberately not mixed with the tested synchronous
+    # browser runtime here; keep compatibility with the existing release.
+    for forbidden in ('-fwasm-exceptions', '-sSUPPORT_LONGJMP=wasm', '-sASYNCIFY'):
         if forbidden in text:
-            raise SystemExit(f'Incompatible native-EH tuning must not be present: {forbidden}')
+            raise SystemExit(f'Unsupported experimental runtime flag must not be present: {forbidden}')
 
-    required = ('-msimd128', '-flto=thin', 'last_browser_yield_ms', 'browser_ai_opcode_budget')
+    required = ('-msimd128', '-flto=thin', 'browser_tile_warmup_loops', 'browser_ai_opcode_budget')
     for token in required:
         if token not in text:
             raise SystemExit(f'Missing performance invariant in patched build: {token}')
 
     path.write_text(text, encoding='utf-8')
-    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, cooperative mapgen yields, fair aggregate AI VM budget; Asyncify compatibility retained.')
+    print('Safe browser performance profile enabled: O3, wasm SIMD, ThinLTO, large-map warmup reduction, fair aggregate AI VM budget.')
 
 
 if __name__ == '__main__':
