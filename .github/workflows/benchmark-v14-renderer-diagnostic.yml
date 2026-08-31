@@ -1,0 +1,136 @@
+name: Diagnose v14 WebGL2 single-rect
+
+on:
+  push:
+    branches:
+      - perf/v14-full-optimization
+    paths:
+      - '.github/workflows/benchmark-v14-renderer-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      NATIVE_ARTIFACT_ID: '9764082363'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+
+      - name: Download single-rect runtime and Yandex shell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/diag/{downloads,native-artifact,native,ya-artifact,prod,test,out,browser-node}
+          get_artifact() {
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" -o "$2"
+          }
+          get_artifact "$NATIVE_ARTIFACT_ID" /tmp/diag/downloads/native.zip
+          get_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/diag/downloads/ya.zip
+          unzip -q /tmp/diag/downloads/native.zip -d /tmp/diag/native-artifact
+          native_zip="$(find /tmp/diag/native-artifact -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          test -s "$native_zip"
+          unzip -q "$native_zip" -d /tmp/diag/native
+          test -s /tmp/diag/native/openttd-runtime.js
+          grep -Fq '__openttdDirtyRect' /tmp/diag/native/openttd-runtime.js
+          ! grep -Fq 'BROWSER_DIRTY_RECT_LIMIT' /tmp/diag/native/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/diag/native/openttd-runtime.js
+          unzip -q /tmp/diag/downloads/ya.zip -d /tmp/diag/ya-artifact
+          ya_zip="$(find /tmp/diag/ya-artifact -type f -name '*.zip' -print -quit)"
+          test -s "$ya_zip"
+          unzip -q "$ya_zip" -d /tmp/diag/prod
+
+      - name: Assemble current WebGL2 candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/diag/native/openttd-runtime.js /tmp/diag/prod/openttd-runtime.js
+          rm -f /tmp/diag/prod/openttd.wasm /tmp/diag/prod/openttd.data
+          python3 ci/patch-v14-webgl-runtime.py /tmp/diag/prod/openttd-runtime.js
+          node --check /tmp/diag/prod/openttd-runtime.js
+          grep -Fq '__openttdWebGLPresenter' /tmp/diag/prod/openttd-runtime.js
+          grep -Fq 'UNPACK_ROW_LENGTH' /tmp/diag/prod/openttd-runtime.js
+          python3 ci/patch-v14-performance-package.py /tmp/diag/prod --platform yandex
+          python3 yandex/neutralize_yandex_runtime.py /tmp/diag/prod
+          cp -a /tmp/diag/prod/. /tmp/diag/test/
+
+      - name: Install deterministic Yandex mock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/diag/test/sdk.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'diag-user'; }, getName() { return 'Diag'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'renderer-diag' } },
+              features: { LoadingAPI: { ready() { return Promise.resolve(true); } }, GameplayAPI: { start() { return Promise.resolve(true); }, stop() { return Promise.resolve(true); } } },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { return ysdk; } };
+          })();
+          JS
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/diag/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" perf.mjs
+          sed -i 's/timeout: 720000/timeout: 180000/' perf.mjs
+
+      - name: Run exact 4096x4096 14-AI diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/diag/test
+          python3 -m http.server 8181 --bind 127.0.0.1 >/tmp/diag-http.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8181/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/diag/browser-node
+          node perf.mjs yandex http://127.0.0.1:8181/index.html /tmp/diag/out/webgl2-single-rect.json optimized
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('/tmp/diag/out/webgl2-single-rect.json')
+          d = json.loads(p.read_text())
+          print(json.dumps({
+              'passed': d.get('passed'),
+              'failure': d.get('failure'),
+              'generation4096Ms': d.get('generation4096', {}).get('wallMsUntilResponsive'),
+              'fps': d.get('ai14', {}).get('snapshot', {}).get('estimatedFps'),
+              'renderer': d.get('renderer'),
+          }, indent=2))
+          if not d.get('passed'):
+              raise SystemExit(d.get('failure') or 'diagnostic failed')
+          PY
+
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-webgl2-single-rect-diagnostic
+          compression-level: 0
+          path: /tmp/diag/out/
+          if-no-files-found: warn
