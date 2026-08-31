@@ -1,0 +1,111 @@
+name: Diagnose v14 final AI start
+
+on:
+  push:
+    branches:
+      - perf/v14-simpleai-bridge-cache
+    paths:
+      - '.github/workflows/diagnose-v14-final-ai-start.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NATIVE_ARTIFACT_ID: '9742752495'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble exact final Yandex package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/diag/{a/native,a/ya,native,base,prod,test,out,node}
+          get_artifact() {
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$1/zip" -o "$2"
+          }
+          get_artifact "$NATIVE_ARTIFACT_ID" /tmp/diag/native.zip
+          get_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/diag/ya.zip
+          unzip -q /tmp/diag/native.zip -d /tmp/diag/a/native
+          unzip -q /tmp/diag/ya.zip -d /tmp/diag/a/ya
+          NZ="$(find /tmp/diag/a/native -name 'OpenTTD-YandexGames-Direct.zip' -type f -print -quit)"
+          YZ="$(find /tmp/diag/a/ya -name '*.zip' -type f -print -quit)"
+          test -s "$NZ"; test -s "$YZ"
+          unzip -q "$NZ" -d /tmp/diag/native
+          unzip -q "$YZ" -d /tmp/diag/base
+          cp -a /tmp/diag/base/. /tmp/diag/prod/
+          cp /tmp/diag/native/openttd-runtime.js /tmp/diag/prod/openttd-runtime.js
+          rm -f /tmp/diag/prod/openttd.wasm /tmp/diag/prod/openttd.data
+          python3 ci/patch-v14-webgl-runtime.py /tmp/diag/prod/openttd-runtime.js
+          python3 ci/patch-v14-simpleai-bridge-cache.py /tmp/diag/prod
+          python3 ci/patch-v14-performance-package.py /tmp/diag/prod --platform yandex
+          python3 yandex/neutralize_yandex_runtime.py /tmp/diag/prod
+          node --check /tmp/diag/prod/openttd-runtime.js
+          cp -a /tmp/diag/prod/. /tmp/diag/test/
+          cp ci/v14-yandex-sdk-mock.js /tmp/diag/test/sdk.js
+
+      - name: Install controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          cd /tmp/diag/node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          node --check perf.mjs
+
+      - name: 1024 world with 14 AI during newgame
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/diag/test
+          python3 -m http.server 8580 --bind 127.0.0.1 >/tmp/diag/during.http.log 2>&1 & pid=$!
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8580/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/diag/node
+          set +e
+          node perf.mjs yandex http://127.0.0.1:8580/index.html /tmp/diag/out/during.json optimized 10 15000 during
+          rc=$?
+          set -e
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          cat /tmp/diag/out/during.json
+          exit "$rc"
+
+      - name: 1024 world then start 14 SimpleAI
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          cd /tmp/diag/test
+          python3 -m http.server 8581 --bind 127.0.0.1 >/tmp/diag/after.http.log 2>&1 & pid=$!
+          for _ in $(seq 1 100); do curl -fsS http://127.0.0.1:8581/index.html >/dev/null && break; sleep 0.1; done
+          cd /tmp/diag/node
+          set +e
+          node perf.mjs yandex http://127.0.0.1:8581/index.html /tmp/diag/out/after.json optimized 10 15000 after
+          rc=$?
+          set -e
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          cat /tmp/diag/out/after.json
+          exit "$rc"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-final-ai-start-diagnostics
+          path: /tmp/diag/out/
+          if-no-files-found: warn
