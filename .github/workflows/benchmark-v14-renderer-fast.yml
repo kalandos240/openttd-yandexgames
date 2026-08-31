@@ -20,7 +20,7 @@ permissions:
 jobs:
   renderer-benchmark:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     env:
       NATIVE_ARTIFACT_ID: '9748951872'
       VERIFIED_YA_ARTIFACT_ID: '9738530154'
@@ -149,6 +149,8 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install --no-audit --no-fund puppeteer-core@24.16.0
           cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          sed -i 's/timeout: 720000/timeout: 180000/' ./perf.mjs
+          grep -Fq 'timeout: 180000' ./perf.mjs
 
       - name: Optimized 4096x4096 plus 14-AI renderer benchmark
         shell: bash
