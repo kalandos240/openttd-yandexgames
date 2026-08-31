@@ -1,15 +1,18 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 
-const [platform, url, output, profile = 'optimized', mapLog2Arg = '12', aiSampleMsArg = '30000'] = process.argv.slice(2);
+const [platform, url, output, profile = 'optimized', mapLog2Arg = '12', aiSampleMsArg = '30000', aiModeArg = 'during'] = process.argv.slice(2);
 const mapLog2 = Number(mapLog2Arg);
 const aiSampleMs = Number(aiSampleMsArg);
+const aiMode = String(aiModeArg || 'during');
 if (!platform || !url || !output || !['baseline', 'optimized'].includes(profile) ||
     !Number.isInteger(mapLog2) || mapLog2 < 9 || mapLog2 > 12 ||
-    !Number.isInteger(aiSampleMs) || aiSampleMs < 10000 || aiSampleMs > 120000) {
-  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized] [map_log2=12] [ai_sample_ms=30000]');
+    !Number.isInteger(aiSampleMs) || aiSampleMs < 10000 || aiSampleMs > 120000 ||
+    !['during', 'after'].includes(aiMode)) {
+  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized] [map_log2=12] [ai_sample_ms=30000] [during|after]');
 }
 const mapEdge = 2 ** mapLog2;
+const requiredBlockingGapMs = mapLog2 >= 12 ? 1000 : 250;
 const executablePath = process.env.CHROME_BIN;
 if (!executablePath) throw new Error('CHROME_BIN is not set');
 
@@ -103,6 +106,8 @@ const result = {
   map: { log2: mapLog2, width: mapEdge, height: mapEdge, tiles: mapEdge * mapEdge },
   aiTarget: 14,
   aiSampleMs,
+  aiMode,
+  requiredBlockingGapMs,
   startedAt: new Date().toISOString(),
   startup: {},
   generation: {},
@@ -194,6 +199,14 @@ async function consoleCommand(command, postDelay = 150) {
   if (postDelay) await sleep(postDelay);
 }
 
+async function startAIsAfterGeneration() {
+  await openConsole();
+  for (let i = 0; i < 14; i++) {
+    await consoleCommand('start_ai SimpleAI', 50);
+  }
+  await sleep(1500);
+}
+
 try {
   const navigationStart = Date.now();
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -216,27 +229,36 @@ try {
   await openConsole();
   await consoleCommand(`setting_newgame game_creation.map_x ${mapLog2}`);
   await consoleCommand(`setting_newgame game_creation.map_y ${mapLog2}`);
-  await consoleCommand('setting_newgame difficulty.max_no_competitors 14');
-  await consoleCommand('setting_newgame difficulty.competitors_interval 0');
+  if (aiMode === 'during') {
+    await consoleCommand('setting_newgame difficulty.max_no_competitors 14');
+    await consoleCommand('setting_newgame difficulty.competitors_interval 0');
+  } else {
+    await consoleCommand('setting_newgame difficulty.max_no_competitors 0');
+    await consoleCommand('setting_newgame difficulty.competitors_interval 0');
+  }
 
   await resetFrameProbe();
   const generationWallStart = Date.now();
   await consoleCommand('newgame 42424242', 0);
 
-  // World generation is synchronous in this production Emscripten port. The
-  // rAF probe stops during the blocking generator and resumes when the game
-  // returns to the browser. Keep a hard 12-minute game timeout even though the
-  // CDP transport itself allows 15 minutes, so a stuck generator still fails.
-  await page.waitForFunction(() => {
+  // World generation is synchronous in this production Emscripten port. For
+  // A-B tests we isolate generation from AI startup, so a 250 ms blocking gap
+  // is sufficient evidence on 2048 maps. The final 4096 exact-scenario stress
+  // still requires a >=1 second blocking gap and live frames after recovery.
+  await page.waitForFunction((gapThreshold) => {
     const p = window.__otPerfProbe;
-    return p && p.maxFrameGap >= 1000 && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
-  }, { timeout: 720000, polling: 250 });
+    return p && p.maxFrameGap >= gapThreshold && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
+  }, { timeout: 720000, polling: 250 }, requiredBlockingGapMs);
   const generationWallMs = Date.now() - generationWallStart;
   await sleep(3000);
   result.generation = {
     wallMsUntilResponsive: generationWallMs,
     snapshot: await snapshot(`${mapEdge}-generated`),
   };
+
+  if (aiMode === 'after') {
+    await startAIsAfterGeneration();
+  }
 
   await resetFrameProbe();
   const aiSampleStart = Date.now();
