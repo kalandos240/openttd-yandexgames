@@ -1,0 +1,231 @@
+name: Validate v14 combined final v6 candidate
+
+on:
+  push:
+    branches:
+      - perf/v14-combined-final-v6
+    paths:
+      - '.github/workflows/release-v14-combined-final-v6-validation-retry.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  validate-existing-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CANDIDATE_ARTIFACT_ID: '9767348319'
+    steps:
+      - name: Checkout proven validation tooling
+        uses: actions/checkout@v4
+
+      - name: Download immutable v6 candidate archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6retry
+          mkdir -p "$ROOT"/{source,test/ya,test/pg,out,browser-node}
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CANDIDATE_ARTIFACT_ID}/zip" \
+            -o "$ROOT/candidate-artifact.zip"
+          unzip -q "$ROOT/candidate-artifact.zip" -d "$ROOT/source"
+
+          YA_ZIP="$ROOT/source/OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip"
+          PG_ZIP="$ROOT/source/OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip"
+          test -s "$YA_ZIP"; test -s "$PG_ZIP"
+          unzip -tq "$YA_ZIP"
+          unzip -tq "$PG_ZIP"
+          cp "$YA_ZIP" "$PG_ZIP" "$ROOT/out/"
+          if [ -s "$ROOT/source/SHA256SUMS.txt" ]; then cp "$ROOT/source/SHA256SUMS.txt" "$ROOT/out/"; else (cd "$ROOT/out" && sha256sum *.zip > SHA256SUMS.txt); fi
+          (cd "$ROOT/out" && sha256sum -c SHA256SUMS.txt)
+
+          unzip -q "$YA_ZIP" -d "$ROOT/test/ya"
+          unzip -q "$PG_ZIP" -d "$ROOT/test/pg"
+          for d in "$ROOT/test/ya" "$ROOT/test/pg"; do
+            test -s "$d/openttd-runtime.js"
+            test ! -e "$d/openttd.wasm"
+            test ! -e "$d/openttd.data"
+            node --check "$d/openttd-runtime.js"
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq 'UNPACK_ROW_LENGTH' "$d/openttd-runtime.js"
+            grep -Fq 'zeroCopyRectUploads' "$d/openttd-runtime.js"
+            grep -Fq '__openttdAIStats' "$d/openttd-runtime.js"
+            grep -Fq '__openttdDirtyRect' "$d/openttd-runtime.js"
+            ! grep -Fq '__openttdDirtyRects' "$d/openttd-runtime.js"
+          done
+
+      - name: Install exact hosted SDK mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6retry
+          cat > "$ROOT/test/ya/sdk.js" <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'v6-retry-yandex'; },
+              getName() { return 'V6 Retry'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'v6-retry' } },
+              features: {
+                LoadingAPI: { ready() { document.documentElement.dataset.yandexLoadingReady = 'ready'; return Promise.resolve(true); } },
+                GameplayAPI: {
+                  start() { document.documentElement.dataset.yandexGameplay = 'started'; return Promise.resolve(true); },
+                  stop() { document.documentElement.dataset.yandexGameplay = 'stopped'; return Promise.resolve(true); }
+                }
+              },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { document.documentElement.dataset.yandexSdk = 'ready'; return ysdk; } };
+          })();
+          JS
+
+          cat > "$ROOT/test/pg/platform-bridge-loader.js" <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = {
+              version: 'v6-retry', engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' },
+              STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { document.documentElement.dataset.playgamaSdk = 'ready'; document.documentElement.dataset.playgamaBridge = 'ready'; return true; },
+              platform: { language: 'en', id: 'playgama-v6-retry', isAudioEnabled: true, on() {}, off() {}, async sendMessage(message) { document.documentElement.dataset.playgamaMessage = String(message || 'sent'); return true; } },
+              storage: {
+                async isSupported() { return true; }, async isAvailable() { return true; },
+                async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); },
+                async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; }
+              },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} },
+              player: { id: 'v6-retry-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } }
+            };
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+            document.documentElement.dataset.playgamaSdk = 'ready';
+            document.documentElement.dataset.playgamaBridge = 'ready';
+          })();
+          JS
+
+      - name: Install proven browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6retry
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          "$CHROME_BIN" --version | tee "$ROOT/out/CHROME-VERSION.txt"
+          cd "$ROOT/browser-node"
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/platform-hosted-smoke.mjs" ./smoke.mjs
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+          node --check ./smoke.mjs
+          node --check ./perf.mjs
+          grep -Fq 'mainThreadProbeBlockedMs: mainThreadBlockedMs' ./perf.mjs
+          grep -Fq "mapLog2 >= 12 ? 'during' : 'after'" ./perf.mjs
+
+      - name: Functional smoke both platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6retry
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          run_smoke() {
+            local dir="$1" platform="$2" port="$3" output="$4"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/v6retry-${platform}-smoke-http.log" 2>&1 & local pid=$!
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd "$ROOT/browser-node"
+            set +e
+            node smoke.mjs "$platform" "http://127.0.0.1:${port}/index.html" "$output"
+            local rc=$?
+            set -e
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+            return "$rc"
+          }
+          run_smoke "$ROOT/test/ya" yandex 8220 "$ROOT/out/yandex-smoke.json"
+          run_smoke "$ROOT/test/pg" playgama 8221 "$ROOT/out/playgama-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/yandex-smoke.json"
+          grep -Fq '"passed": true' "$ROOT/out/playgama-smoke.json"
+
+      - name: Real 4096x4096 plus 14-AI stress both platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/tmp/v6retry
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          run_perf() {
+            local dir="$1" platform="$2" port="$3" output="$4"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/v6retry-${platform}-perf-http.log" 2>&1 & local pid=$!
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd "$ROOT/browser-node"
+            set +e
+            node perf.mjs "$platform" "http://127.0.0.1:${port}/index.html" "$output" optimized 12 30000 during
+            local rc=$?
+            set -e
+            kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+            return "$rc"
+          }
+          run_perf "$ROOT/test/ya" yandex 8230 "$ROOT/out/yandex-performance.json"
+          run_perf "$ROOT/test/pg" playgama 8231 "$ROOT/out/playgama-performance.json"
+
+      - name: Gate and summarize validated v6
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          out=Path('/tmp/v6retry/out')
+          report={'candidate':'OpenTTD v14 combined final v6','sourceCandidateArtifactId':9767348319,'nativeArtifactId':9766953838,'platforms':{}}
+          for platform in ('yandex','playgama'):
+              smoke=json.loads((out/f'{platform}-smoke.json').read_text())
+              d=json.loads((out/f'{platform}-performance.json').read_text())
+              if not smoke.get('passed'): raise SystemExit(f'{platform}: smoke failed: {smoke.get("failure")}')
+              if not d.get('passed'): raise SystemExit(f'{platform}: stress failed: {d.get("failure")}')
+              s=d['ai14']['snapshot']; ai=d.get('aiScheduler') or {}; renderer=d.get('renderer') or {}; upload=renderer.get('upload') or {}; gen=d.get('generation') or {}; net=d.get('network') or {}
+              if ai.get('activeAI') != 14 or ai.get('configuredOpcodeBudget') != 10000 or ai.get('effectiveOpcodeBudget') != 4285: raise SystemExit(f'{platform}: AI scheduler drift {ai}')
+              if not renderer.get('active') or upload.get('webgl2') is not True: raise SystemExit(f'{platform}: WebGL2 inactive {renderer}')
+              if upload.get('zeroCopyRectUploads',0) <= 0 or upload.get('packedRectUploads',0) != 0: raise SystemExit(f'{platform}: zero-copy upload gate failed {upload}')
+              if net.get('failedRequests'): raise SystemExit(f'{platform}: failed requests {net.get("failedRequests")}')
+              if net.get('blockedExternal'): raise SystemExit(f'{platform}: blocked external {net.get("blockedExternal")}')
+              generation=gen.get('wallMsUntilResponsive'); blocked=gen.get('mainThreadProbeBlockedMs'); heap=s.get('wasmHeapBytes'); fps=s.get('estimatedFps',0); p95=s.get('p95FrameGapMs',999); p99=s.get('p99FrameGapMs',999)
+              if generation is None or generation > 26000: raise SystemExit(f'{platform}: generation regression {generation}')
+              if blocked is None or blocked > 25500: raise SystemExit(f'{platform}: generation block regression {blocked}')
+              if fps < 48: raise SystemExit(f'{platform}: FPS floor failed {fps}')
+              if p95 > 33.5 or p99 > 50: raise SystemExit(f'{platform}: frame tail regression p95={p95} p99={p99}')
+              if heap is None or heap > 448_000_000: raise SystemExit(f'{platform}: heap regression {heap}')
+              report['platforms'][platform]={'passed':True,'generationMs':generation,'mainThreadBlockedMs':blocked,'fps14AI':fps,'p50FrameGapMs':s.get('p50FrameGapMs'),'p95FrameGapMs':p95,'p99FrameGapMs':p99,'longTaskCount':s.get('longTaskCount'),'longestLongTaskMs':s.get('longestLongTaskMs'),'wasmHeapBytes':heap,'aiScheduler':ai,'renderer':renderer}
+          (out/'V6-FINAL-STRESS.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
+          lines=['# OpenTTD v14 combined final v6 — validated','']
+          for p,x in report['platforms'].items():
+              lines += [f'## {p}',f'- 4096² generation: {x["generationMs"]:.0f} ms',f'- main-thread block: {x["mainThreadBlockedMs"]:.0f} ms',f'- 14-AI FPS: {x["fps14AI"]:.2f}',f'- p95 / p99: {x["p95FrameGapMs"]:.2f} / {x["p99FrameGapMs"]:.2f} ms',f'- long tasks: {x["longTaskCount"]}, longest {x["longestLongTaskMs"]:.0f} ms',f'- WASM heap: {x["wasmHeapBytes"]} B',f'- AI: {json.dumps(x["aiScheduler"])}',f'- WebGL2: {x["renderer"]["upload"].get("webgl2")}, zero-copy uploads: {x["renderer"]["upload"].get("zeroCopyRectUploads")}','']
+          (out/'V6-FINAL-STRESS.md').write_text('\n'.join(lines),encoding='utf-8')
+          print('\n'.join(lines))
+          PY
+          cd /tmp/v6retry/out
+          sha256sum -c SHA256SUMS.txt
+          unzip -tq OpenTTD-v14-Yandex-v6-2sweep-WebGL2.zip
+          unzip -tq OpenTTD-v14-Playgama-v6-2sweep-WebGL2.zip
+
+      - name: Upload fully validated final v6
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-combined-final-v6-validated
+          compression-level: 0
+          path: /tmp/v6retry/out/
+          if-no-files-found: error
