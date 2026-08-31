@@ -1,0 +1,237 @@
+name: Diagnose v14 WASM hot functions
+
+on:
+  push:
+    branches:
+      - perf/newgrf-lag-license-removal-v14
+    paths:
+      - '.github/workflows/diagnose-v14-wasm-hot-functions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  map-hot-functions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    env:
+      CURRENT_LOCALIZED_ARTIFACT_ID: '9772768820'
+
+    steps:
+      - name: Checkout current browser edition
+        uses: actions/checkout@v4
+
+      - name: Checkout tested single-file pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire exact current source patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+
+          cp playgama/patch-playgama-newgrf-main-menu.py legacy/ci/patch-playgama-newgrf-main-menu.py
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-yandex-release.sh')
+          text = p.read_text(encoding='utf-8')
+          ai_off = "    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if text.count(ai_off) != 1:
+              raise SystemExit(f'Expected one legacy AI-disable hook, got {text.count(ai_off)}')
+          text = text.replace(ai_off, '', 1)
+          anchor = "    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if text.count(anchor) != 1:
+              raise SystemExit(f'Expected one source patch anchor, got {text.count(anchor)}')
+          addition = (
+              "    'python3 ci/patch-playgama-newgrf-main-menu.py\\n'\n"
+              "    'python3 ci/patch-browser-ranking.py\\n'\n"
+          )
+          text = text.replace(anchor, anchor + addition, 1)
+          p.write_text(text, encoding='utf-8')
+
+          build = Path('legacy/ci/build-final.sh')
+          b = build.read_text(encoding='utf-8')
+          fonts_anchor = 'mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          fonts_copy = fonts_anchor + 'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if b.count(fonts_anchor) != 1:
+              raise SystemExit('Could not find font staging anchor')
+          build.write_text(b.replace(fonts_anchor, fonts_copy, 1), encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+
+          # Keep production code generation unchanged; ask only the final wasm
+          # linker to retain the function-name custom section for mapping the
+          # stripped Firefox profile's wasm-function indices.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('legacy/ci/build-final.sh')
+          s = p.read_text(encoding='utf-8')
+          old = '''  emcmake cmake .. \\
+            -DHOST_BINARY_DIR=../build-host \\
+            -DCMAKE_BUILD_TYPE=Release \\
+            -DOPTION_USE_ASSERTS=OFF
+          '''
+          # The legacy file uses four-space indentation inside its subshell.
+          if old not in s:
+              old = '''  emcmake cmake .. \\
+    -DHOST_BINARY_DIR=../build-host \\
+    -DCMAKE_BUILD_TYPE=Release \\
+    -DOPTION_USE_ASSERTS=OFF
+'''
+          new = old.rstrip('\n') + ' \\\n    -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-g2"\n'
+          if old not in s:
+              raise SystemExit('Could not locate stable Emscripten configure block for symbol-only linker flag')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Build symbol-named runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/named-runtime
+          mkdir -p /tmp/named-runtime
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/named-runtime
+          test -s /tmp/named-runtime/openttd-runtime.js
+
+      - name: Download exact profiled release runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/current-artifact /tmp/current-release
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CURRENT_LOCALIZED_ARTIFACT_ID}/zip" \
+            -o /tmp/current-artifact.zip
+          unzip -q /tmp/current-artifact.zip -d /tmp/current-artifact
+          YAZIP="$(find /tmp/current-artifact -type f -name 'OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip' -print -quit)"
+          test -s "$YAZIP"
+          unzip -q "$YAZIP" -d /tmp/current-release
+          test -s /tmp/current-release/openttd-runtime.js
+
+      - name: Prove code identity and map Firefox hot function indices
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, re
+
+          TARGETS = [1406, 3456, 3457, 3551, 3796, 5626, 7151, 7292]
+
+          def uleb(data, p):
+              value = 0
+              shift = 0
+              while True:
+                  b = data[p]; p += 1
+                  value |= (b & 0x7f) << shift
+                  if not (b & 0x80): return value, p
+                  shift += 7
+
+          def wasm_from_runtime(path):
+              data = Path(path).read_bytes()
+              m = re.search(br'wasmBinaryFile="data:application/octet-stream;base64,([A-Za-z0-9+/=]+)"', data)
+              if not m:
+                  raise SystemExit(f'Embedded wasm not found in {path}')
+              return base64.b64decode(m.group(1))
+
+          def sections(wasm):
+              p = 8
+              out = []
+              while p < len(wasm):
+                  sid = wasm[p]; p += 1
+                  size, p = uleb(wasm, p)
+                  start, end = p, p + size
+                  name = None
+                  if sid == 0:
+                      n, q = uleb(wasm, p)
+                      name = wasm[q:q+n].decode('utf-8', 'replace')
+                  out.append((sid, start, end, name))
+                  p = end
+              return out
+
+          def code_payload(wasm):
+              for sid, start, end, _ in sections(wasm):
+                  if sid == 10: return wasm[start:end]
+              raise SystemExit('code section missing')
+
+          def func_names(wasm):
+              result = {}
+              for sid, start, end, name in sections(wasm):
+                  if sid != 0 or name != 'name':
+                      continue
+                  nlen, p = uleb(wasm, start)
+                  p += nlen
+                  while p < end:
+                      sub = wasm[p]; p += 1
+                      size, p = uleb(wasm, p)
+                      se = p + size
+                      if sub == 1:
+                          count, q = uleb(wasm, p)
+                          for _ in range(count):
+                              idx, q = uleb(wasm, q)
+                              ln, q = uleb(wasm, q)
+                              result[idx] = wasm[q:q+ln].decode('utf-8', 'replace')
+                              q += ln
+                      p = se
+              return result
+
+          current = wasm_from_runtime('/tmp/current-release/openttd-runtime.js')
+          named = wasm_from_runtime('/tmp/named-runtime/openttd-runtime.js')
+          cur_code = code_payload(current)
+          named_code = code_payload(named)
+          same = cur_code == named_code
+          names = func_names(named)
+
+          lines = [
+              f'current_wasm_bytes={len(current)}',
+              f'named_wasm_bytes={len(named)}',
+              f'current_code_sha256={hashlib.sha256(cur_code).hexdigest()}',
+              f'named_code_sha256={hashlib.sha256(named_code).hexdigest()}',
+              f'code_section_identical={str(same).lower()}',
+              f'named_function_count={len(names)}',
+              '',
+              'Firefox hot-function map:',
+          ]
+          for idx in TARGETS:
+              lines.append(f'{idx}: {names.get(idx, "<no-name>")}')
+
+          # Also print a neighbourhood around the hottest function so related
+          # inlined/adjacent helpers are visible during diagnosis.
+          lines.append('')
+          lines.append('Neighbourhood 3420..3820 (named entries only):')
+          for idx in range(3420, 3821):
+              if idx in names:
+                  lines.append(f'{idx}: {names[idx]}')
+
+          out = '\n'.join(lines) + '\n'
+          Path('/tmp/wasm-hot-function-map.txt').write_text(out, encoding='utf-8')
+          print(out)
+          if not same:
+              raise SystemExit('Symbol-only diagnostic build changed the wasm code section; function-index mapping is not proven exact')
+          for idx in TARGETS:
+              if idx not in names:
+                  raise SystemExit(f'Missing name for target wasm function {idx}')
+          PY
+
+      - name: Upload proven function map
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-wasm-hot-function-map
+          path: /tmp/wasm-hot-function-map.txt
+          if-no-files-found: error
