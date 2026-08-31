@@ -1,9 +1,13 @@
 /* Optional bundled OpenTTD add-ons for the Playgama/Yandex browser builds.
  *
- * Bundled content is immutable package data, not user data.  It deliberately
+ * Bundled content is immutable package data, not user data. It deliberately
  * lives outside /home/web_user/.openttd so IDBFS never has to restore tens of
  * MiB of static GRFs during a cold start. OpenTTD scans the binary search path
  * (including /newgrf and /baseset) natively when the NewGRF menu rescans.
+ *
+ * Heavy assets are installed only after OpenTTD enters main(), one at a time,
+ * with a browser yield before every fetch/decompression step. This prevents a
+ * large NewGRF (notably train/industry sets) from monopolising the UI thread.
  */
 (() => {
   'use strict';
@@ -11,13 +15,11 @@
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
-  const LICENSE_BUNDLE_URL = './PLAYGAMA-ALL-LICENSES.md';
-  const LICENSE_TARGET = '/docs/PLAYGAMA-LICENSES.md';
-  const INSTALL_CONCURRENCY = 1;
   const FETCH_TIMEOUT_MS = 8000;
   const RESTORE_STARTUP_GATE_MS = 1500;
   const POST_START_DELAY_MS = 1200;
   const POST_START_IDLE_TIMEOUT_MS = 5000;
+  const BETWEEN_ASSET_IDLE_TIMEOUT_MS = 2000;
 
   let manifestPromise = null;
 
@@ -80,6 +82,18 @@
     throw new Error(`Unsupported compression ${compression} for ${item.content_id}`);
   };
 
+  const yieldToBrowser = () => new Promise((resolve) => {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout: BETWEEN_ASSET_IDLE_TIMEOUT_MS });
+      return;
+    }
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => setTimeout(resolve, 0));
+      return;
+    }
+    setTimeout(resolve, 16);
+  });
+
   const installOne = async (FS, item) => {
     const root = installRootFor(item);
     ensureDir(FS, root);
@@ -115,43 +129,29 @@
     return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target };
   };
 
-  const mapLimit = async (items, limit, worker) => {
-    const results = new Array(items.length);
-    let next = 0;
-    const runner = async () => {
-      while (true) {
-        const index = next++;
-        if (index >= items.length) return;
-        try { results[index] = await worker(items[index]); }
-        catch (error) {
-          results[index] = { id: items[index]?.content_id || String(index), state: 'failed', error: String(error) };
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(limit, Math.max(items.length, 1)) }, runner));
-    return results;
-  };
-
-  const installLicenseBundle = async (FS) => {
-    ensureDir(FS, '/docs');
-    const response = await fetchWithTimeout(new URL(LICENSE_BUNDLE_URL, document.baseURI).toString(), { cache: 'force-cache' });
-    if (!response.ok) throw new Error(`HTTP ${response.status} while loading license bundle`);
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (data.byteLength < 1024) throw new Error('Bundled license document is unexpectedly small');
-    FS.writeFile(LICENSE_TARGET, data);
-    window.__openttdLicenseBundlePath = LICENSE_TARGET;
-    return { state: 'installed', bytes: data.byteLength, path: LICENSE_TARGET };
-  };
-
   const installBundledContent = async (FS) => {
-    let licenseStatus = null;
-    try { licenseStatus = await installLicenseBundle(FS); }
-    catch (error) { console.warn('[OpenTTD] License bundle background install failed', error); }
-
     const manifest = await getManifest();
-    const results = await mapLimit(manifest.items, INSTALL_CONCURRENCY, (item) => installOne(FS, item));
+
+    // Install smaller payloads first. The largest NewGRFs are intentionally
+    // processed last, after several browser-yield points, to minimise frame
+    // stalls while the main menu or a newly-created game is becoming usable.
+    const items = [...manifest.items].sort((a, b) => {
+      const aBytes = Number(a.installed_bytes ?? a.bytes ?? Number.MAX_SAFE_INTEGER);
+      const bBytes = Number(b.installed_bytes ?? b.bytes ?? Number.MAX_SAFE_INTEGER);
+      return aBytes - bBytes;
+    });
+
+    const results = [];
+    for (const item of items) {
+      await yieldToBrowser();
+      try {
+        results.push(await installOne(FS, item));
+      } catch (error) {
+        results.push({ id: item?.content_id || String(results.length), state: 'failed', error: String(error) });
+      }
+    }
+
     const failed = results.filter((row) => row?.state === 'failed');
-    window.__openttdBundledLicenseStatus = licenseStatus;
     window.__openttdBundledAddonsStatus = {
       manifest_version: manifest.manifest_version,
       installed: results.filter((row) => row?.state === 'installed').length,
@@ -205,12 +205,12 @@
             { timeout: POST_START_IDLE_TIMEOUT_MS },
           );
         } else {
-          setTimeout(() => startBundledContent(FS), 0);
+          // Firefox and other runtimes without requestIdleCallback still get a
+          // quiet startup window before any optional payload work begins.
+          setTimeout(() => startBundledContent(FS), 1000);
         }
       };
 
-      // Let the first menu frames render before decompressing/writing bundled
-      // content. The target paths are MEMFS/global search paths, never IDBFS.
       setTimeout(startWhenIdle, POST_START_DELAY_MS);
     };
 
@@ -226,8 +226,8 @@
 
   const previousRestore = window.yandexRestoreOpenTTDCloud;
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
-    // Merely arm optional content in preRun. No HTTP, decompression or static
-    // content writes are permitted before OpenTTD enters main().
+    // Optional static content is never fetched, decompressed or persisted in
+    // the preRun startup gate. Only arm it for post-main idle installation.
     scheduleBundledContentAfterStartup(FS);
 
     const restoreTask = (async () => {
