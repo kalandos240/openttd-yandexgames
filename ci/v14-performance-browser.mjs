@@ -1,16 +1,17 @@
 import puppeteer from 'puppeteer-core';
 import fs from 'node:fs';
 
-const [platform, url, output, profile = 'optimized', mapLog2Arg = '12', aiSampleMsArg = '30000', aiModeArg = 'during'] = process.argv.slice(2);
+const [platform, url, output, profile = 'optimized', mapLog2Arg = '12', aiSampleMsArg = '30000', aiModeArg = 'auto'] = process.argv.slice(2);
 const mapLog2 = Number(mapLog2Arg);
 const aiSampleMs = Number(aiSampleMsArg);
-const aiMode = String(aiModeArg || 'during');
+const aiModeRequested = String(aiModeArg || 'auto');
 if (!platform || !url || !output || !['baseline', 'optimized'].includes(profile) ||
     !Number.isInteger(mapLog2) || mapLog2 < 9 || mapLog2 > 12 ||
     !Number.isInteger(aiSampleMs) || aiSampleMs < 10000 || aiSampleMs > 120000 ||
-    !['during', 'after'].includes(aiMode)) {
-  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized] [map_log2=12] [ai_sample_ms=30000] [during|after]');
+    !['auto', 'during', 'after'].includes(aiModeRequested)) {
+  throw new Error('usage: v14-performance-browser.mjs <yandex|playgama> <url> <output.json> [baseline|optimized] [map_log2=12] [ai_sample_ms=30000] [auto|during|after]');
 }
+const aiMode = aiModeRequested === 'auto' ? (mapLog2 >= 12 ? 'during' : 'after') : aiModeRequested;
 const mapEdge = 2 ** mapLog2;
 const requiredBlockingGapMs = mapLog2 >= 12 ? 1000 : 250;
 const executablePath = process.env.CHROME_BIN;
@@ -241,10 +242,6 @@ try {
   const generationWallStart = Date.now();
   await consoleCommand('newgame 42424242', 0);
 
-  // World generation is synchronous in this production Emscripten port. For
-  // A-B tests we isolate generation from AI startup, so a 250 ms blocking gap
-  // is sufficient evidence on 2048 maps. The final 4096 exact-scenario stress
-  // still requires a >=1 second blocking gap and live frames after recovery.
   await page.waitForFunction((gapThreshold) => {
     const p = window.__otPerfProbe;
     return p && p.maxFrameGap >= gapThreshold && p.frames >= 8 && performance.now() - p.lastFrame < 1000;
