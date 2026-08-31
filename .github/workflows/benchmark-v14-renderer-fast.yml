@@ -1,0 +1,218 @@
+name: Benchmark v14 renderer fast
+
+on:
+  push:
+    branches:
+      - perf/v14-full-optimization
+    paths:
+      - '.github/workflows/benchmark-v14-renderer-fast.yml'
+      - 'ci/patch-v14-webgl-runtime.py'
+      - 'ci/v14-performance-browser.mjs'
+      - 'ci/patch-v14-performance-package.py'
+      - 'ci/patch-v14-playgama-single-file.py'
+      - 'yandex/neutralize_yandex_runtime.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  renderer-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      NATIVE_ARTIFACT_ID: '9748951872'
+      VERIFIED_YA_ARTIFACT_ID: '9738530154'
+      VERIFIED_PG_ARTIFACT_ID: '9738530460'
+
+    steps:
+      - name: Checkout performance tooling
+        uses: actions/checkout@v4
+
+      - name: Download proven native runtime and platform shells
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fast/{downloads,native-artifact,native,ya-artifact,pg-artifact,prod/ya,prod/pg,test/ya,test/pg,out}
+
+          download_artifact() {
+            local id="$1" out="$2"
+            curl -fL --retry 5 --retry-all-errors \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" \
+              -o "$out"
+          }
+
+          download_artifact "$NATIVE_ARTIFACT_ID" /tmp/fast/downloads/native.zip
+          download_artifact "$VERIFIED_YA_ARTIFACT_ID" /tmp/fast/downloads/ya.zip
+          download_artifact "$VERIFIED_PG_ARTIFACT_ID" /tmp/fast/downloads/pg.zip
+
+          unzip -q /tmp/fast/downloads/native.zip -d /tmp/fast/native-artifact
+          native_zip="$(find /tmp/fast/native-artifact -type f -name 'OpenTTD-YandexGames-Direct.zip' -print -quit)"
+          test -s "$native_zip"
+          unzip -q "$native_zip" -d /tmp/fast/native
+          test -s /tmp/fast/native/openttd-runtime.js
+          grep -Fq '__openttdDirtyRects' /tmp/fast/native/openttd-runtime.js
+          grep -Fq '__openttdAIStats' /tmp/fast/native/openttd-runtime.js
+
+          unzip -q /tmp/fast/downloads/ya.zip -d /tmp/fast/ya-artifact
+          unzip -q /tmp/fast/downloads/pg.zip -d /tmp/fast/pg-artifact
+          ya_zip="$(find /tmp/fast/ya-artifact -type f -name '*.zip' -print -quit)"
+          pg_zip="$(find /tmp/fast/pg-artifact -type f -name '*.zip' -print -quit)"
+          test -s "$ya_zip"; test -s "$pg_zip"
+          unzip -q "$ya_zip" -d /tmp/fast/prod/ya
+          unzip -q "$pg_zip" -d /tmp/fast/prod/pg
+
+      - name: Assemble current renderer candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            ci/patch-v14-webgl-runtime.py \
+            ci/patch-v14-performance-package.py \
+            ci/patch-v14-playgama-single-file.py \
+            yandex/neutralize_yandex_runtime.py
+
+          for d in /tmp/fast/prod/ya /tmp/fast/prod/pg; do
+            cp /tmp/fast/native/openttd-runtime.js "$d/openttd-runtime.js"
+            rm -f "$d/openttd.wasm" "$d/openttd.data"
+            python3 ci/patch-v14-webgl-runtime.py "$d/openttd-runtime.js"
+            node --check "$d/openttd-runtime.js"
+            grep -Fq '__openttdWebGLPresenter' "$d/openttd-runtime.js"
+            grep -Fq 'UNPACK_ROW_LENGTH' "$d/openttd-runtime.js"
+            grep -Fq 'zeroCopyRectUploads' "$d/openttd-runtime.js"
+            grep -Fq 'multiRectFrames' "$d/openttd-runtime.js"
+          done
+
+          python3 ci/patch-v14-performance-package.py /tmp/fast/prod/ya --platform yandex
+          python3 ci/patch-v14-playgama-single-file.py /tmp/fast/prod/pg
+          python3 yandex/neutralize_yandex_runtime.py /tmp/fast/prod/ya
+
+          cp -a /tmp/fast/prod/ya/. /tmp/fast/test/ya/
+          cp -a /tmp/fast/prod/pg/. /tmp/fast/test/pg/
+
+      - name: Install deterministic platform mocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/fast/test/ya/sdk.js <<'JS'
+          (() => {
+            const data = Object.create(null);
+            const player = {
+              async getData(keys) { const out = {}; for (const key of (keys || [])) if (Object.prototype.hasOwnProperty.call(data, key)) out[key] = data[key]; return out; },
+              async setData(value) { Object.assign(data, value || {}); return true; },
+              getMode() { return 'full'; }, getUniqueID() { return 'renderer-fast-user'; }, getName() { return 'Renderer Fast'; }, isAuthorized() { return true; }
+            };
+            const ysdk = {
+              environment: { i18n: { lang: 'en' }, app: { id: 'renderer-fast' } },
+              features: { LoadingAPI: { ready() { return Promise.resolve(true); } }, GameplayAPI: { start() { return Promise.resolve(true); }, stop() { return Promise.resolve(true); } } },
+              adv: { showFullscreenAdv({ callbacks } = {}) { callbacks?.onOpen?.(); callbacks?.onClose?.(true); } },
+              leaderboards: { async getEntries() { return { entries: [] }; }, async setScore() { return true; } },
+              async getPlayer() { return player; }, isAvailableMethod() { return Promise.resolve(true); }, on() {}, off() {}
+            };
+            window.YaGames = { async init() { return ysdk; } };
+          })();
+          JS
+
+          cat > /tmp/fast/test/pg/platform-bridge-loader.js <<'JS'
+          (() => {
+            const storageData = new Map();
+            window.__openttdPlatformStartupIndependent = true;
+            window.bridge = {
+              version: 'renderer-fast', engine: 'javascript',
+              PLATFORM_MESSAGE: { GAME_READY: 'game_ready', GAMEPLAY_STARTED: 'gameplay_started', GAMEPLAY_STOPPED: 'gameplay_stopped' },
+              EVENT_NAME: { PAUSE_STATE_CHANGED: 'pause_state_changed', AUDIO_STATE_CHANGED: 'audio_state_changed', INTERSTITIAL_STATE_CHANGED: 'interstitial_state_changed' },
+              INTERSTITIAL_STATE: { OPENED: 'opened', CLOSED: 'closed', FAILED: 'failed' }, STORAGE_TYPE: { PLATFORM_INTERNAL: 'platform_internal' },
+              async initialize() { return true; },
+              platform: { language: 'en', id: 'renderer-fast', isAudioEnabled: true, on() {}, off() {}, async sendMessage() { return true; } },
+              storage: { async isSupported() { return true; }, async isAvailable() { return true; }, async get(key) { return Array.isArray(key) ? key.map(k => storageData.get(String(k)) ?? null) : (storageData.get(String(key)) ?? null); }, async set(key, value) { if (Array.isArray(key)) key.forEach((k, i) => storageData.set(String(k), Array.isArray(value) ? value[i] : value)); else storageData.set(String(key), value); return true; } },
+              advertisement: { isInterstitialSupported: false, setMinimumDelayBetweenInterstitial() {}, on() {}, off() {}, showInterstitial() {} },
+              player: { id: 'renderer-fast-player', isAuthorizationSupported: false, isAuthorized: true, async authorize() { return true; } },
+              leaderboards: { type: 'not_available', async getEntries() { return []; }, async setScore() { return true; } }
+            };
+            window.playgamaBridgeScriptReady = Promise.resolve(window.bridge);
+          })();
+          JS
+
+      - name: Install browser controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+          test -n "$CHROME_BIN"
+          mkdir -p /tmp/fast/browser-node
+          cd /tmp/fast/browser-node
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund puppeteer-core@24.16.0
+          cp "$GITHUB_WORKSPACE/ci/v14-performance-browser.mjs" ./perf.mjs
+
+      - name: Optimized 4096x4096 plus 14-AI renderer benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CHROME_BIN="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
+
+          run_perf() {
+            local dir="$1" platform="$2" port="$3" name="$4"
+            cd "$dir"
+            python3 -m http.server "$port" --bind 127.0.0.1 >"/tmp/${name}-http.log" 2>&1 &
+            local pid=$!
+            trap 'kill "$pid" 2>/dev/null || true' RETURN
+            for _ in $(seq 1 100); do curl -fsS "http://127.0.0.1:${port}/index.html" >/dev/null && break; sleep 0.1; done
+            cd /tmp/fast/browser-node
+            node perf.mjs "$platform" "http://127.0.0.1:${port}/index.html" "/tmp/fast/out/${name}.json" optimized
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            trap - RETURN
+          }
+
+          run_perf /tmp/fast/test/ya yandex 8171 renderer-fast-yandex
+          run_perf /tmp/fast/test/pg playgama 8172 renderer-fast-playgama
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          out = Path('/tmp/fast/out')
+          summary = {}
+          for platform in ('yandex', 'playgama'):
+              data = json.loads((out / f'renderer-fast-{platform}.json').read_text())
+              if not data.get('passed'):
+                  raise SystemExit(f'{platform} renderer benchmark failed: {data.get("failure")}')
+              snap = data['ai14']['snapshot']
+              upload = data['renderer']['upload'] or {}
+              summary[platform] = {
+                  'generation4096Ms': data['generation4096']['wallMsUntilResponsive'],
+                  'estimatedFps': snap['estimatedFps'],
+                  'p95FrameGapMs': snap['p95FrameGapMs'],
+                  'p99FrameGapMs': snap['p99FrameGapMs'],
+                  'longestLongTaskMs': snap['longestLongTaskMs'],
+                  'wasmHeapBytes': snap['wasmHeapBytes'],
+                  'aiScheduler': data.get('aiScheduler'),
+                  'renderer': data['renderer'],
+                  'bytesPerSecond': (upload.get('bytesUploaded', 0) / 30.0),
+              }
+          (out / 'RENDERER-FAST-SUMMARY.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary, indent=2))
+          PY
+
+      - name: Package tested renderer candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/fast/prod/ya && zip -q -r -9 /tmp/fast/out/openttd-yandexgames-v14-renderer-fast.zip .)
+          (cd /tmp/fast/prod/pg && zip -q -r -9 /tmp/fast/out/openttd-playgama-v14-renderer-fast.zip .)
+          unzip -tq /tmp/fast/out/openttd-yandexgames-v14-renderer-fast.zip
+          unzip -tq /tmp/fast/out/openttd-playgama-v14-renderer-fast.zip
+          (cd /tmp/fast/out && sha256sum openttd-yandexgames-v14-renderer-fast.zip openttd-playgama-v14-renderer-fast.zip > SHA256SUMS.txt)
+
+      - name: Upload renderer benchmark and candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-renderer-fast-tested
+          compression-level: 0
+          path: /tmp/fast/out/
+          if-no-files-found: error
