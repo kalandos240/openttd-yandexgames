@@ -111,9 +111,6 @@ try {
     throw new Error(`required resource /openttd-runtime.js did not return HTTP 200; got ${responses.get('/openttd-runtime.js')}`);
   }
 
-  // OpenTTD Web supports both split Emscripten packages and SINGLE_FILE builds.
-  // If either external binary is requested, require both to load successfully.
-  // If neither is requested, wasm/data are embedded in openttd-runtime.js.
   const splitBinaryObserved = responses.has('/openttd.wasm') || responses.has('/openttd.data');
   if (splitBinaryObserved) {
     for (const path of ['/openttd.wasm', '/openttd.data']) {
@@ -128,9 +125,6 @@ try {
   if (platform === 'playgama' && result.playgamaBridge !== 'ready') throw new Error(`Playgama Bridge path did not initialize: ${JSON.stringify(result)}`);
   if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('\n')}`);
 
-  /* Network efficiency gates for the Yandex build. Global leaderboard traffic
-     must be zero during cold startup; it is allowed only after the player asks
-     for the Global tab. Cloud writes must carry the unchanged-payload deduper. */
   if (platform === 'yandex') {
     const rankingStats = result.yandexRankingNetworkStats;
     if (!rankingStats || rankingStats.startupEntryRequestsDeferred !== true || Number(rankingStats.entryRequests || 0) !== 0) {
@@ -140,8 +134,6 @@ try {
       throw new Error(`Yandex cloud unchanged-payload dedup is not enabled: ${JSON.stringify(result.yandexCloudNetworkStats)}`);
     }
 
-    /* Exercise the on-demand path once. This proves the optimization did not
-       disable rankings; it only moves the request behind explicit use. */
     const rankingProbe = await page.evaluate(async () => {
       const ranking = window.OpenTTDGlobalRanking;
       if (!ranking || typeof ranking.requestEntries !== 'function') return null;
@@ -163,9 +155,6 @@ try {
     }
   }
 
-  /* For the Yandex build, merely aborting an external request is not enough:
-     attempting one is a release failure. The package must be autonomous apart
-     from the same-origin /sdk.js supplied by Yandex Games. */
   if (platform === 'yandex' && blockedExternal.length) {
     throw new Error(`Yandex package attempted external HTTP(S) requests:\n${blockedExternal.join('\n')}`);
   }
@@ -202,3 +191,4 @@ if (failure) process.exit(1);
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
 // Final rebuild trigger includes the deferred leaderboard provider and favicon network hygiene.
 // Rebuild trigger after aligning the provider's runtime-ready guard with package validation.
+// Corrected source provider: yandex/openttd-global-ranking.js is shared by both final platform packages.
