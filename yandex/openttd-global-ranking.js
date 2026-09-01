@@ -29,6 +29,17 @@
   let inFlightSubmit = false;
   let inFlightFetch = null;
   let nextFetchAllowedAt = 0;
+  let fallbackPlayerPromise = null;
+  let fallbackPlayerSdk = null;
+
+  /* Small public diagnostics object used by release smoke tests. It also makes
+     accidental eager leaderboard traffic visible in a normal browser profile. */
+  const networkStats = {
+    entryRequests: 0,
+    scoreSubmissions: 0,
+    fallbackPlayerRequests: 0,
+    startupEntryRequestsDeferred: true,
+  };
 
   const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
   const clampScore = (value) => {
@@ -90,12 +101,33 @@
       return window.ysdk || null;
     }
   };
-  const getPlayer = async (sdk) => {
+  const getPlayer = async (sdk, forceFresh = false) => {
     if (!sdk || typeof sdk.getPlayer !== 'function') return null;
-    try { return await sdk.getPlayer(); } catch (_) { return null; }
+
+    /* yandex-bridge.js already creates and caches the Player promise because
+       cloud restore needs it. Reuse that promise instead of issuing a second
+       SDK getPlayer() call from the ranking provider. */
+    if (!forceFresh && window.yandexPlayerReady) {
+      try {
+        const shared = await Promise.resolve(window.yandexPlayerReady);
+        if (shared) return shared;
+      } catch (_) {}
+    }
+
+    if (forceFresh || fallbackPlayerSdk !== sdk) {
+      fallbackPlayerSdk = sdk;
+      fallbackPlayerPromise = null;
+    }
+    if (!fallbackPlayerPromise) {
+      networkStats.fallbackPlayerRequests++;
+      fallbackPlayerPromise = Promise.resolve()
+        .then(() => sdk.getPlayer())
+        .catch(() => null);
+    }
+    return await fallbackPlayerPromise;
   };
-  const checkAuthorized = async (sdk) => {
-    const player = await getPlayer(sdk);
+  const checkAuthorized = async (sdk, forceFresh = false) => {
+    const player = await getPlayer(sdk, forceFresh);
     authorized = !!(player && typeof player.isAuthorized === 'function' && player.isAuthorized());
     return player;
   };
@@ -131,6 +163,7 @@
 
       await checkAuthorized(sdk);
       try {
+        networkStats.entryRequests++;
         const result = await sdk.leaderboards.getEntries(LEADERBOARD_NAME, {
           quantityTop: 10,
           includeUser: authorized,
@@ -176,6 +209,7 @@
         return;
       }
       if (!(await methodAvailable(sdk, 'leaderboards.setScore'))) return;
+      networkStats.scoreSubmissions++;
       await sdk.leaderboards.setScore(LEADERBOARD_NAME, pending);
       storageSetNumber(SUBMITTED_KEY, pending);
       status = 'ready';
@@ -213,7 +247,9 @@
     try {
       if (!sdk.auth || typeof sdk.auth.openAuthDialog !== 'function') throw new Error('authorization unavailable');
       await sdk.auth.openAuthDialog();
-      await checkAuthorized(sdk);
+      /* Authorization can replace the SDK Player object; deliberately bypass
+         the shared pre-auth promise once after the dialog. */
+      await checkAuthorized(sdk, true);
       if (authorized) {
         await doSubmit();
         await requestEntries(true);
@@ -233,6 +269,7 @@
   window.OpenTTDGlobalRanking = {
     maxScore: MAX_SCORE,
     leaderboardName: LEADERBOARD_NAME,
+    networkStats,
     submitScore,
     requestEntries,
     requestAuth,
@@ -240,7 +277,17 @@
   };
 
   publishSoon();
-  Promise.resolve(window.yandexGamesSDKReady).then(() => requestEntries()).catch(() => {
+
+  /* Do not fetch the global leaderboard during cold startup. The native
+     ranking window requests it when the player actually opens the Global tab.
+     We only resolve SDK readiness here so a missing SDK can be reflected in
+     the snapshot without creating leaderboard traffic. */
+  Promise.resolve(window.yandexGamesSDKReady).then((sdk) => {
+    if (!sdk) {
+      status = 'offline';
+      publishSoon();
+    }
+  }).catch(() => {
     status = 'offline';
     publishSoon();
   });
