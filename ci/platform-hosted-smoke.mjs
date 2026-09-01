@@ -94,6 +94,8 @@ try {
       playgamaSdk: document.documentElement.dataset.playgamaSdk || '',
       playgamaBridge: document.documentElement.dataset.playgamaBridge || '',
       playgamaMessage: document.documentElement.dataset.playgamaMessage || '',
+      yandexRankingNetworkStats: window.OpenTTDGlobalRanking?.networkStats ? { ...window.OpenTTDGlobalRanking.networkStats } : null,
+      yandexCloudNetworkStats: window.__openttdYandexCloudNetworkStats ? { ...window.__openttdYandexCloudNetworkStats } : null,
       webglPresenter: Boolean(sdl?.__openttdWebGLPresenter),
       webgl2ZeroCopy: Boolean(sdl?.__openttdWebGL2ZeroCopy),
       framebufferFullUploads: Number(sdl?.__openttdFramebufferFullUploads || 0),
@@ -124,6 +126,34 @@ try {
   if (platform === 'yandex' && result.yandexSdk !== 'ready') throw new Error(`Yandex SDK path did not initialize: ${JSON.stringify(result)}`);
   if (platform === 'playgama' && result.playgamaBridge !== 'ready') throw new Error(`Playgama Bridge path did not initialize: ${JSON.stringify(result)}`);
   if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('\n')}`);
+
+  /* Network efficiency gates for the Yandex build. Global leaderboard traffic
+     must be zero during cold startup; it is allowed only after the player asks
+     for the Global tab. Cloud writes must carry the unchanged-payload deduper. */
+  if (platform === 'yandex') {
+    const rankingStats = result.yandexRankingNetworkStats;
+    if (!rankingStats || rankingStats.startupEntryRequestsDeferred !== true || Number(rankingStats.entryRequests || 0) !== 0) {
+      throw new Error(`Yandex leaderboard made eager startup traffic: ${JSON.stringify(rankingStats)}`);
+    }
+    if (!result.yandexCloudNetworkStats?.dedupEnabled) {
+      throw new Error(`Yandex cloud unchanged-payload dedup is not enabled: ${JSON.stringify(result.yandexCloudNetworkStats)}`);
+    }
+
+    /* Exercise the on-demand path once. This proves the optimization did not
+       disable rankings; it only moves the request behind explicit use. */
+    const rankingProbe = await page.evaluate(async () => {
+      const ranking = window.OpenTTDGlobalRanking;
+      if (!ranking || typeof ranking.requestEntries !== 'function') return null;
+      const before = { ...ranking.networkStats };
+      await ranking.requestEntries();
+      const after = { ...ranking.networkStats };
+      return { before, after };
+    });
+    result.yandexRankingOnDemandProbe = rankingProbe;
+    if (!rankingProbe || Number(rankingProbe.before.entryRequests || 0) !== 0 || Number(rankingProbe.after.entryRequests || 0) !== 1) {
+      throw new Error(`Yandex on-demand leaderboard probe failed: ${JSON.stringify(rankingProbe)}`);
+    }
+  }
 
   /* For the Yandex build, merely aborting an external request is not enough:
      attempting one is a release failure. The package must be autonomous apart
@@ -160,3 +190,4 @@ if (failure) process.exit(1);
 // v14 platform-verified release trigger: 2026-08-30
 // Yandex autonomy gate hardened: HTTP(S) attempts and WebSockets are fatal.
 // Renderer telemetry reports full/partial WebGL2 framebuffer upload counts.
+// Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
