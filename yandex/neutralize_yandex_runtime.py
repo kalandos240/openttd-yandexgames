@@ -95,6 +95,37 @@ def install_optimized_global_ranking(dist: Path) -> None:
     print("Yandex global leaderboard fetch is deferred until the Global tab is requested.")
 
 
+def patch_yandex_network_shell(dist: Path) -> None:
+    """Remove a pointless host request and prioritize the one critical SDK load."""
+    index = dist / "index.html"
+    bootstrap = dist / "yandex-bootstrap.js"
+    if not index.is_file() or not bootstrap.is_file():
+        raise SystemExit("Yandex index/bootstrap is missing during network shell patch")
+
+    html = index.read_text(encoding="utf-8")
+    if not re.search(r"<link\b[^>]*\brel\s*=\s*['\"]?icon\b", html, re.I):
+        if "<head>" not in html:
+            raise SystemExit("Could not find <head> for Yandex favicon suppression")
+        html = html.replace("<head>", '<head><link rel="icon" href="data:,">', 1)
+    index.write_text(html, encoding="utf-8")
+
+    text = bootstrap.read_text(encoding="utf-8")
+    if "script.src = '/sdk.js'" not in text:
+        raise SystemExit("Yandex same-origin /sdk.js loader is missing")
+    if "script.fetchPriority = 'high'" not in text:
+        anchor = "              script.async = true;\n"
+        if text.count(anchor) != 1:
+            raise SystemExit(f"Expected one Yandex SDK async marker, got {text.count(anchor)}")
+        text = text.replace(anchor, anchor + "              script.fetchPriority = 'high';\n", 1)
+    bootstrap.write_text(text, encoding="utf-8")
+
+    final_html = index.read_text(encoding="utf-8")
+    final_bootstrap = bootstrap.read_text(encoding="utf-8")
+    if 'href="data:,"' not in final_html or "script.fetchPriority = 'high'" not in final_bootstrap:
+        raise SystemExit("Yandex network shell optimization did not persist")
+    print("Yandex network shell optimized: no implicit /favicon.ico miss; /sdk.js is high priority when needed.")
+
+
 def instrument_yandex_network_efficiency(dist: Path) -> None:
     """Expose counters for the cloud dedup that is installed by the perf patch."""
     path = dist / "yandex-bridge.js"
@@ -235,6 +266,7 @@ def main() -> None:
 
     patch_loader(loader)
     install_optimized_global_ranking(dist)
+    patch_yandex_network_shell(dist)
     instrument_yandex_network_efficiency(dist)
 
     for name in (
