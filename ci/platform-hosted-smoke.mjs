@@ -100,6 +100,7 @@ try {
       playgamaSdk: document.documentElement.dataset.playgamaSdk || '',
       playgamaBridge: document.documentElement.dataset.playgamaBridge || '',
       playgamaMessage: document.documentElement.dataset.playgamaMessage || '',
+      playgamaStartupStorageProbeDisabled: window.__openttdPlaygamaStartupStorageProbeDisabled === true,
       yandexRankingNetworkStats: window.OpenTTDGlobalRanking?.networkStats ? { ...window.OpenTTDGlobalRanking.networkStats } : null,
       yandexCloudNetworkStats: window.__openttdYandexCloudNetworkStats ? { ...window.__openttdYandexCloudNetworkStats } : null,
       playgamaCloudNetworkStats: window.__openttdPlaygamaCloudNetworkStats ? { ...window.__openttdPlaygamaCloudNetworkStats } : null,
@@ -173,6 +174,37 @@ try {
     if (!cloudStats || cloudStats.configDedupEnabled !== true || cloudStats.saveMetadataFastPath !== true) {
       throw new Error(`Playgama cloud network fast-path is missing: ${JSON.stringify(cloudStats)}`);
     }
+    if (!result.playgamaStartupStorageProbeDisabled) {
+      throw new Error('Playgama compatibility adapter still performs the redundant startup storage marker probe');
+    }
+
+    const rankingStats = result.yandexRankingNetworkStats;
+    if (!rankingStats || rankingStats.playgamaBridgeProvider !== true || rankingStats.startupEntryRequestsDeferred !== true || Number(rankingStats.entryRequests || 0) !== 0) {
+      throw new Error(`Playgama direct leaderboard provider/startup deferral is missing: ${JSON.stringify(rankingStats)}`);
+    }
+
+    /* Temporarily expose the mock leaderboard as in-game and exercise exactly
+       one explicit ranking read. A Yandex provider accidentally packaged into
+       Playgama cannot pass this because it has no direct Bridge leaderboard. */
+    const rankingProbe = await page.evaluate(async () => {
+      const ranking = window.OpenTTDGlobalRanking;
+      const leaderboards = window.bridge?.leaderboards;
+      if (!ranking || typeof ranking.requestEntries !== 'function' || !leaderboards) return null;
+      const originalType = leaderboards.type;
+      try {
+        leaderboards.type = 'in_game';
+        const before = { ...ranking.networkStats };
+        await ranking.requestEntries(true);
+        const after = { ...ranking.networkStats };
+        return { before, after };
+      } finally {
+        leaderboards.type = originalType;
+      }
+    });
+    result.playgamaRankingOnDemandProbe = rankingProbe;
+    if (!rankingProbe || Number(rankingProbe.before.entryRequests || 0) !== 0 || Number(rankingProbe.after.entryRequests || 0) !== 1) {
+      throw new Error(`Playgama on-demand leaderboard probe failed: ${JSON.stringify(rankingProbe)}`);
+    }
   }
 
   if (platform === 'yandex' && blockedExternal.length) {
@@ -211,3 +243,4 @@ if (failure) process.exit(1);
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
 // Yandex network-shell gate: no favicon miss; same-origin /sdk.js is high priority when requested.
 // Optional bundled add-on payloads are forced to low network priority after main().
+// Playgama gate: direct Bridge ranking is proven on-demand; redundant startup storage marker is absent.
