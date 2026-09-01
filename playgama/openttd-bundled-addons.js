@@ -6,9 +6,9 @@
  * (including /newgrf and /baseset) natively when the NewGRF menu rescans.
  *
  * The installer is intentionally paced: network/decompression stays async and
- * each synchronous MEMFS write is moved to a browser idle turn. This prevents
- * the old behaviour where several large GRFs were written back-to-back shortly
- * after the first menu frame, which produced visible post-start stutters.
+ * each synchronous MEMFS publication is moved to a browser idle turn. The
+ * decoded Uint8Array is handed to MEMFS with canOwn=true, so Emscripten can
+ * adopt that buffer instead of cloning multi-megabyte GRFs during writeFile().
  */
 (() => {
   'use strict';
@@ -139,13 +139,16 @@
       throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
     }
 
-    // FS.writeFile is synchronous and can block a frame for multi-megabyte GRFs.
-    // Enter an idle turn immediately before the write, then yield once more so
-    // rendering/input gets a chance to run before the next asset starts.
+    /* Emscripten 3.1.57 MEMFS supports writeFile(..., {canOwn:true}). For a
+       standalone Uint8Array this transfers ownership of the decoded buffer to
+       the file node instead of allocating and memcpy'ing a second equally large
+       ArrayBuffer. We never mutate `data` after this call, which satisfies the
+       canOwn contract. Keep the idle turn so even open/close/bookkeeping lands
+       outside a hot render turn. */
     await waitForIdle();
-    FS.writeFile(target, data);
+    FS.writeFile(target, data, { canOwn: true });
     await sleep(INTER_ITEM_YIELD_MS);
-    return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target };
+    return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target, zero_copy_memfs: true };
   };
 
   const mapLimit = async (items, limit, worker) => {
@@ -187,6 +190,7 @@
       results,
       persistent: false,
       paced_writes: true,
+      zero_copy_memfs: true,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
@@ -238,7 +242,7 @@
       };
 
       // Let the first menu frames render before bundled content begins. Each
-      // individual MEMFS write is additionally paced by installOne().
+      // individual MEMFS publication is additionally placed in an idle turn.
       setTimeout(startWhenIdle, POST_START_DELAY_MS);
     };
 
