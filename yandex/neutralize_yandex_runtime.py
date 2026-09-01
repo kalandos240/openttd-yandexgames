@@ -1,20 +1,39 @@
 #!/usr/bin/env python3
-"""Remove Playgama-specific runtime naming from the final Yandex package.
+"""Neutralize platform naming and hard-audit the final Yandex runtime package.
 
 The combined legal bundle is kept as a static distribution file and renamed
 byte-for-byte for Yandex. It is no longer copied into MEMFS and there is no
-in-game licenses button/window. Only executable/runtime-facing references and
-obsolete platform integration files are neutralized or removed.
+in-game licenses button/window. Executable browser resources are also scanned
+for direct third-party network sinks; all OpenTTD game assets must be local and
+the Yandex Games SDK remains the same-origin /sdk.js supplied by the portal.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 OLD_LICENSE_NAME = "PLAYGAMA-ALL-LICENSES.md"
 NEW_LICENSE_NAME = "THIRD-PARTY-LICENSES.md"
+
+# These patterns are intentionally about *network sinks*, not arbitrary URL
+# text. OpenTTD/third-party notices can legally contain source/documentation
+# URLs without causing a browser request. What must be forbidden is executable
+# code or markup that can directly load a remote resource.
+REMOTE_SINK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("fetch", re.compile(r"\bfetch\s*\(\s*['\"](?:https?:)?//", re.I)),
+    ("xhr.open", re.compile(r"\.open\s*\(\s*['\"](?:GET|POST|PUT|PATCH|DELETE|HEAD)['\"]\s*,\s*['\"](?:https?:)?//", re.I)),
+    ("websocket", re.compile(r"\bWebSocket\s*\(\s*['\"](?:wss?:)?//", re.I)),
+    ("eventsource", re.compile(r"\bEventSource\s*\(\s*['\"](?:https?:)?//", re.I)),
+    ("script/style/media src", re.compile(r"\.(?:src|href)\s*=\s*['\"](?:https?:)?//", re.I)),
+    ("importScripts", re.compile(r"\bimportScripts\s*\(\s*['\"](?:https?:)?//", re.I)),
+    ("html src/href", re.compile(r"<(?:script|link|iframe|img|audio|video|source)\b[^>]*(?:src|href)\s*=\s*['\"](?:https?:)?//", re.I)),
+    ("css url", re.compile(r"url\s*\(\s*['\"]?(?:https?:)?//", re.I)),
+)
+
+EXECUTABLE_SUFFIXES = {".html", ".htm", ".js", ".mjs", ".css"}
 
 
 def patch_loader(path: Path) -> None:
@@ -50,8 +69,66 @@ def patch_loader(path: Path) -> None:
 
     if "paced_writes: true" not in text or "waitForIdle" not in text:
         raise SystemExit("Paced bundled-addons installer is missing from Yandex runtime")
+    if "canOwn: true" not in text or "zero_copy_memfs: true" not in text:
+        raise SystemExit("Zero-copy MEMFS ownership transfer is missing from Yandex add-on installer")
 
     path.write_text(text, encoding="utf-8")
+
+
+def audit_manifest_assets(dist: Path) -> None:
+    manifest_path = dist / "OPENTTD-BUNDLED-ADDONS.json"
+    if not manifest_path.is_file():
+        raise SystemExit("Yandex bundled add-on manifest is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    items = manifest.get("items") or []
+    if not items:
+        raise SystemExit("Yandex bundled add-on manifest has no items")
+
+    for item in items:
+        asset = str(item.get("asset") or "")
+        if not asset:
+            raise SystemExit(f"Bundled add-on has no local asset path: {item.get('content_id')!r}")
+        normalized = asset.replace("\\", "/")
+        if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", normalized) or normalized.startswith("//"):
+            raise SystemExit(f"Bundled add-on asset is remote: {asset}")
+        parts = PurePosixPath(normalized).parts
+        if ".." in parts:
+            raise SystemExit(f"Bundled add-on asset escapes package root: {asset}")
+        candidate = (dist / normalized).resolve()
+        try:
+            candidate.relative_to(dist)
+        except ValueError as exc:
+            raise SystemExit(f"Bundled add-on asset escapes Yandex package: {asset}") from exc
+        if not candidate.is_file():
+            raise SystemExit(f"Bundled add-on local asset is missing: {asset}")
+
+
+def audit_executable_network_sinks(dist: Path) -> None:
+    findings: list[str] = []
+    scanned = 0
+    for path in sorted(dist.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in EXECUTABLE_SUFFIXES:
+            continue
+        scanned += 1
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        rel = path.relative_to(dist).as_posix()
+        for label, pattern in REMOTE_SINK_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                start = max(0, match.start() - 80)
+                end = min(len(text), match.end() + 160)
+                snippet = re.sub(r"\s+", " ", text[start:end])[:300]
+                findings.append(f"{rel}: {label}: {snippet}")
+
+    if findings:
+        raise SystemExit(
+            "Yandex executable package contains direct remote network sink(s):\n" +
+            "\n".join(findings[:40])
+        )
+    print(f"Yandex autonomy static audit passed: {scanned} executable HTML/JS/CSS files contain no direct remote network sinks.")
 
 
 def main() -> None:
@@ -93,8 +170,12 @@ def main() -> None:
     if not new_license.is_file() or new_license.stat().st_size < 100_000:
         raise SystemExit("Neutral Yandex legal bundle is missing or unexpectedly small")
 
+    audit_manifest_assets(dist)
+    audit_executable_network_sinks(dist)
+
     print(f"Yandex runtime naming neutralized; static legal text preserved: {new_license}")
     print("No in-game licenses UI or license-bundle runtime installer remains.")
+    print("All bundled game payloads are local; direct remote HTTP(S)/WebSocket/script/media sinks are forbidden in executable package files.")
 
 
 if __name__ == "__main__":
