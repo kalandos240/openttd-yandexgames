@@ -7,6 +7,16 @@
   'use strict';
   if (window.OpenTTDGlobalRanking) return;
 
+  /* Chromium/Firefox may synthesize a /favicon.ico request when a page has no
+     icon declaration. A zero-byte data URL keeps that browser-owned miss off
+     the game host without adding another packaged asset. */
+  if (!document.querySelector('link[rel~="icon"]')) {
+    const icon = document.createElement('link');
+    icon.rel = 'icon';
+    icon.href = 'data:,';
+    document.head.appendChild(icon);
+  }
+
   const LEADERBOARD_NAME = 'companyrating';
   const MAX_SCORE = 1000;
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
