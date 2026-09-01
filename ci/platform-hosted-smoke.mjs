@@ -201,3 +201,4 @@ if (failure) process.exit(1);
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
 // Final rebuild trigger includes the deferred leaderboard provider and favicon network hygiene.
+// Rebuild trigger after aligning the provider's runtime-ready guard with package validation.
