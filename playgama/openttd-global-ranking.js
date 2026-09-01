@@ -74,9 +74,9 @@
 
   const runtimeFsReady = () => {
     try {
-      if (!window.Module || window.Module.calledRun !== true) return false;
-      if (typeof HEAP8 === 'undefined' || !HEAP8 || !HEAP8.buffer) return false;
-      return typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
+      return typeof Module !== 'undefined' && Module.calledRun === true &&
+        typeof HEAP8 !== 'undefined' && HEAP8 && HEAP8.buffer &&
+        typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
     } catch (_) {
       return false;
     }
