@@ -7,6 +7,10 @@ whether the generated JS uses readable or minified local variable names.
 WebGL2 additionally consumes the native OpenTTD dirty rectangle (when present)
 and uses UNPACK_ROW_LENGTH / UNPACK_SKIP_* to transfer only changed pixels from
 the Wasm heap. WebGL1 and the original Canvas2D presenter stay as fallbacks.
+
+The final package also receives the current platform-neutral AI preRun helper.
+This keeps the optimized bundled-SimpleAI installation path identical in the
+Yandex and Playgama archives assembled from the older localized package base.
 """
 from __future__ import annotations
 
@@ -188,11 +192,37 @@ def patch_renderer(path: Path) -> None:
     print(f"WebGL2 dirty-rect zero-copy presenter patched in Emscripten entry {entry_id}; WebGL1/Canvas2D fallbacks preserved")
 
 
+def install_optimized_ai_prerun(runtime: Path) -> None:
+    """Replace stale localized-package AI bootstrap with the current safe one."""
+    source = Path(__file__).resolve().parents[1] / "playgama" / "openttd-ai-prerun.js"
+    target = runtime.parent / "openttd-ai-prerun.js"
+    if not source.is_file():
+        raise SystemExit(f"Optimized AI preRun source is missing: {source}")
+    if not target.is_file():
+        raise SystemExit(f"Final package AI preRun target is missing: {target}")
+
+    text = source.read_text(encoding="utf-8")
+    required = (
+        "base64DecodedLength",
+        "sizeCheckBeforeDecode: true",
+        "zeroCopyMemfsWrites: true",
+        "FS.writeFile(fullPath, bytes, { canOwn: true })",
+        "window.__openttdAIArchivesReady",
+        "installBundledAIArchives",
+    )
+    if any(marker not in text for marker in required):
+        raise SystemExit("Optimized AI preRun source is missing expected performance/safety markers")
+    target.write_text(text, encoding="utf-8")
+    print("Optimized bundled-SimpleAI preRun installer copied into final package")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("runtime", type=Path)
     args = parser.parse_args()
-    patch_renderer(args.runtime.resolve())
+    runtime = args.runtime.resolve()
+    patch_renderer(runtime)
+    install_optimized_ai_prerun(runtime)
 
 
 if __name__ == "__main__":
