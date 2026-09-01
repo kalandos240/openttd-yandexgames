@@ -100,10 +100,10 @@ def patch_adapter(dist: Path) -> None:
             1,
         )
 
-    /* The compatibility adapter historically performed an unconditional
-       storage get+set marker on every launch. Cloud saves already probe and
-       cache storage availability lazily, so this marker creates pure startup
-       traffic and a write with no gameplay value. */
+    # The compatibility adapter historically performed an unconditional
+    # storage get+set marker on every launch. Cloud saves already probe and
+    # cache storage availability lazily, so this marker creates pure startup
+    # traffic and a write with no gameplay value.
     storage_probe = """    // Storage availability must never be a startup gate.
     try {
       const markerKey = '__openttd_playgama_bridge';
