@@ -103,6 +103,11 @@ try {
       yandexRankingNetworkStats: window.OpenTTDGlobalRanking?.networkStats ? { ...window.OpenTTDGlobalRanking.networkStats } : null,
       yandexCloudNetworkStats: window.__openttdYandexCloudNetworkStats ? { ...window.__openttdYandexCloudNetworkStats } : null,
       playgamaCloudNetworkStats: window.__openttdPlaygamaCloudNetworkStats ? { ...window.__openttdPlaygamaCloudNetworkStats } : null,
+      bundledAddonsNetwork: window.__openttdBundledAddonsStatus ? {
+        lowPriority: Boolean(window.__openttdBundledAddonsStatus.low_priority_network),
+        installed: Number(window.__openttdBundledAddonsStatus.installed || 0),
+        cached: Number(window.__openttdBundledAddonsStatus.cached || 0),
+      } : null,
       webglPresenter: Boolean(sdl?.__openttdWebGLPresenter),
       webgl2ZeroCopy: Boolean(sdl?.__openttdWebGL2ZeroCopy),
       framebufferFullUploads: Number(sdl?.__openttdFramebufferFullUploads || 0),
@@ -130,6 +135,9 @@ try {
   if (platform === 'yandex' && result.yandexSdk !== 'ready') throw new Error(`Yandex SDK path did not initialize: ${JSON.stringify(result)}`);
   if (platform === 'playgama' && result.playgamaBridge !== 'ready') throw new Error(`Playgama Bridge path did not initialize: ${JSON.stringify(result)}`);
   if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('\n')}`);
+  if (!result.bundledAddonsNetwork?.lowPriority || Number(result.bundledAddonsNetwork.installed || 0) + Number(result.bundledAddonsNetwork.cached || 0) !== 7) {
+    throw new Error(`Optional add-on network priority/install gate failed: ${JSON.stringify(result.bundledAddonsNetwork)}`);
+  }
 
   if (platform === 'yandex') {
     const rankingStats = result.yandexRankingNetworkStats;
@@ -202,3 +210,4 @@ if (failure) process.exit(1);
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
 // Yandex network-shell gate: no favicon miss; same-origin /sdk.js is high priority when requested.
+// Optional bundled add-on payloads are forced to low network priority after main().
