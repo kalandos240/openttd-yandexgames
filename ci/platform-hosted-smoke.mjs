@@ -79,6 +79,7 @@ try {
   result = await page.evaluate((platformName) => {
     const canvas = document.getElementById('canvas');
     const box = document.getElementById('box');
+    const sdl = window.Module?.SDL2 || null;
     return {
       calledRun: Boolean(window.Module?.calledRun),
       canvasWidth: canvas?.width || 0,
@@ -93,6 +94,12 @@ try {
       playgamaSdk: document.documentElement.dataset.playgamaSdk || '',
       playgamaBridge: document.documentElement.dataset.playgamaBridge || '',
       playgamaMessage: document.documentElement.dataset.playgamaMessage || '',
+      webglPresenter: Boolean(sdl?.__openttdWebGLPresenter),
+      webgl2ZeroCopy: Boolean(sdl?.__openttdWebGL2ZeroCopy),
+      framebufferFullUploads: Number(sdl?.__openttdFramebufferFullUploads || 0),
+      framebufferPartialUploads: Number(sdl?.__openttdFramebufferPartialUploads || 0),
+      framebufferUploadedPixels: Number(sdl?.__openttdFramebufferUploadedPixels || 0),
+      framebufferLastDirtyArea: Number(sdl?.__openttdFramebufferLastDirtyArea || 0),
       platformName,
     };
   }, platform);
@@ -152,3 +159,4 @@ if (failure) process.exit(1);
 
 // v14 platform-verified release trigger: 2026-08-30
 // Yandex autonomy gate hardened: HTTP(S) attempts and WebSockets are fatal.
+// Renderer telemetry reports full/partial WebGL2 framebuffer upload counts.
