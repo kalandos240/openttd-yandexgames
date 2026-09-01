@@ -1,3 +1,4 @@
+# Release-only vanilla packaging workflow.
 name: Build v14 vanilla release
 
 on:
