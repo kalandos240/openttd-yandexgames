@@ -23,6 +23,7 @@
   const POST_START_IDLE_TIMEOUT_MS = 5000;
   const WRITE_IDLE_TIMEOUT_MS = 1500;
   const INTER_ITEM_YIELD_MS = 32;
+  const OPTIONAL_ASSET_FETCH_OPTIONS = { cache: 'force-cache', priority: 'low' };
 
   let manifestPromise = null;
 
@@ -124,7 +125,11 @@
     } catch (_) {}
 
     const assetUrl = new URL(item.asset, document.baseURI).toString();
-    const response = await fetchWithTimeout(assetUrl, { cache: 'force-cache' });
+    /* These files are optional and can total tens of MiB. They start only after
+       OpenTTD entered main(), and Fetch Priority keeps them from competing with
+       SDK/cloud/leaderboard traffic. Browsers that do not implement RequestInit
+       priority ignore the dictionary member and retain the previous behavior. */
+    const response = await fetchWithTimeout(assetUrl, OPTIONAL_ASSET_FETCH_OPTIONS);
     if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${item.content_id}`);
 
     const packed = new Uint8Array(await response.arrayBuffer());
@@ -191,6 +196,7 @@
       persistent: false,
       paced_writes: true,
       zero_copy_memfs: true,
+      low_priority_network: true,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
