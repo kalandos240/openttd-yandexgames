@@ -40,6 +40,18 @@ for lic in ['THIRD-PARTY-LICENSES.md','PLAYGAMA-ALL-LICENSES.md']:
  if platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): raise SystemExit(f'{lic}: Playgama marker remains in Yandex notice')
  p.write_text(t,encoding='utf-8')
 
+if platform=='yandex':
+ p=r/'SOURCE_CODE.txt'
+ t=p.read_text(encoding='utf-8')
+ t=t.replace('OpenTTD 15.3 - Playgama WebAssembly edition','OpenTTD 15.3 - Yandex Games WebAssembly edition')
+ t=t.replace('Web/Playgama port source, patches and reproducible build scripts:','Web/Yandex Games port source, patches and reproducible build scripts:')
+ p.write_text(t,encoding='utf-8')
+ p=r/'NOTICE.txt'
+ t=p.read_text(encoding='utf-8')
+ t=t.replace('OpenTTD 15.3 - Playgama WebAssembly edition','OpenTTD 15.3 - Yandex Games WebAssembly edition')
+ t=t.replace('Playgama integration and WebAssembly build modifications are distributed','Yandex Games integration and WebAssembly build modifications are distributed')
+ p.write_text(t,encoding='utf-8')
+
 bad=[]
 for p in r.rglob('*'):
  if not p.is_file(): continue
@@ -50,5 +62,6 @@ for p in r.rglob('*'):
   except UnicodeDecodeError: continue
   for m in ['OPENTTD-BUNDLED-ADDONS','__openttdBundled','openttd-bundled-addons.js']:
    if m in t: bad.append(rel+':'+m)
-if bad: raise SystemExit('addon remnants: '+repr(bad))
+  if platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): bad.append(rel+':playgama-marker')
+if bad: raise SystemExit('release remnants: '+repr(bad))
 print(f'vanilla strip passed for {platform}')
