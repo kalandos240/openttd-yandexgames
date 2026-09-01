@@ -76,7 +76,6 @@ jobs:
           unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
           test -s /tmp/native/openttd-runtime.js
           test "$(stat -c%s /tmp/native/openttd-runtime.js)" -gt 20000000
-          grep -Fq 'Vanilla release patch applied' /dev/null || true
           ! grep -Fq 'ShowNetworkContentListWindow();' openttd/src/intro_gui.cpp
           ! grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
           ! grep -Fq 'GetBundledGRFRussianDescription' openttd/src/newgrf_gui.cpp
@@ -154,7 +153,7 @@ jobs:
           done
           grep -Fq 'yandex-bootstrap.js' /tmp/ya/index.html
           grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
-          ! grep -RniE 'playgama|playgamma' /tmp/ya/index.html /tmp/ya/*.js
+          ! grep -RniE 'playgama|playgamma' /tmp/ya --include='*.html' --include='*.js' --include='*.md' --include='*.txt' --include='*.json'
           grep -Fq 'bridge.playgama.com' /tmp/pg/index.html
           grep -Fq '__openttdPlatformStartupIndependent' /tmp/pg/openttd-runtime.js
           ! grep -Fq '__openttdPlatformStartupIndependent' /tmp/ya/openttd-runtime.js
