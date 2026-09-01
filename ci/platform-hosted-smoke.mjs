@@ -200,3 +200,4 @@ if (failure) process.exit(1);
 // Renderer telemetry reports full/partial WebGL2 framebuffer upload counts.
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
+// Final rebuild trigger includes the deferred leaderboard provider and favicon network hygiene.
