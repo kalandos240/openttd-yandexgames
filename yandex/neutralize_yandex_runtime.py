@@ -127,7 +127,7 @@ def patch_yandex_network_shell(dist: Path) -> None:
 
 
 def instrument_yandex_network_efficiency(dist: Path) -> None:
-    """Expose counters for the cloud dedup that is installed by the perf patch."""
+    """Expose cloud-network counters and keep restored IDBFS persistence off startup."""
     path = dist / "yandex-bridge.js"
     if not path.is_file():
         raise SystemExit(f"Yandex bridge is missing: {path}")
@@ -136,10 +136,47 @@ def instrument_yandex_network_efficiency(dist: Path) -> None:
     if "__openttdCloudDedupV2" not in text or "Object.keys(payload).length" not in text:
         raise SystemExit("Yandex cloud dedup v2 is missing before final packaging")
 
+    old_restore_persist = """      if (restored && typeof FS.syncfs === 'function') {
+        await new Promise(resolve => FS.syncfs(false, () => resolve()));
+      }
+"""
+    new_restore_persist = """      if (restored && typeof FS.syncfs === 'function') {
+        const persistRestoredState = () => {
+          const flush = () => {
+            try {
+              FS.syncfs(false, (error) => {
+                if (error) console.warn('OpenTTD cloud: deferred restored-state persistence failed', error);
+              });
+            } catch (error) {
+              console.warn('OpenTTD cloud: deferred restored-state persistence threw', error);
+            }
+          };
+          if (typeof window.requestIdleCallback === 'function') {
+            window.requestIdleCallback(flush, { timeout: 5000 });
+          } else {
+            setTimeout(flush, 500);
+          }
+        };
+        const module = window.Module;
+        if (module && module.calledRun === true) {
+          setTimeout(persistRestoredState, 0);
+        } else if (module && Array.isArray(module.postRun)) {
+          module.postRun.push(persistRestoredState);
+        } else {
+          setTimeout(persistRestoredState, 0);
+        }
+      }
+"""
+    if old_restore_persist in text:
+        text = text.replace(old_restore_persist, new_restore_persist, 1)
+    elif "deferred restored-state persistence" not in text:
+        raise SystemExit("Could not find Yandex restored-save persistence block")
+
     if "__openttdYandexCloudNetworkStats" not in text:
         marker = "  const __openttdCloudDedupV2 = true;\n"
         instrumentation = marker + """  const cloudNetworkStats = window.__openttdYandexCloudNetworkStats = {
     dedupEnabled: true,
+    deferredRestorePersist: true,
     uploads: 0,
     skippedUnchanged: 0,
   };
@@ -172,19 +209,28 @@ def instrument_yandex_network_efficiency(dist: Path) -> None:
         if text.count(old_flush) != 1:
             raise SystemExit("Could not find deduplicated Yandex cloud flush for instrumentation")
         text = text.replace(old_flush, new_flush, 1)
+    elif "deferredRestorePersist: true" not in text:
+        stats_anchor = "    dedupEnabled: true,\n"
+        if text.count(stats_anchor) != 1:
+            raise SystemExit("Could not add deferred-restore capability to Yandex cloud stats")
+        text = text.replace(stats_anchor, stats_anchor + "    deferredRestorePersist: true,\n", 1)
 
     for marker in (
         "__openttdCloudDedupV2",
         "__openttdYandexCloudNetworkStats",
         "dedupEnabled: true",
+        "deferredRestorePersist: true",
+        "deferred restored-state persistence",
         "cloudNetworkStats.uploads++",
         "cloudNetworkStats.skippedUnchanged++",
     ):
         if marker not in text:
             raise SystemExit(f"Yandex network-efficiency marker missing after instrumentation: {marker}")
+    if "await new Promise(resolve => FS.syncfs(false" in text:
+        raise SystemExit("Yandex cloud restore still blocks startup on IDBFS persistence")
 
     path.write_text(text, encoding="utf-8")
-    print("Yandex cloud dedup v2 verified and instrumented for release smoke.")
+    print("Yandex cloud dedup verified; restored-save IDBFS persistence is deferred until after main().")
 
 
 def audit_manifest_assets(dist: Path) -> None:
