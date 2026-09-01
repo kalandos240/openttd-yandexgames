@@ -45,6 +45,9 @@ NEW_HELPER = """  const base64DecodedLength = (value) => {
     sizeCheckBeforeDecode: true,
     zeroCopyMemfsWrites: true,
     passes: 0,
+    total: 0,
+    decoded: 0,
+    reused: 0,
     decodedArchives: 0,
     skippedSameSize: 0,
     writes: 0,
@@ -70,6 +73,7 @@ NEW_INSTALL = """  const installClassicAI = (FS, personalDir) => {
     if (!bundle || typeof bundle !== 'object') return;
     aiArchiveInstallStats.passes++;
     for (const [relativePath, encoded] of Object.entries(bundle)) {
+      aiArchiveInstallStats.total++;
       const fullPath = personalDir + '/' + relativePath;
       ensureDir(FS, fullPath.slice(0, fullPath.lastIndexOf('/')));
       try {
@@ -79,11 +83,13 @@ NEW_INSTALL = """  const installClassicAI = (FS, personalDir) => {
         let same = false;
         try { same = Number(FS.stat(fullPath).size) === expectedBytes; } catch (_) {}
         if (same) {
+          aiArchiveInstallStats.reused++;
           aiArchiveInstallStats.skippedSameSize++;
           continue;
         }
 
         const bytes = base64ToBytes(encoded);
+        aiArchiveInstallStats.decoded++;
         aiArchiveInstallStats.decodedArchives++;
         if (bytes.length !== expectedBytes) {
           throw new Error(`Bundled AI decoded-size mismatch for ${relativePath}: ${bytes.length}/${expectedBytes}`);
@@ -104,6 +110,9 @@ def patch(path: Path) -> None:
         required = (
             "sizeCheckBeforeDecode: true",
             "zeroCopyMemfsWrites: true",
+            "aiArchiveInstallStats.total++",
+            "aiArchiveInstallStats.decoded++",
+            "aiArchiveInstallStats.reused++",
             "skippedSameSize++",
             "FS.writeFile(fullPath, bytes, { canOwn: true })",
         )
@@ -125,6 +134,9 @@ def patch(path: Path) -> None:
         "sizeCheckBeforeDecode: true",
         "zeroCopyMemfsWrites: true",
         "aiArchiveInstallStats.passes++",
+        "aiArchiveInstallStats.total++",
+        "aiArchiveInstallStats.decoded++",
+        "aiArchiveInstallStats.reused++",
         "aiArchiveInstallStats.skippedSameSize++",
         "aiArchiveInstallStats.decodedArchives++",
         "FS.writeFile(fullPath, bytes, { canOwn: true })",
