@@ -96,6 +96,7 @@ try {
       playgamaMessage: document.documentElement.dataset.playgamaMessage || '',
       yandexRankingNetworkStats: window.OpenTTDGlobalRanking?.networkStats ? { ...window.OpenTTDGlobalRanking.networkStats } : null,
       yandexCloudNetworkStats: window.__openttdYandexCloudNetworkStats ? { ...window.__openttdYandexCloudNetworkStats } : null,
+      playgamaCloudNetworkStats: window.__openttdPlaygamaCloudNetworkStats ? { ...window.__openttdPlaygamaCloudNetworkStats } : null,
       webglPresenter: Boolean(sdl?.__openttdWebGLPresenter),
       webgl2ZeroCopy: Boolean(sdl?.__openttdWebGL2ZeroCopy),
       framebufferFullUploads: Number(sdl?.__openttdFramebufferFullUploads || 0),
@@ -155,6 +156,13 @@ try {
     }
   }
 
+  if (platform === 'playgama') {
+    const cloudStats = result.playgamaCloudNetworkStats;
+    if (!cloudStats || cloudStats.configDedupEnabled !== true || cloudStats.saveMetadataFastPath !== true) {
+      throw new Error(`Playgama cloud network fast-path is missing: ${JSON.stringify(cloudStats)}`);
+    }
+  }
+
   /* For the Yandex build, merely aborting an external request is not enough:
      attempting one is a release failure. The package must be autonomous apart
      from the same-origin /sdk.js supplied by Yandex Games. */
@@ -191,3 +199,4 @@ if (failure) process.exit(1);
 // Yandex autonomy gate hardened: HTTP(S) attempts and WebSockets are fatal.
 // Renderer telemetry reports full/partial WebGL2 framebuffer upload counts.
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
+// Playgama network gate: unchanged config/save backup paths avoid storage traffic.
