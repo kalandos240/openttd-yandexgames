@@ -49,6 +49,15 @@
     }
   };
 
+  const base64DecodedLength = (value) => {
+    const encoded = String(value || '');
+    if (!encoded) return 0;
+    let padding = 0;
+    if (encoded.endsWith('==')) padding = 2;
+    else if (encoded.endsWith('=')) padding = 1;
+    return Math.max(0, Math.floor(encoded.length * 3 / 4) - padding);
+  };
+
   const base64ToBytes = (value) => {
     const raw = atob(value || '');
     const bytes = new Uint8Array(raw.length);
@@ -141,28 +150,48 @@
     }
 
     let installed = 0;
+    let decoded = 0;
+    let reused = 0;
     for (const [relativePath, encoded] of entries) {
       if (!relativePath.startsWith('ai/')) {
         throw new Error('Unexpected bundled AI install path: ' + relativePath);
       }
       const fullPath = personalDir + '/' + relativePath;
       ensureDir(FS, fullPath.slice(0, fullPath.lastIndexOf('/')));
-      const bytes = base64ToBytes(encoded);
-      if (!bytes.length) throw new Error('Empty bundled AI archive: ' + relativePath);
 
-      let needsWrite = true;
-      try { needsWrite = FS.stat(fullPath).size !== bytes.length; } catch (_) {}
-      if (needsWrite) FS.writeFile(fullPath, bytes);
+      const expectedSize = base64DecodedLength(encoded);
+      if (!expectedSize) throw new Error('Empty bundled AI archive: ' + relativePath);
 
-      const size = FS.stat(fullPath).size;
-      if (size !== bytes.length) {
-        throw new Error(`Bundled AI archive verification failed for ${relativePath}: ${size}/${bytes.length}`);
+      let currentSize = -1;
+      try { currentSize = Number(FS.stat(fullPath).size); } catch (_) {}
+
+      if (currentSize !== expectedSize) {
+        const bytes = base64ToBytes(encoded);
+        if (bytes.length !== expectedSize) {
+          throw new Error(`Bundled AI decode length mismatch for ${relativePath}: ${bytes.length}/${expectedSize}`);
+        }
+        FS.writeFile(fullPath, bytes, { canOwn: true });
+        decoded++;
+      } else {
+        reused++;
+      }
+
+      const size = Number(FS.stat(fullPath).size);
+      if (size !== expectedSize) {
+        throw new Error(`Bundled AI archive verification failed for ${relativePath}: ${size}/${expectedSize}`);
       }
       installed++;
     }
 
     window.__openttdAIArchiveCount = installed;
     window.__openttdAIArchivesReady = installed === entries.length;
+    window.__openttdAIArchiveInstallStats = {
+      total: entries.length,
+      decoded,
+      reused,
+      sizeCheckBeforeDecode: true,
+      zeroCopyMemfsWrites: true,
+    };
     return installed;
   };
 
