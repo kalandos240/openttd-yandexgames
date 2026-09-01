@@ -209,9 +209,7 @@
     refresh: requestEntries,
   };
 
+  /* Publish the local snapshot header only. Network reads are deliberately
+     deferred until native OpenTTD asks for the Global ranking tab. */
   publishSoon();
-  Promise.resolve(window.playgamaBridgeReady).then(() => requestEntries()).catch(() => {
-    status = 'offline';
-    publishSoon();
-  });
 })();
