@@ -13,11 +13,38 @@
  */
 (() => {
   'use strict';
+
+  /* Reuse this same same-origin script as a decompression worker. This keeps
+     Yandex CSP/autonomy simple: no blob: workers and no additional package
+     resource are required. Large gzip expansion stays off the game/render
+     thread, while the main-thread path remains an explicit fallback. */
+  if (typeof window === 'undefined' && typeof self !== 'undefined') {
+    self.onmessage = async (event) => {
+      const message = event?.data || {};
+      if (message.type === 'probe') {
+        self.postMessage({ type: 'probe-result', id: message.id, supported: typeof DecompressionStream === 'function' });
+        return;
+      }
+      if (message.type !== 'inflate') return;
+      try {
+        if (typeof DecompressionStream !== 'function') throw new Error('DecompressionStream(gzip) is unavailable in worker');
+        const packed = new Uint8Array(message.buffer);
+        const stream = new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'));
+        const buffer = await new Response(stream).arrayBuffer();
+        self.postMessage({ type: 'inflate-result', id: message.id, ok: true, buffer }, [buffer]);
+      } catch (error) {
+        self.postMessage({ type: 'inflate-result', id: message.id, ok: false, error: String(error) });
+      }
+    };
+    return;
+  }
+
   if (window.__openttdBundledAddonsInstallerInstalled) return;
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
   const NETWORK_PREFETCH_AHEAD = 1;
+  const WORKER_DECOMPRESSION_MIN_BYTES = 1024 * 1024;
   const FETCH_BASE_TIMEOUT_MS = 15000;
   const FETCH_MAX_TIMEOUT_MS = 120000;
   const FETCH_BYTES_PER_SECOND_FLOOR = 96 * 1024;
@@ -30,10 +57,17 @@
 
   let manifestPromise = null;
   const packedAssetPromises = new Map();
+  const loaderScriptUrl = document.currentScript?.src || new URL('./openttd-bundled-addons.js', document.baseURI).toString();
+  let decompressionWorkerPromise = null;
+  let decompressionRequestId = 0;
   const networkStats = window.__openttdBundledAddonsNetworkStats = {
     lowPriority: true,
     prefetchAhead: NETWORK_PREFETCH_AHEAD,
     adaptiveTimeout: true,
+    workerDecompression: true,
+    workerAvailable: false,
+    workerInflates: 0,
+    workerFallbacks: 0,
     fetchesStarted: 0,
     prefetchedAssets: 0,
   };
@@ -105,12 +139,83 @@
     return String(a?.content_id || '').localeCompare(String(b?.content_id || ''));
   });
 
-  const inflateGzip = async (packed) => {
+  const inflateGzipMainThread = async (packed) => {
     if (typeof DecompressionStream !== 'function') {
       throw new Error('This browser does not support DecompressionStream(gzip)');
     }
     const stream = new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'));
     return new Uint8Array(await new Response(stream).arrayBuffer());
+  };
+
+  const getDecompressionWorker = () => {
+    if (decompressionWorkerPromise) return decompressionWorkerPromise;
+    decompressionWorkerPromise = new Promise((resolve) => {
+      if (typeof Worker !== 'function') { resolve(null); return; }
+      let worker;
+      try {
+        worker = new Worker(loaderScriptUrl, { name: 'openttd-addon-inflate' });
+      } catch (_) {
+        resolve(null);
+        return;
+      }
+      const id = ++decompressionRequestId;
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+        if (!value) { try { worker.terminate(); } catch (_) {} }
+        networkStats.workerAvailable = !!value;
+        resolve(value);
+      };
+      const onMessage = (event) => {
+        const message = event?.data || {};
+        if (message.type === 'probe-result' && message.id === id) finish(message.supported === true ? worker : null);
+      };
+      const onError = () => finish(null);
+      const timer = setTimeout(() => finish(null), 1500);
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      try { worker.postMessage({ type: 'probe', id }); } catch (_) { finish(null); }
+    });
+    return decompressionWorkerPromise;
+  };
+
+  const inflateGzipInWorker = async (packed) => {
+    const worker = await getDecompressionWorker();
+    if (!worker) return null;
+    const id = ++decompressionRequestId;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.removeEventListener('message', onMessage);
+        worker.removeEventListener('error', onError);
+        fn(value);
+      };
+      const onMessage = (event) => {
+        const message = event?.data || {};
+        if (message.type !== 'inflate-result' || message.id !== id) return;
+        if (message.ok && message.buffer) finish(resolve, new Uint8Array(message.buffer));
+        else finish(reject, new Error(message.error || 'Add-on decompression worker failed'));
+      };
+      const onError = (event) => finish(reject, new Error(event?.message || 'Add-on decompression worker error'));
+      const timer = setTimeout(() => finish(reject, new Error('Add-on decompression worker timeout')), 120000);
+      worker.addEventListener('message', onMessage);
+      worker.addEventListener('error', onError);
+      try {
+        /* Transfer the compressed buffer without copying. If the worker fails,
+           decodeAsset refetches the immutable package asset through force-cache
+           before using the main-thread fallback. */
+        worker.postMessage({ type: 'inflate', id, buffer: packed.buffer }, [packed.buffer]);
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
   };
 
   const isGzipPayload = (data) => data && data.byteLength >= 2 && data[0] === 0x1f && data[1] === 0x8b;
@@ -121,7 +226,27 @@
     if (compression === 'gzip') {
       if (!isGzipPayload(packed) && packed.byteLength === installedBytes) return packed;
       if (!isGzipPayload(packed)) throw new Error(`Invalid gzip transport for ${item.content_id}`);
-      return inflateGzip(packed);
+
+      if (installedBytes >= WORKER_DECOMPRESSION_MIN_BYTES) {
+        try {
+          const decoded = await inflateGzipInWorker(packed);
+          if (decoded) {
+            networkStats.workerInflates++;
+            return decoded;
+          }
+        } catch (error) {
+          networkStats.workerFallbacks++;
+          console.info('[OpenTTD] Add-on worker decompression fell back to main thread:', item.content_id, error);
+          /* The transferable packed buffer is detached after postMessage().
+             Refetch the immutable same-origin asset; force-cache normally makes
+             this a local browser-cache read rather than another network trip. */
+          const assetUrl = new URL(item.asset, document.baseURI).toString();
+          const response = await fetchWithTimeout(assetUrl, OPTIONAL_ASSET_FETCH_OPTIONS, timeoutForBytes(item.packaged_bytes ?? item.bytes));
+          if (!response.ok) throw new Error(`HTTP ${response.status} while reloading ${item.content_id} after worker fallback`);
+          packed = new Uint8Array(await response.arrayBuffer());
+        }
+      }
+      return inflateGzipMainThread(packed);
     }
     throw new Error(`Unsupported compression ${compression} for ${item.content_id}`);
   };
@@ -243,6 +368,10 @@
       low_priority_network: true,
       network_prefetch_ahead: NETWORK_PREFETCH_AHEAD,
       adaptive_fetch_timeout: true,
+      worker_decompression: true,
+      worker_available: networkStats.workerAvailable,
+      worker_inflates: networkStats.workerInflates,
+      worker_fallbacks: networkStats.workerFallbacks,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
