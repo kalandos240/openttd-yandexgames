@@ -22,6 +22,7 @@
   const SNAPSHOT_PATH = '/home/web_user/.openttd/global-ranking.tsv';
   const PENDING_KEY = 'openttd.globalRanking.pendingScore.v1';
   const SUBMITTED_KEY = 'openttd.globalRanking.lastSubmitted.v1';
+  const FETCH_FAILURE_BACKOFF_MS = 30000;
 
   let status = 'loading';
   let authorized = false;
@@ -30,7 +31,11 @@
   let submitTimer = 0;
   let publishRetryTimer = 0;
   let inFlightSubmit = false;
+  let inFlightFetch = null;
+  let nextFetchAllowedAt = 0;
+
   const networkStats = {
+    playgamaBridgeProvider: true,
     startupEntryRequestsDeferred: true,
     entryRequests: 0,
     scoreSubmissions: 0,
@@ -96,6 +101,7 @@
       return false;
     }
   };
+
   const publishSoon = () => {
     clearTimeout(publishRetryTimer);
     publishRetryTimer = 0;
@@ -103,46 +109,59 @@
     publishRetryTimer = setTimeout(publishSoon, 250);
   };
 
-  const requestEntries = async () => {
-    networkStats.entryRequests++;
-    status = 'loading';
-    publishSoon();
-    const bridge = await getBridge();
-    refreshAuthorized(bridge);
-    const type = bridge?.leaderboards?.type || 'not_available';
-    if (type !== 'in_game' || typeof bridge?.leaderboards?.getEntries !== 'function') {
-      status = type === 'not_available' ? 'offline' : 'error';
-      entries = [];
+  const requestEntries = async (force = false) => {
+    if (inFlightFetch) return inFlightFetch;
+    if (!force && Date.now() < nextFetchAllowedAt) return false;
+
+    inFlightFetch = (async () => {
+      status = 'loading';
       publishSoon();
-      return false;
-    }
+      const bridge = await getBridge();
+      refreshAuthorized(bridge);
+      const type = bridge?.leaderboards?.type || 'not_available';
+      if (type !== 'in_game' || typeof bridge?.leaderboards?.getEntries !== 'function') {
+        status = type === 'not_available' ? 'offline' : 'error';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+
+      try {
+        networkStats.entryRequests++;
+        const result = await bridge.leaderboards.getEntries(LEADERBOARD_NAME);
+        const rows = Array.isArray(result) ? result : [];
+        const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
+        const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
+        entries = rows.slice(0, 10).map((entry, index) => {
+          const rawRank = Number(entry?.rank);
+          const rank = Number.isFinite(rawRank)
+            ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
+            : index + 1;
+          return {
+            rank,
+            score: clampScore(entry?.score),
+            isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
+            name: cleanName(entry?.name),
+          };
+        });
+        nextFetchAllowedAt = 0;
+        status = entries.length ? 'ready' : 'empty';
+        publishSoon();
+        return true;
+      } catch (error) {
+        nextFetchAllowedAt = Date.now() + FETCH_FAILURE_BACKOFF_MS;
+        console.warn('[OpenTTD ranking] Global ranking request failed', error);
+        status = 'error';
+        entries = [];
+        publishSoon();
+        return false;
+      }
+    })();
 
     try {
-      const result = await bridge.leaderboards.getEntries(LEADERBOARD_NAME);
-      const rows = Array.isArray(result) ? result : [];
-      const ownId = bridge?.player?.id == null ? null : String(bridge.player.id);
-      const zeroBasedRanks = rows.some((entry) => Number(entry?.rank) === 0);
-      entries = rows.slice(0, 10).map((entry, index) => {
-        const rawRank = Number(entry?.rank);
-        const rank = Number.isFinite(rawRank)
-          ? Math.max(1, Math.trunc(rawRank) + (zeroBasedRanks ? 1 : 0))
-          : index + 1;
-        return {
-          rank,
-          score: clampScore(entry?.score),
-          isUser: ownId !== null && entry?.id != null && String(entry.id) === ownId,
-          name: cleanName(entry?.name),
-        };
-      });
-      status = entries.length ? 'ready' : 'empty';
-      publishSoon();
-      return true;
-    } catch (error) {
-      console.warn('[OpenTTD ranking] Global ranking request failed', error);
-      status = 'error';
-      entries = [];
-      publishSoon();
-      return false;
+      return await inFlightFetch;
+    } finally {
+      inFlightFetch = null;
     }
   };
 
@@ -209,7 +228,7 @@
     }
     if (authorized) {
       await doSubmit();
-      await requestEntries();
+      await requestEntries(true);
     } else {
       status = 'auth-required';
       publishSoon();
@@ -224,7 +243,7 @@
     submitScore,
     requestEntries,
     requestAuth,
-    refresh: requestEntries,
+    refresh: () => requestEntries(true),
   };
 
   /* Publish the local snapshot header only. Network reads are deliberately
