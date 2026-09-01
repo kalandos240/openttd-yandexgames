@@ -26,14 +26,18 @@ def load_shared() -> object:
 
 
 def install_optimized_global_ranking(dist: Path) -> None:
-    source = Path(__file__).resolve().parents[1] / "yandex" / "openttd-global-ranking.js"
+    source = Path(__file__).resolve().parents[1] / "playgama" / "openttd-global-ranking.js"
     target = dist / "openttd-global-ranking.js"
     if not source.is_file() or not target.is_file():
         raise SystemExit("Optimized global ranking source/target is missing for Playgama")
     text = source.read_text(encoding="utf-8")
     for marker in (
         "const MAX_SCORE = 1000",
+        "playgamaBridgeProvider: true",
         "startupEntryRequestsDeferred: true",
+        "window.playgamaBridgeReady",
+        "bridge.leaderboards.getEntries",
+        "bridge.leaderboards.setScore",
         "networkStats.entryRequests++",
         "Module.calledRun === true",
         "typeof HEAP8 !== 'undefined'",
@@ -95,6 +99,38 @@ def patch_adapter(dist: Path) -> None:
             "  const initializeBridge = async () => {\n    if (window.playgamaBridgeScriptReady) {\n      try { await window.playgamaBridgeScriptReady; } catch (_) {}\n    }\n    if (!window.bridge || typeof window.bridge.initialize !== 'function') {\n",
             1,
         )
+
+    /* The compatibility adapter historically performed an unconditional
+       storage get+set marker on every launch. Cloud saves already probe and
+       cache storage availability lazily, so this marker creates pure startup
+       traffic and a write with no gameplay value. */
+    storage_probe = """    // Storage availability must never be a startup gate.
+    try {
+      const markerKey = '__openttd_playgama_bridge';
+      await Promise.race([
+        (async () => {
+          await bridge.storage?.get?.(markerKey);
+          await bridge.storage?.set?.(markerKey, { updatedAt: Date.now() });
+        })(),
+        new Promise((resolve) => setTimeout(resolve, 1000)),
+      ]);
+    } catch (error) {
+      console.info('[Playgama] storage marker unavailable; local persistence will still work.', error);
+    }
+
+"""
+    storage_probe_replacement = """    // Cloud storage is checked lazily by the cloud-save layer. Avoid an
+    // unconditional startup read+write that cannot affect core game startup.
+    window.__openttdPlaygamaStartupStorageProbeDisabled = true;
+
+"""
+    if storage_probe in text:
+        text = text.replace(storage_probe, storage_probe_replacement, 1)
+    elif "window.__openttdPlaygamaStartupStorageProbeDisabled = true;" not in text:
+        raise SystemExit("Playgama startup storage probe block was not found")
+
+    if "__openttd_playgama_bridge" in text:
+        raise SystemExit("Redundant Playgama startup storage marker remains in compatibility adapter")
     path.write_text(text, encoding="utf-8")
 
 
@@ -301,10 +337,22 @@ def validate(dist: Path) -> None:
         raise SystemExit("Pinned non-blocking Playgama Bridge loader is missing")
     if "await window.playgamaBridgeScriptReady" not in adapter:
         raise SystemExit("Playgama compatibility adapter does not await optional Bridge initialization")
+    if "window.__openttdPlaygamaStartupStorageProbeDisabled = true;" not in adapter or "__openttd_playgama_bridge" in adapter:
+        raise SystemExit("Redundant Playgama startup storage get/set probe was not removed")
     if "Module.calledRun === true" not in ranking or "typeof HEAP8 !== 'undefined'" not in ranking:
         raise SystemExit("Playgama ranking runtime-ready guard is missing")
-    if "const MAX_SCORE = 1000" not in global_ranking or "startupEntryRequestsDeferred: true" not in global_ranking:
-        raise SystemExit("Playgama optimized global leaderboard provider is missing")
+    for marker in (
+        "const MAX_SCORE = 1000",
+        "playgamaBridgeProvider: true",
+        "startupEntryRequestsDeferred: true",
+        "window.playgamaBridgeReady",
+        "bridge.leaderboards.getEntries",
+        "bridge.leaderboards.setScore",
+    ):
+        if marker not in global_ranking:
+            raise SystemExit(f"Playgama direct global leaderboard provider is missing marker: {marker}")
+    if "window.yandexGamesSDKReady" in global_ranking:
+        raise SystemExit("Yandex leaderboard provider was accidentally installed into Playgama package")
     if "__openttdPlaygamaCloudNetworkStats" not in cloud or "skippedSaveMetadataReads++" not in cloud:
         raise SystemExit("Playgama cloud network dedup/fast-path is missing")
 
