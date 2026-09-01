@@ -2,8 +2,10 @@
 from pathlib import Path
 import argparse, re, shutil
 
-ap=argparse.ArgumentParser(); ap.add_argument('root',type=Path); ap.add_argument('--platform',choices=['yandex','playgama'],required=True); a=ap.parse_args()
+ap=argparse.ArgumentParser(); ap.add_argument('root',type=Path); ap.add_argument('--platform',choices=['yandex','playgama']); a=ap.parse_args()
 r=a.root.resolve()
+platform=a.platform or ('yandex' if (r/'YANDEX-INTEGRATION.txt').is_file() else 'playgama' if (r/'PLAYGAMA-INTEGRATION.txt').is_file() else None)
+if platform is None: raise SystemExit('could not detect platform package')
 idx=r/'index.html'
 if not idx.is_file() or not (r/'openttd-runtime.js').is_file(): raise SystemExit('bad package root')
 s=idx.read_text(encoding='utf-8')
@@ -27,7 +29,7 @@ for lic in ['THIRD-PARTY-LICENSES.md','PLAYGAMA-ALL-LICENSES.md']:
  t=re.sub(r'(?ms)^## Optional add-ons \(disabled by default\)\s*\n.*?(?=^## |\Z)','',t)
  t=re.sub(r'(?ms)^## THIRD-PARTY-ADDONS\.md\s*\n.*?(?=^## |\Z)','',t)
  t=re.sub(r'(?ms)^## licenses/addons/[^\n]+\n.*?(?=^## |\Z)','',t)
- if a.platform=='yandex':
+ if platform=='yandex':
   for h in ['SOURCE_CODE.txt','NOTICE.txt','PLAYGAMA-INTEGRATION.txt']:
    t=re.sub(rf'(?ms)^## {re.escape(h)}\s*\n.*?(?=^## |\Z)','',t)
   t=t.replace('# OpenTTD Playgama — licenses and third-party notices','# OpenTTD Yandex Games — licenses and third-party notices')
@@ -35,7 +37,7 @@ for lic in ['THIRD-PARTY-LICENSES.md','PLAYGAMA-ALL-LICENSES.md']:
  t=re.sub(r'\n{3,}','\n\n',t).rstrip()+'\n'
  for n in names:
   if n in t: raise SystemExit(f'{lic}: addon mention remains: {n}')
- if a.platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): raise SystemExit(f'{lic}: Playgama marker remains in Yandex notice')
+ if platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): raise SystemExit(f'{lic}: Playgama marker remains in Yandex notice')
  p.write_text(t,encoding='utf-8')
 
 bad=[]
@@ -49,4 +51,4 @@ for p in r.rglob('*'):
   for m in ['OPENTTD-BUNDLED-ADDONS','__openttdBundled','openttd-bundled-addons.js']:
    if m in t: bad.append(rel+':'+m)
 if bad: raise SystemExit('addon remnants: '+repr(bad))
-print(f'vanilla strip passed for {a.platform}')
+print(f'vanilla strip passed for {platform}')
