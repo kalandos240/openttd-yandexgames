@@ -5,9 +5,10 @@
  * MiB of static GRFs during a cold start. OpenTTD scans the binary search path
  * (including /newgrf and /baseset) natively when the NewGRF menu rescans.
  *
- * The installer is intentionally paced: network/decompression stays async and
- * each synchronous MEMFS publication is moved to a browser idle turn. The
- * decoded Uint8Array is handed to MEMFS with canOwn=true, so Emscripten can
+ * The installer is intentionally paced: optional same-origin network traffic
+ * is low priority, one following asset may download while the current asset is
+ * decoded/published, and synchronous MEMFS publication happens in idle turns.
+ * The decoded Uint8Array is handed to MEMFS with canOwn=true, so Emscripten can
  * adopt that buffer instead of cloning multi-megabyte GRFs during writeFile().
  */
 (() => {
@@ -16,8 +17,10 @@
   window.__openttdBundledAddonsInstallerInstalled = true;
 
   const MANIFEST_URL = './OPENTTD-BUNDLED-ADDONS.json';
-  const INSTALL_CONCURRENCY = 1;
-  const FETCH_TIMEOUT_MS = 8000;
+  const NETWORK_PREFETCH_AHEAD = 1;
+  const FETCH_BASE_TIMEOUT_MS = 15000;
+  const FETCH_MAX_TIMEOUT_MS = 120000;
+  const FETCH_BYTES_PER_SECOND_FLOOR = 96 * 1024;
   const RESTORE_STARTUP_GATE_MS = 1500;
   const POST_START_DELAY_MS = 1200;
   const POST_START_IDLE_TIMEOUT_MS = 5000;
@@ -26,6 +29,14 @@
   const OPTIONAL_ASSET_FETCH_OPTIONS = { cache: 'force-cache', priority: 'low' };
 
   let manifestPromise = null;
+  const packedAssetPromises = new Map();
+  const networkStats = window.__openttdBundledAddonsNetworkStats = {
+    lowPriority: true,
+    prefetchAhead: NETWORK_PREFETCH_AHEAD,
+    adaptiveTimeout: true,
+    fetchesStarted: 0,
+    prefetchedAssets: 0,
+  };
 
   const ensureDir = (FS, path) => {
     let current = '';
@@ -45,10 +56,17 @@
     }
   });
 
-  const fetchWithTimeout = async (url, options = {}) => {
+  const timeoutForBytes = (bytes) => {
+    const size = Number(bytes);
+    if (!Number.isFinite(size) || size <= 0) return FETCH_BASE_TIMEOUT_MS;
+    const transferBudget = Math.ceil((size / FETCH_BYTES_PER_SECOND_FLOOR) * 1000) + 10000;
+    return Math.min(FETCH_MAX_TIMEOUT_MS, Math.max(FETCH_BASE_TIMEOUT_MS, transferBudget));
+  };
+
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = FETCH_BASE_TIMEOUT_MS) => {
     if (typeof AbortController !== 'function') return fetch(url, options);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       return await fetch(url, { ...options, signal: controller.signal });
     } finally {
@@ -58,7 +76,7 @@
 
   const getManifest = () => {
     if (!manifestPromise) {
-      manifestPromise = fetchWithTimeout(MANIFEST_URL, { cache: 'force-cache' }).then(async (response) => {
+      manifestPromise = fetchWithTimeout(MANIFEST_URL, OPTIONAL_ASSET_FETCH_OPTIONS).then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status} while loading addon manifest`);
         const manifest = await response.json();
         if (!manifest || !Array.isArray(manifest.items)) throw new Error('Invalid bundled addon manifest');
@@ -108,6 +126,36 @@
     throw new Error(`Unsupported compression ${compression} for ${item.content_id}`);
   };
 
+  const primePackedAsset = (item, prefetched = false) => {
+    const id = String(item?.content_id || '');
+    if (!id || packedAssetPromises.has(id)) return;
+    const assetUrl = new URL(item.asset, document.baseURI).toString();
+    const packagedBytes = Number(item.packaged_bytes ?? item.bytes);
+    const timeoutMs = timeoutForBytes(packagedBytes);
+    networkStats.fetchesStarted++;
+    if (prefetched) networkStats.prefetchedAssets++;
+
+    /* Resolve failures into the promise value so a one-ahead request cannot
+       produce an unhandled rejection before its turn reaches installOne(). */
+    const task = fetchWithTimeout(assetUrl, OPTIONAL_ASSET_FETCH_OPTIONS, timeoutMs)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${id}`);
+        return { packed: new Uint8Array(await response.arrayBuffer()), timeoutMs };
+      })
+      .catch((error) => ({ error, timeoutMs }));
+    packedAssetPromises.set(id, task);
+  };
+
+  const consumePackedAsset = async (item) => {
+    const id = String(item?.content_id || '');
+    primePackedAsset(item, false);
+    const task = packedAssetPromises.get(id);
+    const result = await task;
+    packedAssetPromises.delete(id);
+    if (result?.error) throw result.error;
+    return result?.packed;
+  };
+
   const installOne = async (FS, item) => {
     const root = installRootFor(item);
     ensureDir(FS, root);
@@ -124,21 +172,21 @@
       if (Number(stat.size) === installedBytes) return { id: item.content_id, state: 'cached' };
     } catch (_) {}
 
-    const assetUrl = new URL(item.asset, document.baseURI).toString();
-    /* These files are optional and can total tens of MiB. They start only after
-       OpenTTD entered main(), and Fetch Priority keeps them from competing with
-       SDK/cloud/leaderboard traffic. Browsers that do not implement RequestInit
-       priority ignore the dictionary member and retain the previous behavior. */
-    const response = await fetchWithTimeout(assetUrl, OPTIONAL_ASSET_FETCH_OPTIONS);
-    if (!response.ok) throw new Error(`HTTP ${response.status} while loading ${item.content_id}`);
-
-    const packed = new Uint8Array(await response.arrayBuffer());
+    /* The current request may already be in flight because installBundledContent
+       primes one following item. Decompression and MEMFS publication remain
+       strictly sequential, so the pipeline overlaps only low-priority network
+       latency without doubling the expensive decoded-memory working set. */
+    const packed = await consumePackedAsset(item);
     const transparentlyDecoded = (item.compression || 'none') === 'gzip' &&
       !isGzipPayload(packed) && packed.byteLength === installedBytes;
     if (!transparentlyDecoded && Number.isFinite(packagedBytes) && packagedBytes > 0 && packed.byteLength !== packagedBytes) {
       throw new Error(`Packaged size mismatch for ${item.content_id}: expected ${packagedBytes}, got ${packed.byteLength}`);
     }
 
+    /* Begin large decompression from an idle turn as well. DecompressionStream
+       itself remains asynchronous, but this avoids scheduling its setup inside
+       a hot render callback on browsers that do some stream work on main. */
+    await waitForIdle();
     const data = await decodeAsset(item, packed, installedBytes);
     if (data.byteLength !== installedBytes) {
       throw new Error(`Installed size mismatch for ${item.content_id}: expected ${installedBytes}, got ${data.byteLength}`);
@@ -156,34 +204,30 @@
     return { id: item.content_id, state: 'installed', installed_bytes: data.byteLength, target, zero_copy_memfs: true };
   };
 
-  const mapLimit = async (items, limit, worker) => {
-    const results = new Array(items.length);
-    let next = 0;
-    const runner = async () => {
-      while (true) {
-        const index = next++;
-        if (index >= items.length) return;
-        try { results[index] = await worker(items[index]); }
-        catch (error) {
-          results[index] = { id: items[index]?.content_id || String(index), state: 'failed', error: String(error) };
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(limit, Math.max(items.length, 1)) }, runner));
-    return results;
-  };
-
   const installBundledContent = async (FS) => {
     const manifest = await getManifest();
     const items = orderedItems(manifest.items);
     window.__openttdBundledAddonsProgress = { total: items.length, completed: 0, current: null };
 
-    const results = await mapLimit(items, INSTALL_CONCURRENCY, async (item) => {
+    const results = new Array(items.length);
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
       window.__openttdBundledAddonsProgress.current = item.content_id;
-      const result = await installOne(FS, item);
-      window.__openttdBundledAddonsProgress.completed += 1;
-      return result;
-    });
+
+      primePackedAsset(item, false);
+      for (let ahead = 1; ahead <= NETWORK_PREFETCH_AHEAD; ahead++) {
+        const nextItem = items[index + ahead];
+        if (nextItem) primePackedAsset(nextItem, true);
+      }
+
+      try {
+        results[index] = await installOne(FS, item);
+      } catch (error) {
+        results[index] = { id: item?.content_id || String(index), state: 'failed', error: String(error) };
+      } finally {
+        window.__openttdBundledAddonsProgress.completed += 1;
+      }
+    }
 
     window.__openttdBundledAddonsProgress.current = null;
     const failed = results.filter((row) => row?.state === 'failed');
@@ -197,6 +241,8 @@
       paced_writes: true,
       zero_copy_memfs: true,
       low_priority_network: true,
+      network_prefetch_ahead: NETWORK_PREFETCH_AHEAD,
+      adaptive_fetch_timeout: true,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
@@ -248,7 +294,7 @@
       };
 
       // Let the first menu frames render before bundled content begins. Each
-      // individual MEMFS publication is additionally placed in an idle turn.
+      // individual decompression/publication is additionally placed in idle.
       setTimeout(startWhenIdle, POST_START_DELAY_MS);
     };
 
