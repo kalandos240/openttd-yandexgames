@@ -80,6 +80,10 @@ try {
     const canvas = document.getElementById('canvas');
     const box = document.getElementById('box');
     const sdl = window.Module?.SDL2 || null;
+    const sdkScript = Array.from(document.scripts).find(script => {
+      try { return new URL(script.src, document.baseURI).pathname === '/sdk.js'; }
+      catch (_) { return false; }
+    }) || null;
     return {
       calledRun: Boolean(window.Module?.calledRun),
       canvasWidth: canvas?.width || 0,
@@ -89,6 +93,8 @@ try {
       title: document.getElementById('title')?.textContent || '',
       message: document.getElementById('message')?.textContent || '',
       yandexSdk: document.documentElement.dataset.yandexSdk || '',
+      yandexSdkFetchPriority: sdkScript?.fetchPriority || '',
+      hasDeclaredFavicon: Boolean(document.querySelector('link[rel~="icon"]')),
       yandexLoadingReady: document.documentElement.dataset.yandexLoadingReady || '',
       yandexGameplay: document.documentElement.dataset.yandexGameplay || '',
       playgamaSdk: document.documentElement.dataset.playgamaSdk || '',
@@ -132,6 +138,12 @@ try {
     }
     if (!result.yandexCloudNetworkStats?.dedupEnabled) {
       throw new Error(`Yandex cloud unchanged-payload dedup is not enabled: ${JSON.stringify(result.yandexCloudNetworkStats)}`);
+    }
+    if (!result.hasDeclaredFavicon || responses.has('/favicon.ico')) {
+      throw new Error(`Yandex package caused an implicit favicon network miss: ${JSON.stringify({ hasDeclaredFavicon: result.hasDeclaredFavicon, faviconStatus: responses.get('/favicon.ico') })}`);
+    }
+    if (result.yandexSdkFetchPriority !== 'high') {
+      throw new Error(`Yandex /sdk.js is not marked high priority: ${JSON.stringify(result.yandexSdkFetchPriority)}`);
     }
 
     const rankingProbe = await page.evaluate(async () => {
@@ -189,6 +201,4 @@ if (failure) process.exit(1);
 // Renderer telemetry reports full/partial WebGL2 framebuffer upload counts.
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
-// Final rebuild trigger includes the deferred leaderboard provider and favicon network hygiene.
-// Rebuild trigger after aligning the provider's runtime-ready guard with package validation.
-// Corrected source provider: yandex/openttd-global-ranking.js is shared by both final platform packages.
+// Yandex network-shell gate: no favicon miss; same-origin /sdk.js is high priority when requested.
