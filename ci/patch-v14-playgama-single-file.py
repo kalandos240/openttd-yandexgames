@@ -25,6 +25,24 @@ def load_shared() -> object:
     return module
 
 
+def install_optimized_global_ranking(dist: Path) -> None:
+    source = Path(__file__).resolve().parents[1] / "yandex" / "openttd-global-ranking.js"
+    target = dist / "openttd-global-ranking.js"
+    if not source.is_file() or not target.is_file():
+        raise SystemExit("Optimized global ranking source/target is missing for Playgama")
+    text = source.read_text(encoding="utf-8")
+    for marker in (
+        "const MAX_SCORE = 1000",
+        "startupEntryRequestsDeferred: true",
+        "networkStats.entryRequests++",
+        "Module.calledRun === true",
+        "typeof HEAP8 !== 'undefined'",
+    ):
+        if marker not in text:
+            raise SystemExit(f"Optimized Playgama ranking provider is missing marker: {marker}")
+    target.write_text(text, encoding="utf-8")
+
+
 def patch_index(dist: Path) -> None:
     path = dist / "index.html"
     text = path.read_text(encoding="utf-8")
@@ -249,8 +267,6 @@ def patch_runtime_startup(dist: Path) -> None:
         replacement = 'if(window.__openttdPlatformStartupIndependent===true){finish_startup()}else if(window.yandexGamesSDKReady){Promise.race([window.yandexGamesSDKReady,new Promise(resolve=>setTimeout(()=>resolve(null),3e3))]).then(finish_startup,finish_startup)}else{finish_startup()}'
         text = text.replace(legacy, replacement, 1)
     else:
-        # Current single-file Emscripten form, e.g.:
-        # window.yandexGamesSDKReady?Promise.race([...]).then(Q,Q):Q()
         pattern = re.compile(
             r"window\.yandexGamesSDKReady\?Promise\.race\(\[window\.yandexGamesSDKReady,new Promise\(\((?P<resolver>[A-Za-z_$][\w$]*)=>setTimeout\(\(\(\)=>(?P=resolver)\(null\)\),3e3\)\)\)\]\)\.then\((?P<finish>[A-Za-z_$][\w$]*),(?P=finish)\):(?P=finish)\(\)"
         )
@@ -287,8 +303,8 @@ def validate(dist: Path) -> None:
         raise SystemExit("Playgama compatibility adapter does not await optional Bridge initialization")
     if "Module.calledRun === true" not in ranking or "typeof HEAP8 !== 'undefined'" not in ranking:
         raise SystemExit("Playgama ranking runtime-ready guard is missing")
-    if "const MAX_SCORE = 1000" not in global_ranking:
-        raise SystemExit("Playgama global leaderboard score range is not bounded to 1000")
+    if "const MAX_SCORE = 1000" not in global_ranking or "startupEntryRequestsDeferred: true" not in global_ranking:
+        raise SystemExit("Playgama optimized global leaderboard provider is missing")
     if "__openttdPlaygamaCloudNetworkStats" not in cloud or "skippedSaveMetadataReads++" not in cloud:
         raise SystemExit("Playgama cloud network dedup/fast-path is missing")
 
@@ -302,6 +318,7 @@ def main() -> None:
     shared = load_shared()
     shared.patch_ranking(dist / "openttd-ranking-core.js", False)
     shared.patch_ranking(dist / "openttd-global-ranking.js", True)
+    install_optimized_global_ranking(dist)
     patch_index(dist)
     write_loader(dist)
     patch_adapter(dist)
