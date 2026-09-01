@@ -1,0 +1,204 @@
+name: Build v14 vanilla release
+
+on:
+  push:
+    branches:
+      - release/v14-vanilla
+    paths:
+      - 'ci/patch-browser-vanilla-no-online-content.py'
+      - 'ci/patch-playgama-startup-independent-runtime.py'
+      - 'ci/strip-bundled-newgrf-for-vanilla.py'
+      - '.github/workflows/build-v14-vanilla-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CURRENT_LOCALIZED_ARTIFACT_ID: '9772768820'
+
+jobs:
+  build-vanilla-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout vanilla release branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire clean vanilla native patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'\n")
+          p.write_text(s.replace(anchor,anchor+add,1),encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          repl=anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(anchor,repl,1),encoding='utf-8')
+          PY
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile legacy/ci/patch-browser-vanilla-no-online-content.py
+
+      - name: Build clean native runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          test "$(stat -c%s /tmp/native/openttd-runtime.js)" -gt 20000000
+          grep -Fq 'Vanilla release patch applied' /dev/null || true
+          ! grep -Fq 'ShowNetworkContentListWindow();' openttd/src/intro_gui.cpp
+          ! grep -Fq 'ShowNewGRFSettings(true, true, false, _grfconfig_newgame);' openttd/src/intro_gui.cpp
+          ! grep -Fq 'GetBundledGRFRussianDescription' openttd/src/newgrf_gui.cpp
+
+      - name: Prepare Yandex and Playgama native runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/native/openttd-runtime.js /tmp/vanilla-yandex-runtime.js
+          cp /tmp/native/openttd-runtime.js /tmp/vanilla-playgama-runtime.js
+          python3 ci/patch-playgama-startup-independent-runtime.py /tmp/vanilla-playgama-runtime.js
+          node --check /tmp/vanilla-yandex-runtime.js
+          node --check /tmp/vanilla-playgama-runtime.js
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64,re,hashlib
+          def wasm(p):
+              b=Path(p).read_bytes(); m=re.search(br'wasmBinaryFile="data:application/octet-stream;base64,([A-Za-z0-9+/=]+)"',b)
+              if not m: raise SystemExit(f'wasm missing: {p}')
+              return base64.b64decode(m.group(1))
+          a=wasm('/tmp/vanilla-yandex-runtime.js'); b=wasm('/tmp/vanilla-playgama-runtime.js')
+          if a!=b: raise SystemExit('Playgama wrapper patch changed embedded WASM')
+          print('vanilla_wasm_sha256='+hashlib.sha256(a).hexdigest())
+          print('vanilla_wasm_bytes='+str(len(a)))
+          PY
+
+      - name: Download current full platform packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/current /tmp/ya /tmp/pg /tmp/out
+          mkdir -p /tmp/current /tmp/ya /tmp/pg /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CURRENT_LOCALIZED_ARTIFACT_ID}/zip" \
+            -o /tmp/current.zip
+          unzip -q /tmp/current.zip -d /tmp/current
+          YA="$(find /tmp/current -type f -name 'OpenTTD-v14-Yandex-Full-RU-EN-Localization.zip' -print -quit)"
+          PG="$(find /tmp/current -type f -name 'OpenTTD-v14-Playgama-Full-RU-EN-Localization.zip' -print -quit)"
+          test -s "$YA"; test -s "$PG"
+          unzip -q "$YA" -d /tmp/ya
+          unzip -q "$PG" -d /tmp/pg
+
+      - name: Convert current packages to vanilla release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/vanilla-yandex-runtime.js /tmp/ya/openttd-runtime.js
+          cp /tmp/vanilla-playgama-runtime.js /tmp/pg/openttd-runtime.js
+          python3 ci/strip-bundled-newgrf-for-vanilla.py /tmp/ya
+          python3 ci/strip-bundled-newgrf-for-vanilla.py /tmp/pg
+
+      - name: Validate release invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in /tmp/ya /tmp/pg; do
+            test -s "$d/index.html"
+            test -s "$d/openttd-runtime.js"
+            test -s "$d/openttd-classic-ai.js"
+            test ! -e "$d/addons"
+            test ! -e "$d/licenses/addons"
+            test ! -e "$d/openttd-bundled-addons.js"
+            test ! -e "$d/OPENTTD-BUNDLED-ADDONS.json"
+            test ! -e "$d/BUNDLED-ADDONS.md"
+            test ! -e "$d/THIRD-PARTY-ADDONS.md"
+            test ! -e "$d/LOCALIZATION-REPORT.md"
+            test ! -e "$d/openttd.wasm"
+            test ! -e "$d/openttd.data"
+            node --check "$d/openttd-runtime.js"
+            test "$(find "$d" -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+          done
+          grep -Fq 'yandex-bootstrap.js' /tmp/ya/index.html
+          grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/ya/index.html /tmp/ya/*.js
+          grep -Fq 'bridge.playgama.com' /tmp/pg/index.html
+          grep -Fq '__openttdPlatformStartupIndependent' /tmp/pg/openttd-runtime.js
+          ! grep -Fq '__openttdPlatformStartupIndependent' /tmp/ya/openttd-runtime.js
+
+      - name: Create vanilla release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/ya && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Vanilla-Release.zip .)
+          (cd /tmp/pg && zip -9 -r /tmp/out/OpenTTD-v14-Playgama-Vanilla-Release.zip .)
+          sha256sum /tmp/out/*.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,re,base64
+          def runtime(root): return (Path(root)/'openttd-runtime.js').read_bytes()
+          def wasm(b):
+              m=re.search(br'wasmBinaryFile="data:application/octet-stream;base64,([A-Za-z0-9+/=]+)"',b)
+              return base64.b64decode(m.group(1))
+          ya=runtime('/tmp/ya'); pg=runtime('/tmp/pg'); w=wasm(ya)
+          report=(
+              'OpenTTD v14 browser vanilla release\n'
+              'bundled_newgrf_count=0\n'
+              'bundled_base_graphics_addon_count=0\n'
+              'simpleai_preserved=true\n'
+              'online_content_main_menu_removed=true\n'
+              'newgrf_engine_removed=false\n'
+              'newgrf_engine_note=kept for OpenTTD save compatibility; no content is bundled or auto-installed\n'
+              f'yandex_runtime_sha256={hashlib.sha256(ya).hexdigest()}\n'
+              f'playgama_runtime_sha256={hashlib.sha256(pg).hexdigest()}\n'
+              f'wasm_sha256={hashlib.sha256(w).hexdigest()}\n'
+              f'wasm_bytes={len(w)}\n'
+          )
+          Path('/tmp/out/VANILLA-RELEASE-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+          ls -lah /tmp/out
+
+      - name: Upload vanilla release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-vanilla-release
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Vanilla-Release.zip
+            /tmp/out/OpenTTD-v14-Playgama-Vanilla-Release.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/VANILLA-RELEASE-RESULTS.txt
+          if-no-files-found: error
