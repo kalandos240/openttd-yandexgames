@@ -80,6 +80,164 @@ def patch_adapter(dist: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def patch_cloud_network(dist: Path) -> None:
+    """Suppress unchanged Playgama storage reads/writes between real save changes."""
+    path = dist / "openttd-playgama-cloud-saves.js"
+    text = path.read_text(encoding="utf-8")
+    if "__openttdPlaygamaCloudNetworkStats" in text:
+        return
+
+    state_anchor = "  let latestRemoteMeta = null;\n"
+    state_new = state_anchor + """  let latestRemoteConfigText = null;
+  const cloudNetworkStats = window.__openttdPlaygamaCloudNetworkStats = {
+    configDedupEnabled: true,
+    saveMetadataFastPath: true,
+    skippedConfigWrites: 0,
+    skippedSaveMetadataReads: 0,
+  };
+"""
+    if text.count(state_anchor) != 1:
+        raise SystemExit("Playgama cloud state anchor was not found")
+    text = text.replace(state_anchor, state_new, 1)
+
+    old_config = """  async function writeConfig(FS, personalDir) {
+    const config = {
+      version: CLOUD_VERSION,
+      updatedAt: Date.now(),
+      config: readConfig(FS, personalDir),
+    };
+    await storageSet(CONFIG_KEY, config);
+  }
+"""
+    new_config = """  async function writeConfig(FS, personalDir) {
+    const configText = readConfig(FS, personalDir);
+    if (configText === latestRemoteConfigText) {
+      cloudNetworkStats.skippedConfigWrites++;
+      return { state: 'unchanged' };
+    }
+    const config = {
+      version: CLOUD_VERSION,
+      updatedAt: Date.now(),
+      config: configText,
+    };
+    await storageSet(CONFIG_KEY, config);
+    latestRemoteConfigText = configText;
+    return { state: 'uploaded' };
+  }
+"""
+    if text.count(old_config) != 1:
+        raise SystemExit("Playgama config upload block was not found")
+    text = text.replace(old_config, new_config, 1)
+
+    old_save_prefix = """  async function writeSave(FS, personalDir) {
+    const save = newestSave(FS, personalDir);
+    if (!save) return { state: 'no-save' };
+
+    let bytes;
+    try { bytes = FS.readFile(save.path); }
+    catch (error) { throw new Error(`Could not read local save: ${error}`); }
+    if (!bytes?.length) return { state: 'empty-save' };
+    if (bytes.length > MAX_SAVE_BYTES) {
+      console.warn(`[Playgama/OpenTTD] Save is ${bytes.length} bytes; cloud upload skipped above ${MAX_SAVE_BYTES} byte browser safety guard.`);
+      return { state: 'too-large', bytes: bytes.length };
+    }
+
+    const metas = await readSlotMetas();
+    const current = metas[0] || latestRemoteMeta;
+    if (metaMatchesLocal(current, save, bytes.length)) {
+      return { state: 'unchanged', bytes: bytes.length };
+    }
+
+    const targetSlot = current?.slot === 'a' ? 'b' : 'a';
+    const base64 = bytesToBase64(bytes);
+"""
+    new_save_prefix = """  async function writeSave(FS, personalDir) {
+    const save = newestSave(FS, personalDir);
+    if (!save) return { state: 'no-save' };
+
+    const localSize = Number(save.stat && save.stat.size) || 0;
+    if (latestRemoteMeta && metaMatchesLocal(latestRemoteMeta, save, localSize)) {
+      cloudNetworkStats.skippedSaveMetadataReads++;
+      return { state: 'unchanged', bytes: localSize };
+    }
+
+    /* Only ask platform storage for slot metadata after the local save has
+       actually diverged from the last known cloud generation. This keeps the
+       no-change backup path entirely local. */
+    const metas = await readSlotMetas();
+    const current = metas[0] || latestRemoteMeta;
+    if (metaMatchesLocal(current, save, localSize)) {
+      return { state: 'unchanged', bytes: localSize };
+    }
+
+    let bytes;
+    try { bytes = FS.readFile(save.path); }
+    catch (error) { throw new Error(`Could not read local save: ${error}`); }
+    if (!bytes?.length) return { state: 'empty-save' };
+    if (bytes.length > MAX_SAVE_BYTES) {
+      console.warn(`[Playgama/OpenTTD] Save is ${bytes.length} bytes; cloud upload skipped above ${MAX_SAVE_BYTES} byte browser safety guard.`);
+      return { state: 'too-large', bytes: bytes.length };
+    }
+
+    const targetSlot = current?.slot === 'a' ? 'b' : 'a';
+    const base64 = bytesToBase64(bytes);
+"""
+    if text.count(old_save_prefix) != 1:
+        raise SystemExit("Playgama save upload prefix was not found")
+    text = text.replace(old_save_prefix, new_save_prefix, 1)
+
+    restore_anchor = """      const configValues = await storageGet([CONFIG_KEY, LEGACY_CONFIG_KEY]);
+      if (Array.isArray(configValues)) {
+"""
+    restore_new = """      const configValues = await storageGet([CONFIG_KEY, LEGACY_CONFIG_KEY]);
+      if (Array.isArray(configValues)) {
+        const remoteConfig = configValues[0] || configValues[1] || null;
+        if (remoteConfig && typeof remoteConfig.config === 'string') {
+          latestRemoteConfigText = sanitizeConfig(remoteConfig.config);
+        }
+"""
+    if text.count(restore_anchor) != 1:
+        raise SystemExit("Playgama config restore anchor was not found")
+    text = text.replace(restore_anchor, restore_new, 1)
+
+    flush_old = """      await writeConfig(FS, personalDir);
+      const result = await writeSave(FS, personalDir);
+      lastCloudWriteAt = Date.now();
+      window.__openttdPlaygamaCloudStatus = {
+        available: true,
+        version: CLOUD_VERSION,
+        backup: result,
+        latest: latestRemoteMeta,
+      };
+"""
+    flush_new = """      const configResult = await writeConfig(FS, personalDir);
+      const result = await writeSave(FS, personalDir);
+      lastCloudWriteAt = Date.now();
+      window.__openttdPlaygamaCloudStatus = {
+        available: true,
+        version: CLOUD_VERSION,
+        configBackup: configResult,
+        backup: result,
+        latest: latestRemoteMeta,
+      };
+"""
+    if text.count(flush_old) != 1:
+        raise SystemExit("Playgama cloud flush block was not found")
+    text = text.replace(flush_old, flush_new, 1)
+
+    for marker in (
+        "__openttdPlaygamaCloudNetworkStats",
+        "configDedupEnabled: true",
+        "saveMetadataFastPath: true",
+        "skippedConfigWrites++",
+        "skippedSaveMetadataReads++",
+    ):
+        if marker not in text:
+            raise SystemExit(f"Playgama network-efficiency marker missing: {marker}")
+
+    path.write_text(text, encoding="utf-8")
+
+
 def patch_runtime_startup(dist: Path) -> None:
     path = dist / "openttd-runtime.js"
     text = path.read_text(encoding="utf-8")
@@ -117,6 +275,7 @@ def validate(dist: Path) -> None:
     adapter = (dist / "playgama-yandex-compat.js").read_text(encoding="utf-8")
     ranking = (dist / "openttd-ranking-core.js").read_text(encoding="utf-8")
     global_ranking = (dist / "openttd-global-ranking.js").read_text(encoding="utf-8")
+    cloud = (dist / "openttd-playgama-cloud-saves.js").read_text(encoding="utf-8")
 
     if "window.__openttdPlatformStartupIndependent===true" not in runtime:
         raise SystemExit("Runtime still waits on the platform SDK before core startup")
@@ -130,6 +289,8 @@ def validate(dist: Path) -> None:
         raise SystemExit("Playgama ranking runtime-ready guard is missing")
     if "const MAX_SCORE = 1000" not in global_ranking:
         raise SystemExit("Playgama global leaderboard score range is not bounded to 1000")
+    if "__openttdPlaygamaCloudNetworkStats" not in cloud or "skippedSaveMetadataReads++" not in cloud:
+        raise SystemExit("Playgama cloud network dedup/fast-path is missing")
 
 
 def main() -> None:
@@ -144,6 +305,7 @@ def main() -> None:
     patch_index(dist)
     write_loader(dist)
     patch_adapter(dist)
+    patch_cloud_network(dist)
     patch_runtime_startup(dist)
     validate(dist)
     print("v14 single-file Playgama hardening applied")
