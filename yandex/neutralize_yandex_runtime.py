@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 
 OLD_LICENSE_NAME = "PLAYGAMA-ALL-LICENSES.md"
 NEW_LICENSE_NAME = "THIRD-PARTY-LICENSES.md"
+RUNTIME_PRELOAD = '<link rel="preload" as="script" href="openttd-runtime.js" fetchpriority="high">'
 
 # These patterns are intentionally about *network sinks*, not arbitrary URL
 # text. OpenTTD/third-party notices can legally contain source/documentation
@@ -96,7 +97,7 @@ def install_optimized_global_ranking(dist: Path) -> None:
 
 
 def patch_yandex_network_shell(dist: Path) -> None:
-    """Remove a pointless host request and prioritize the one critical SDK load."""
+    """Remove pointless host traffic and start critical runtime/SDK transfers early."""
     index = dist / "index.html"
     bootstrap = dist / "yandex-bootstrap.js"
     if not index.is_file() or not bootstrap.is_file():
@@ -107,6 +108,15 @@ def patch_yandex_network_shell(dist: Path) -> None:
         if "<head>" not in html:
             raise SystemExit("Could not find <head> for Yandex favicon suppression")
         html = html.replace("<head>", '<head><link rel="icon" href="data:,">', 1)
+
+    # openttd-runtime.js contains the complete single-file Wasm/data payload and
+    # is by far the largest critical resource. Without a preload the browser
+    # discovers it only after parser-blocking bridge/AI scripts. Start the same-
+    # origin transfer immediately while preserving execution order later.
+    if RUNTIME_PRELOAD not in html:
+        if "<head>" not in html:
+            raise SystemExit("Could not find <head> for Yandex runtime preload")
+        html = html.replace("<head>", "<head>" + RUNTIME_PRELOAD, 1)
     index.write_text(html, encoding="utf-8")
 
     text = bootstrap.read_text(encoding="utf-8")
@@ -121,9 +131,9 @@ def patch_yandex_network_shell(dist: Path) -> None:
 
     final_html = index.read_text(encoding="utf-8")
     final_bootstrap = bootstrap.read_text(encoding="utf-8")
-    if 'href="data:,"' not in final_html or "script.fetchPriority = 'high'" not in final_bootstrap:
+    if 'href="data:,"' not in final_html or RUNTIME_PRELOAD not in final_html or "script.fetchPriority = 'high'" not in final_bootstrap:
         raise SystemExit("Yandex network shell optimization did not persist")
-    print("Yandex network shell optimized: no implicit /favicon.ico miss; /sdk.js is high priority when needed.")
+    print("Yandex network shell optimized: runtime preload + high-priority /sdk.js; no implicit /favicon.ico miss.")
 
 
 def instrument_yandex_network_efficiency(dist: Path) -> None:
