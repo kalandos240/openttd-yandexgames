@@ -8,6 +8,16 @@
   'use strict';
   if (window.OpenTTDGlobalRanking) return;
 
+  /* Chromium/Firefox may synthesize a /favicon.ico request when a page has no
+     icon declaration. Keep that browser-owned miss off the game host without
+     adding another packaged asset. */
+  if (!document.querySelector('link[rel~="icon"]')) {
+    const icon = document.createElement('link');
+    icon.rel = 'icon';
+    icon.href = 'data:,';
+    document.head.appendChild(icon);
+  }
+
   /* Exact developer-console identifier; deliberately contains no separators. */
   const LEADERBOARD_NAME = 'companyrating';
   /* Compatibility-validation marker for the superseded packaging workflow:
@@ -64,9 +74,9 @@
 
   const runtimeFsReady = () => {
     try {
-      if (!window.Module || window.Module.calledRun !== true) return false;
-      if (typeof HEAP8 === 'undefined' || !HEAP8 || !HEAP8.buffer) return false;
-      return typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
+      return typeof Module !== 'undefined' && Module.calledRun === true &&
+        typeof HEAP8 !== 'undefined' && HEAP8 && HEAP8.buffer &&
+        typeof FS !== 'undefined' && typeof FS.writeFile === 'function';
     } catch (_) {
       return false;
     }
