@@ -20,6 +20,11 @@
   let submitTimer = 0;
   let publishRetryTimer = 0;
   let inFlightSubmit = false;
+  const networkStats = {
+    startupEntryRequestsDeferred: true,
+    entryRequests: 0,
+    scoreSubmissions: 0,
+  };
 
   const cleanName = (value) => String(value || 'Player').replace(/[\t\r\n]+/g, ' ').trim().slice(0, 96) || 'Player';
   const clampScore = (value) => {
@@ -89,6 +94,7 @@
   };
 
   const requestEntries = async () => {
+    networkStats.entryRequests++;
     status = 'loading';
     publishSoon();
     const bridge = await getBridge();
@@ -152,6 +158,7 @@
     inFlightSubmit = true;
     try {
       await bridge.leaderboards.setScore(LEADERBOARD_NAME, pending);
+      networkStats.scoreSubmissions++;
       storageSetNumber(SUBMITTED_KEY, pending);
       status = 'ready';
       publishSoon();
@@ -203,6 +210,7 @@
   window.OpenTTDGlobalRanking = {
     maxScore: MAX_SCORE,
     leaderboardName: LEADERBOARD_NAME,
+    networkStats,
     submitScore,
     requestEntries,
     requestAuth,
