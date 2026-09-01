@@ -155,7 +155,6 @@ jobs:
           if old_wasm == new_wasm:
               raise SystemExit('Optimized WASM is byte-identical to baseline; source patch did not affect runtime')
 
-          # The package stays SINGLE_FILE and executable without sidecar wasm/data.
           if (final / 'openttd.wasm').exists() or (final / 'openttd.data').exists():
               raise SystemExit('Unexpected sidecar wasm/data in final package')
 
@@ -180,18 +179,20 @@ jobs:
           set -euo pipefail
           test -s /tmp/final-release/index.html
           test -s /tmp/final-release/openttd-runtime.js
+          test -s /tmp/final-release/yandex-bootstrap.js
           test ! -e /tmp/final-release/openttd.wasm
           test ! -e /tmp/final-release/openttd.data
           ! grep -RniE 'playgama|playgamma' /tmp/final-release/index.html /tmp/final-release/*.js || {
             echo 'Playgama marker found in executable Yandex package' >&2
             exit 1
           }
-          grep -Fq '/sdk.js' /tmp/final-release/index.html
+          grep -Fq 'yandex-bootstrap.js' /tmp/final-release/index.html
+          grep -Fq '/sdk.js' /tmp/final-release/yandex-bootstrap.js
 
-          # Bundled add-on payload must survive the runtime-only replacement.
-          addon_count="$(find /tmp/final-release -type f \( -iname '*.grf' -o -iname '*.tar' \) | wc -l)"
-          echo "Bundled GRF/TAR files: ${addon_count}"
-          test "${addon_count}" -gt 0
+          # The current localization bundle stores NewGRF payloads as .grf.bin/.tar.bin.
+          addon_count="$(find /tmp/final-release -type f \( -iname '*.grf' -o -iname '*.tar' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)"
+          echo "Bundled GRF/TAR payload files: ${addon_count}"
+          test "${addon_count}" -ge 7
 
       - name: Create ready archives
         shell: bash
