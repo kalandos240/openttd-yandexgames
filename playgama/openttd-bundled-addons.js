@@ -59,6 +59,7 @@
   const packedAssetPromises = new Map();
   const loaderScriptUrl = document.currentScript?.src || new URL('./openttd-bundled-addons.js', document.baseURI).toString();
   let decompressionWorkerPromise = null;
+  let decompressionWorker = null;
   let decompressionRequestId = 0;
   const networkStats = window.__openttdBundledAddonsNetworkStats = {
     lowPriority: true,
@@ -68,6 +69,7 @@
     workerAvailable: false,
     workerInflates: 0,
     workerFallbacks: 0,
+    workerTerminatedAfterInstall: false,
     fetchesStarted: 0,
     prefetchedAssets: 0,
   };
@@ -167,6 +169,7 @@
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('error', onError);
         if (!value) { try { worker.terminate(); } catch (_) {} }
+        decompressionWorker = value || null;
         networkStats.workerAvailable = !!value;
         resolve(value);
       };
@@ -181,6 +184,15 @@
       try { worker.postMessage({ type: 'probe', id }); } catch (_) { finish(null); }
     });
     return decompressionWorkerPromise;
+  };
+
+  const shutdownDecompressionWorker = () => {
+    const worker = decompressionWorker;
+    decompressionWorker = null;
+    decompressionWorkerPromise = null;
+    if (!worker) return;
+    try { worker.terminate(); } catch (_) {}
+    networkStats.workerTerminatedAfterInstall = true;
   };
 
   const inflateGzipInWorker = async (packed) => {
@@ -356,6 +368,7 @@
 
     window.__openttdBundledAddonsProgress.current = null;
     const failed = results.filter((row) => row?.state === 'failed');
+    shutdownDecompressionWorker();
     window.__openttdBundledAddonsStatus = {
       manifest_version: manifest.manifest_version,
       installed: results.filter((row) => row?.state === 'installed').length,
@@ -372,6 +385,7 @@
       worker_available: networkStats.workerAvailable,
       worker_inflates: networkStats.workerInflates,
       worker_fallbacks: networkStats.workerFallbacks,
+      worker_terminated_after_install: networkStats.workerTerminatedAfterInstall,
     };
     if (failed.length) console.warn('[OpenTTD] Some optional add-ons were unavailable:', failed);
     return results;
@@ -390,6 +404,7 @@
         return results;
       })
       .catch((error) => {
+        shutdownDecompressionWorker();
         window.__openttdBundledAddonsState = 'failed';
         window.__openttdBundledAddonsFatalError = String(error);
         console.warn('[OpenTTD] Optional content install failed; gameplay is not blocked', error);
