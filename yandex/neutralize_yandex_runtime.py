@@ -51,8 +51,6 @@ def patch_loader(path: Path) -> None:
     if re.search(r"playgama", text, re.I):
         raise SystemExit("Playgama reference remains in Yandex bundled-addons runtime")
 
-    # Legal notices remain static files in the ZIP. The runtime must not fetch,
-    # install or expose them through browser globals anymore.
     forbidden = (
         "LICENSE_BUNDLE_URL",
         "LICENSE_TARGET",
@@ -75,14 +73,30 @@ def patch_loader(path: Path) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def instrument_yandex_network_efficiency(dist: Path) -> None:
-    """Expose counters for the cloud dedup that is installed by the perf patch.
+def install_optimized_global_ranking(dist: Path) -> None:
+    """Use the repository ranking provider, not the older localized baseline copy."""
+    source = Path(__file__).with_name("openttd-global-ranking.js")
+    target = dist / "openttd-global-ranking.js"
+    if not source.is_file() or not target.is_file():
+        raise SystemExit("Global ranking source/target is missing during Yandex packaging")
+    text = source.read_text(encoding="utf-8")
+    required = (
+        "const MAX_SCORE = 1000",
+        "startupEntryRequestsDeferred: true",
+        "window.yandexPlayerReady",
+        "networkStats.entryRequests++",
+        "Module.calledRun === true",
+        "typeof HEAP8 !== 'undefined'",
+    )
+    for marker in required:
+        if marker not in text:
+            raise SystemExit(f"Optimized Yandex ranking provider is missing marker: {marker}")
+    target.write_text(text, encoding="utf-8")
+    print("Yandex global leaderboard fetch is deferred until the Global tab is requested.")
 
-    The performance package already avoids re-reading/re-uploading unchanged
-    config/save data with __openttdCloudDedupV2. Do not layer a second deduper on
-    top of it; just hard-verify that implementation and add tiny counters so the
-    browser smoke can prove the final Yandex package retained the optimization.
-    """
+
+def instrument_yandex_network_efficiency(dist: Path) -> None:
+    """Expose counters for the cloud dedup that is installed by the perf patch."""
     path = dist / "yandex-bridge.js"
     if not path.is_file():
         raise SystemExit(f"Yandex bridge is missing: {path}")
@@ -211,7 +225,6 @@ def main() -> None:
     old_license = dist / OLD_LICENSE_NAME
     new_license = dist / NEW_LICENSE_NAME
     if old_license.is_file():
-        # Rename without altering license/notices content.
         old_bytes = old_license.read_bytes()
         new_license.write_bytes(old_bytes)
         if new_license.read_bytes() != old_bytes:
@@ -221,9 +234,9 @@ def main() -> None:
         raise SystemExit("Combined license bundle is missing from Yandex package")
 
     patch_loader(loader)
+    install_optimized_global_ranking(dist)
     instrument_yandex_network_efficiency(dist)
 
-    # These are obsolete integration/change-log files, not third-party licenses.
     for name in (
         "PLAYGAMA-INTEGRATION.txt",
         "PLAYGAMA-V10-CHANGES.txt",
