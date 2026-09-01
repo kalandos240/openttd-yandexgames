@@ -101,6 +101,7 @@ try {
       playgamaBridge: document.documentElement.dataset.playgamaBridge || '',
       playgamaMessage: document.documentElement.dataset.playgamaMessage || '',
       playgamaStartupStorageProbeDisabled: window.__openttdPlaygamaStartupStorageProbeDisabled === true,
+      aiArchiveInstallStats: window.__openttdAIArchiveInstallStats ? { ...window.__openttdAIArchiveInstallStats } : null,
       yandexRankingNetworkStats: window.OpenTTDGlobalRanking?.networkStats ? { ...window.OpenTTDGlobalRanking.networkStats } : null,
       yandexCloudNetworkStats: window.__openttdYandexCloudNetworkStats ? { ...window.__openttdYandexCloudNetworkStats } : null,
       playgamaCloudNetworkStats: window.__openttdPlaygamaCloudNetworkStats ? { ...window.__openttdPlaygamaCloudNetworkStats } : null,
@@ -108,6 +109,9 @@ try {
         lowPriority: Boolean(window.__openttdBundledAddonsStatus.low_priority_network),
         installed: Number(window.__openttdBundledAddonsStatus.installed || 0),
         cached: Number(window.__openttdBundledAddonsStatus.cached || 0),
+        workerInflates: Number(window.__openttdBundledAddonsStatus.worker_inflates || 0),
+        workerFallbacks: Number(window.__openttdBundledAddonsStatus.worker_fallbacks || 0),
+        workerTerminatedAfterInstall: window.__openttdBundledAddonsStatus.worker_terminated_after_install === true,
       } : null,
       webglPresenter: Boolean(sdl?.__openttdWebGLPresenter),
       webgl2ZeroCopy: Boolean(sdl?.__openttdWebGL2ZeroCopy),
@@ -136,8 +140,17 @@ try {
   if (platform === 'yandex' && result.yandexSdk !== 'ready') throw new Error(`Yandex SDK path did not initialize: ${JSON.stringify(result)}`);
   if (platform === 'playgama' && result.playgamaBridge !== 'ready') throw new Error(`Playgama Bridge path did not initialize: ${JSON.stringify(result)}`);
   if (pageErrors.length) throw new Error(`page errors: ${pageErrors.join('\n')}`);
+
+  const aiStats = result.aiArchiveInstallStats;
+  if (!aiStats || aiStats.sizeCheckBeforeDecode !== true || aiStats.zeroCopyMemfsWrites !== true || Number(aiStats.total || 0) <= 0 || Number(aiStats.decoded || 0) + Number(aiStats.reused || 0) !== Number(aiStats.total || 0)) {
+    throw new Error(`Bundled SimpleAI decode/write fast path is missing: ${JSON.stringify(aiStats)}`);
+  }
+
   if (!result.bundledAddonsNetwork?.lowPriority || Number(result.bundledAddonsNetwork.installed || 0) + Number(result.bundledAddonsNetwork.cached || 0) !== 7) {
     throw new Error(`Optional add-on network priority/install gate failed: ${JSON.stringify(result.bundledAddonsNetwork)}`);
+  }
+  if (Number(result.bundledAddonsNetwork.workerInflates || 0) <= 0 || Number(result.bundledAddonsNetwork.workerFallbacks || 0) !== 0 || result.bundledAddonsNetwork.workerTerminatedAfterInstall !== true) {
+    throw new Error(`Optional add-on worker decompression/cleanup gate failed: ${JSON.stringify(result.bundledAddonsNetwork)}`);
   }
 
   if (platform === 'yandex') {
@@ -242,5 +255,6 @@ if (failure) process.exit(1);
 // Yandex network gate: no eager leaderboard fetch; unchanged cloud payloads are deduplicated.
 // Playgama network gate: unchanged config/save backup paths avoid storage traffic.
 // Yandex network-shell gate: no favicon miss; same-origin /sdk.js is high priority when requested.
-// Optional bundled add-on payloads are forced to low network priority after main().
+// Optional bundled add-on payloads are low-priority, worker-inflated, and worker resources are released after install.
 // Playgama gate: direct Bridge ranking is proven on-demand; redundant startup storage marker is absent.
+// Bundled SimpleAI gate: existing archives are size-checked before decoding and new writes use canOwn MEMFS ownership.
