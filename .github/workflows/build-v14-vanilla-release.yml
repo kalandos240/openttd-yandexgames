@@ -155,9 +155,12 @@ jobs:
           grep -Fq 'yandex-bootstrap.js' /tmp/ya/index.html
           grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
           ! grep -RniE 'playgama|playgamma' /tmp/ya --include='*.html' --include='*.js' --include='*.md' --include='*.txt' --include='*.json'
-          grep -Fq 'bridge.playgama.com' /tmp/pg/index.html
+          test -s /tmp/pg/platform-bridge-loader.js
+          grep -Fq 'platform-bridge-loader.js' /tmp/pg/index.html
+          grep -Fq 'bridge.playgama.com' /tmp/pg/platform-bridge-loader.js
           grep -Fq '__openttdPlatformStartupIndependent' /tmp/pg/openttd-runtime.js
           ! grep -Fq '__openttdPlatformStartupIndependent' /tmp/ya/openttd-runtime.js
+          echo 'All vanilla release invariants passed.'
 
       - name: Create vanilla release archives
         shell: bash
