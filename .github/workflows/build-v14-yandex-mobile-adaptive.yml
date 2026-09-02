@@ -1,0 +1,164 @@
+name: Build v14 Yandex mobile adaptive
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-mobile-adaptive.py'
+      - '.github/workflows/build-v14-yandex-mobile-adaptive.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PUBLICATION_ARTIFACT_ID: '9831915283'
+
+jobs:
+  build-yandex-mobile-adaptive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Download verified desktop publication package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/mobile /tmp/out
+          mkdir -p /tmp/base /tmp/mobile /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUBLICATION_ARTIFACT_ID}/zip" \
+            -o /tmp/base-artifact.zip
+          unzip -q /tmp/base-artifact.zip -d /tmp/base
+          BASE="$(find /tmp/base -type f -name 'OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip' -print -quit)"
+          test -s "$BASE"
+          unzip -q "$BASE" -d /tmp/mobile
+          test -s /tmp/mobile/index.html
+          test -s /tmp/mobile/openttd-runtime.js
+
+      - name: Apply adaptive mobile layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-adaptive.py
+          python3 ci/patch-yandex-mobile-adaptive.py /tmp/mobile
+
+      - name: Validate mobile invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test ! -e /tmp/mobile/licenses/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq 'viewport-fit=cover' /tmp/mobile/index.html
+          grep -Fq 'openttd-yandex-mobile.js' /tmp/mobile/index.html
+          grep -Fq "const CONFIG_NAME = 'openttd-mobile.cfg';" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'ysdk && ysdk.deviceInfo' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "getHighEntropyValues(['model', 'platform', 'platformVersion'])" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'visualViewport' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'safe-area-inset-top' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'fullscreen.request' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "canvas.addEventListener('pointerdown'" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "canvas.addEventListener('pointermove'" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "new WheelEvent('wheel'" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'LONG_PRESS_MS = 520' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'overscroll-behavior: none' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'touch-action: none' /tmp/mobile/openttd-yandex-mobile.js
+
+          grep -Fq "const CLOUD_CONFIG_KEY = 'openttdMobileConfigV1';" /tmp/mobile/yandex-bridge.js
+          grep -Fq "window.openttdConfigFilename || 'openttd.cfg'" /tmp/mobile/yandex-bridge.js
+          grep -Fq "setGlobal('gui_scale'" /tmp/mobile/openttd-yandex-fixes.js
+          grep -Fq "setGui('osk_activation', 'immediately')" /tmp/mobile/openttd-yandex-fixes.js
+          grep -Fq "setGui('scroll_mode', '3')" /tmp/mobile/openttd-yandex-fixes.js
+          grep -Fq 'window.openttdConfigFilename||"openttd.cfg"' /tmp/mobile/openttd-runtime.js
+
+          grep -Fq 'MAX_DESKTOP_ASPECT_RATIO = 2' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'if (!touchUi)' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'window.openttdGetSafeAreaInsets' /tmp/mobile/openttd-full-viewport.js
+
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/mobile --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/yandex-bridge.js
+          node --check /tmp/mobile/openttd-yandex-fixes.js
+          node --check /tmp/mobile/openttd-vanilla-migration.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_unpacked_bytes=$UNPACKED"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('/tmp/mobile')
+          for p in root.rglob('*'):
+              rel=p.relative_to(root).as_posix()
+              if any(ord(ch)>127 for ch in rel): raise SystemExit(f'Non-ASCII path: {rel}')
+              if ' ' in rel: raise SystemExit(f'Whitespace path: {rel}')
+          print('mobile_package_names=PASS')
+          PY
+
+      - name: Create mobile release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-Adaptive-Release.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-Adaptive-Release.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-Adaptive-Release.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-Adaptive-Release.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive mobile release\n'
+              'base=verified-vanilla-publication-release\n'
+              'yandex_device_info=true\n'
+              'optional_exact_model_hint=true\n'
+              'visual_viewport=true\n'
+              'safe_area_insets=true\n'
+              'adaptive_gui_scale=150|175|200\n'
+              'mobile_config_isolated=true\n'
+              'shared_save_directory=true\n'
+              'touch_tap=true\n'
+              'touch_drag=true\n'
+              'touch_long_press_right_click=true\n'
+              'pinch_zoom=true\n'
+              'overscroll_guard=true\n'
+              'fullscreen_request_on_user_gesture=true\n'
+              'orientation_resize=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+          ls -lah /tmp/out
+
+      - name: Upload adaptive mobile release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-adaptive-release
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-Adaptive-Release.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-RESULTS.txt
+          if-no-files-found: error
