@@ -1,0 +1,159 @@
+# Final Yandex-only moderation hardening layer for the v14 vanilla release.
+name: Build v14 Yandex moderation release
+
+on:
+  push:
+    branches:
+      - release/v14-vanilla
+    paths:
+      - 'ci/patch-yandex-moderation-compliance.py'
+      - '.github/workflows/build-v14-yandex-moderation-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CURRENT_VANILLA_ARTIFACT_ID: '9826951083'
+
+jobs:
+  build-yandex-moderation-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout vanilla release branch
+        uses: actions/checkout@v4
+
+      - name: Download current verified vanilla release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/ya /tmp/out
+          mkdir -p /tmp/base /tmp/ya /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CURRENT_VANILLA_ARTIFACT_ID}/zip" \
+            -o /tmp/base-artifact.zip
+          unzip -q /tmp/base-artifact.zip -d /tmp/base
+          BASE="$(find /tmp/base -type f -name 'OpenTTD-v14-Yandex-Vanilla-Release.zip' -print -quit)"
+          test -s "$BASE"
+          unzip -q "$BASE" -d /tmp/ya
+
+      - name: Apply Yandex moderation compliance hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-moderation-compliance.py
+          python3 ci/patch-yandex-moderation-compliance.py /tmp/ya
+
+      - name: Validate Yandex moderation invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/ya/index.html
+          test -s /tmp/ya/openttd-runtime.js
+          test -s /tmp/ya/openttd-classic-ai.js
+          test -s /tmp/ya/yandex-bootstrap.js
+          test -s /tmp/ya/yandex-bridge.js
+          test -s /tmp/ya/openttd-full-viewport.js
+          test -s /tmp/ya/openttd-yandex-web-keys.js
+
+          # AI is intentionally preserved and is not modified by this compliance pass.
+          grep -Fq 'openttd-classic-ai.js' /tmp/ya/index.html
+
+          # Yandex SDK/runtime only; no Playgama runtime survives in the package.
+          grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/ya --include='*.html' --include='*.js' --include='*.md' --include='*.txt' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/ya --include='*.html' --include='*.js'
+
+          # Fullscreen advertising: two active gameplay minutes, two-second warning,
+          # native/audio pause, GameplayAPI stop/start, and Yandex pause/resume events.
+          grep -Fq 'const AD_MIN_GAMEPLAY_MS = 2 * 60 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq 'const AD_MIN_INTERVAL_MS = 2 * 60 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq 'const AD_WARNING_MS = 2 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq "maybeShowInterstitial('gameplay-timer')" /tmp/ya/yandex-bridge.js
+          grep -Fq "maybeShowInterstitial('logical-pause')" /tmp/ya/yandex-bridge.js
+          grep -Fq 'updateAdWarning(2)' /tmp/ya/yandex-bridge.js
+          grep -Fq 'updateAdWarning(1)' /tmp/ya/yandex-bridge.js
+          grep -Fq 'GameplayAPI' /tmp/ya/yandex-bridge.js
+          grep -Fq "ysdk.on('game_api_pause'" /tmp/ya/yandex-bridge.js
+          grep -Fq "ysdk.on('game_api_resume'" /tmp/ya/yandex-bridge.js
+          grep -Fq 'showFullscreenAdv' /tmp/ya/yandex-bridge.js
+
+          # Active game field is never wider/taller than 2:1 and is not CSS-stretched.
+          grep -Fq 'const MAX_ASPECT_RATIO = 2;' /tmp/ya/openttd-full-viewport.js
+          grep -Fq 'Module.setCanvasSize(width, height)' /tmp/ya/openttd-full-viewport.js
+          grep -Fq 'openttd-yandex-web-keys.js' /tmp/ya/index.html
+          grep -Fq "key === 'F1' || key === 'F5'" /tmp/ya/openttd-yandex-web-keys.js
+          grep -Fq "lower === 's' || lower === 'w' || lower === 'q'" /tmp/ya/openttd-yandex-web-keys.js
+
+          node --check /tmp/ya/yandex-bridge.js
+          node --check /tmp/ya/openttd-full-viewport.js
+          node --check /tmp/ya/openttd-yandex-web-keys.js
+          node --check /tmp/ya/openttd-runtime.js
+
+          # Vanilla means no bundled NewGRF files/content.
+          test ! -e /tmp/ya/addons
+          test ! -e /tmp/ya/licenses/addons
+          test "$(find /tmp/ya -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # Strictly below 100,000,000 unpacked file bytes.
+          UNPACKED="$(find /tmp/ya -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "yandex_unpacked_bytes=$UNPACKED"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('/tmp/ya')
+          for p in root.rglob('*'):
+              rel=p.relative_to(root).as_posix()
+              if any(ord(ch)>127 for ch in rel): raise SystemExit(f'Non-ASCII path: {rel}')
+              if ' ' in rel: raise SystemExit(f'Whitespace path: {rel}')
+          print('package_names=PASS')
+          PY
+
+      - name: Create final Yandex moderation archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/ya && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Vanilla-Moderation-Release.zip .)
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Vanilla-Moderation-Release.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/ya')
+          zip_path=Path('/tmp/out/OpenTTD-v14-Yandex-Vanilla-Moderation-Release.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex vanilla moderation release\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              'ad_request_cadence_active_gameplay_ms=120000\n'
+              'ad_warning_ms=2000\n'
+              'ad_warning_style=openttd\n'
+              'ad_gameplay_pause=true\n'
+              'ad_audio_pause=true\n'
+              'gameplay_api_integrated=true\n'
+              'max_active_field_aspect_ratio=2.0\n'
+              'browser_reserved_hotkey_guard=true\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(zip_path.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MODERATION-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+          ls -lah /tmp/out
+
+      - name: Upload final Yandex moderation release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-vanilla-moderation-release
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Vanilla-Moderation-Release.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MODERATION-RESULTS.txt
+          if-no-files-found: error
