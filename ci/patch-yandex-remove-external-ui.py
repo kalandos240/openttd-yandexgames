@@ -12,47 +12,45 @@ def patch_help() -> None:
     path = Path('openttd/src/help_gui.cpp')
     text = path.read_text(encoding='utf-8')
 
-    # Remove external URL constants.
-    text, n_urls = re.subn(
-        r'\nstatic const std::string WEBSITE_LINK = "https://www\.openttd\.org/";\n'
-        r'static const std::string WIKI_LINK = "https://wiki\.openttd\.org/";\n'
-        r'static const std::string BUGTRACKER_LINK = "https://bugs\.openttd\.org/";\n'
-        r'static const std::string COMMUNITY_LINK = "https://community\.openttd\.org/";\n',
-        '\n',
-        text,
-        count=1,
+    # Remove external URL constants. Keep this deliberately tolerant of nearby
+    # whitespace so it survives minor OpenTTD source formatting differences.
+    url_pattern = re.compile(
+        r'\n[ \t]*static const std::string WEBSITE_LINK = "https://www\.openttd\.org/";\n'
+        r'[ \t]*static const std::string WIKI_LINK = "https://wiki\.openttd\.org/";\n'
+        r'[ \t]*static const std::string BUGTRACKER_LINK = "https://bugs\.openttd\.org/";\n'
+        r'[ \t]*static const std::string COMMUNITY_LINK = "https://community\.openttd\.org/";\n'
     )
+    text, n_urls = url_pattern.subn('\n', text, count=1)
     if n_urls != 1:
         raise SystemExit('Could not remove Help external URL constants')
 
     # Remove the external-site click handlers while preserving local documents.
-    text, n_clicks = re.subn(
-        r'\n\t\t\tcase WID_HW_WEBSITE:\n\t\t\t\tOpenBrowser\(WEBSITE_LINK\);\n\t\t\t\tbreak;'
-        r'\n\t\t\tcase WID_HW_WIKI:\n\t\t\t\tOpenBrowser\(WIKI_LINK\);\n\t\t\t\tbreak;'
-        r'\n\t\t\tcase WID_HW_BUGTRACKER:\n\t\t\t\tOpenBrowser\(BUGTRACKER_LINK\);\n\t\t\t\tbreak;'
-        r'\n\t\t\tcase WID_HW_COMMUNITY:\n\t\t\t\tOpenBrowser\(COMMUNITY_LINK\);\n\t\t\t\tbreak;',
-        '',
-        text,
-        count=1,
+    click_pattern = re.compile(
+        r'\n[ \t]*case WID_HW_WEBSITE:\n[ \t]*OpenBrowser\(WEBSITE_LINK\);\n[ \t]*break;'
+        r'\n[ \t]*case WID_HW_WIKI:\n[ \t]*OpenBrowser\(WIKI_LINK\);\n[ \t]*break;'
+        r'\n[ \t]*case WID_HW_BUGTRACKER:\n[ \t]*OpenBrowser\(BUGTRACKER_LINK\);\n[ \t]*break;'
+        r'\n[ \t]*case WID_HW_COMMUNITY:\n[ \t]*OpenBrowser\(COMMUNITY_LINK\);\n[ \t]*break;'
     )
+    text, n_clicks = click_pattern.subn('', text, count=1)
     if n_clicks != 1:
         raise SystemExit('Could not remove Help external-site click handlers')
 
-    # Remove the complete Websites frame from Help. Local README/changelog/license
-    # buttons remain available if Help is ever opened programmatically.
-    text, n_frame = re.subn(
-        r'\n\t\t\tNWidget\(WWT_FRAME, COLOUR_DARK_GREEN\), SetStringTip\(STR_HELP_WINDOW_WEBSITES\),\n'
-        r'\t\t\t\tNWidget\(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_HW_WEBSITE\),[^\n]*\n'
-        r'\t\t\t\tNWidget\(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_HW_WIKI\),[^\n]*\n'
-        r'\t\t\t\tNWidget\(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_HW_BUGTRACKER\),[^\n]*\n'
-        r'\t\t\t\tNWidget\(WWT_PUSHTXTBTN, COLOUR_GREEN, WID_HW_COMMUNITY\),[^\n]*\n'
-        r'\t\t\tEndContainer\(\),\n',
-        '\n',
+    # Remove everything from the Websites frame up to (but not including) the
+    # Documents frame. This is intentionally token-anchored rather than tied to
+    # exact COLOUR_/Colours:: spelling or indentation.
+    websites = re.search(
+        r'^[ \t]*NWidget\(WWT_FRAME,[^\n]*SetStringTip\(STR_HELP_WINDOW_WEBSITES\),[ \t]*$',
         text,
-        count=1,
+        flags=re.M,
     )
-    if n_frame != 1:
-        raise SystemExit('Could not remove Help Websites widget frame')
+    documents = re.search(
+        r'^[ \t]*NWidget\(WWT_FRAME,[^\n]*SetStringTip\(STR_HELP_WINDOW_DOCUMENTS\),[ \t]*$',
+        text,
+        flags=re.M,
+    )
+    if websites is None or documents is None or documents.start() <= websites.start():
+        raise SystemExit('Could not locate Help Websites/Documents widget boundary')
+    text = text[:websites.start()] + text[documents.start():]
 
     forbidden = (
         'WEBSITE_LINK', 'WIKI_LINK', 'BUGTRACKER_LINK', 'COMMUNITY_LINK',
@@ -70,15 +68,27 @@ def patch_about() -> None:
     path = Path('openttd/src/misc_gui.cpp')
     text = path.read_text(encoding='utf-8')
 
-    line = '\t\tNWidget(WWT_LABEL, INVALID_COLOUR, WID_A_WEBSITE),\n'
-    if text.count(line) != 1:
-        raise SystemExit('Could not find About website label')
-    text = text.replace(line, '', 1)
+    # Remove the About-window website widget regardless of the colour enum
+    # spelling used by the exact OpenTTD revision being built.
+    text, n_widget = re.subn(
+        r'^[ \t]*NWidget\(WWT_LABEL,[^\n]*WID_A_WEBSITE\),[ \t]*\n',
+        '',
+        text,
+        count=1,
+        flags=re.M,
+    )
+    if n_widget != 1:
+        raise SystemExit('Could not remove About website label')
 
-    line = '\t\tif (widget == WID_A_WEBSITE) return "Website: https://www.openttd.org";\n'
-    if text.count(line) != 1:
-        raise SystemExit('Could not find About website text')
-    text = text.replace(line, '', 1)
+    text, n_string = re.subn(
+        r'^[ \t]*if \(widget == WID_A_WEBSITE\) return "Website: https://www\.openttd\.org";[ \t]*\n',
+        '',
+        text,
+        count=1,
+        flags=re.M,
+    )
+    if n_string != 1:
+        raise SystemExit('Could not remove About website text')
 
     if 'Website: https://www.openttd.org' in text or 'WID_A_WEBSITE),' in text:
         raise SystemExit('About external website UI remains')
