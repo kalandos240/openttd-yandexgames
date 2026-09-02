@@ -1,0 +1,253 @@
+# Final Yandex publication build: native external-link cleanup + portal compliance.
+name: Build v14 Yandex publication final
+
+on:
+  push:
+    branches:
+      - release/v14-vanilla
+    paths:
+      - 'ci/patch-yandex-remove-external-ui.py'
+      - 'ci/patch-yandex-publication-final.py'
+      - 'ci/patch-yandex-moderation-compliance.py'
+      - '.github/workflows/build-v14-yandex-publication-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CURRENT_VANILLA_ARTIFACT_ID: '9826951083'
+
+jobs:
+  build-yandex-publication-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout final release branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire final vanilla native patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          # Preserve SimpleAI/competitors; remove only the old AI-disable hook.
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          # Remove external website UI at native source level.
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          s=s.replace(help_anchor, help_anchor + "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n", 1)
+
+          # Keep the vanilla UI/content policy and ranking integration.
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'\n")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          # Preserve the known-good browser font staging.
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          repl=anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(anchor,repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py
+
+      - name: Build clean native Yandex runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          # Native source must contain no user-facing external website controls.
+          ! grep -Fq 'Website: https://www.openttd.org' openttd/src/misc_gui.cpp
+          ! grep -Fq 'WID_A_WEBSITE),' openttd/src/misc_gui.cpp
+          ! grep -Fq 'WEBSITE_LINK' openttd/src/help_gui.cpp
+          ! grep -Fq 'WIKI_LINK' openttd/src/help_gui.cpp
+          ! grep -Fq 'BUGTRACKER_LINK' openttd/src/help_gui.cpp
+          ! grep -Fq 'COMMUNITY_LINK' openttd/src/help_gui.cpp
+          ! grep -Fq 'STR_HELP_WINDOW_WEBSITES' openttd/src/help_gui.cpp
+
+          # AI remains present; this build must not restore the old disable patch.
+          test -s /tmp/native/openttd-classic-ai.js
+          ! grep -Fq $'\tif (_settings_game.difficulty.competitors_interval == 0) return;' openttd/src/company_cmd.cpp
+
+      - name: Download verified vanilla platform package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/ya /tmp/out
+          mkdir -p /tmp/base /tmp/ya /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${CURRENT_VANILLA_ARTIFACT_ID}/zip" \
+            -o /tmp/base-artifact.zip
+          unzip -q /tmp/base-artifact.zip -d /tmp/base
+          BASE="$(find /tmp/base -type f -name 'OpenTTD-v14-Yandex-Vanilla-Release.zip' -print -quit)"
+          test -s "$BASE"
+          unzip -q "$BASE" -d /tmp/ya
+          cp /tmp/native/openttd-runtime.js /tmp/ya/openttd-runtime.js
+
+      - name: Apply final Yandex publication hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-moderation-compliance.py ci/patch-yandex-publication-final.py
+          python3 ci/patch-yandex-moderation-compliance.py /tmp/ya
+          python3 ci/patch-yandex-publication-final.py /tmp/ya
+
+      - name: Validate final publication invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/ya/index.html
+          test -s /tmp/ya/openttd-runtime.js
+          test -s /tmp/ya/openttd-classic-ai.js
+          test -s /tmp/ya/yandex-bootstrap.js
+          test -s /tmp/ya/yandex-bridge.js
+          test -s /tmp/ya/openttd-full-viewport.js
+          test -s /tmp/ya/openttd-yandex-web-keys.js
+          test -s /tmp/ya/openttd-yandex-shell-i18n.js
+
+          # Vanilla / AI policy.
+          grep -Fq 'openttd-classic-ai.js' /tmp/ya/index.html
+          test ! -e /tmp/ya/addons
+          test ! -e /tmp/ya/licenses/addons
+          test "$(find /tmp/ya -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # Yandex-only executable integration.
+          grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/ya --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/ya --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          # 150 seconds active gameplay + 2 second warning + lifecycle integration.
+          grep -Fq 'const AD_MIN_GAMEPLAY_MS = 150 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq 'const AD_MIN_INTERVAL_MS = 150 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq 'const AD_WARNING_MS = 2 * 1000;' /tmp/ya/yandex-bridge.js
+          grep -Fq 'updateAdWarning(2)' /tmp/ya/yandex-bridge.js
+          grep -Fq 'updateAdWarning(1)' /tmp/ya/yandex-bridge.js
+          grep -Fq 'GameplayAPI' /tmp/ya/yandex-bridge.js
+          grep -Fq "ysdk.on('game_api_pause'" /tmp/ya/yandex-bridge.js
+          grep -Fq "ysdk.on('game_api_resume'" /tmp/ya/yandex-bridge.js
+          grep -Fq 'showFullscreenAdv' /tmp/ya/yandex-bridge.js
+
+          # 2:1 active field really wins against legacy CSS.
+          grep -Fq 'const MAX_ASPECT_RATIO = 2;' /tmp/ya/openttd-full-viewport.js
+          grep -Fq "setProperty('width', \`${width}px\`, 'important')" /tmp/ya/openttd-full-viewport.js
+          ! sed -n '/canvas.emscripten {/,/}/p' /tmp/ya/openttd-yandex-fixes.js | grep -Fq 'width: 100vw !important'
+          ! sed -n '/canvas.emscripten {/,/}/p' /tmp/ya/openttd-yandex-fixes.js | grep -Fq 'height: 100vh !important'
+
+          # Shell localization and browser UI guards.
+          grep -Fq 'openttd-yandex-shell-i18n.js' /tmp/ya/index.html
+          grep -Fq 'Загрузка ...' /tmp/ya/openttd-yandex-shell-i18n.js
+          grep -Fq 'Подготовка игры ...' /tmp/ya/openttd-yandex-shell-i18n.js
+          grep -Fq 'Контекст WebGL потерян' /tmp/ya/openttd-shell-2.js
+          grep -Fq "document.addEventListener('contextmenu'" /tmp/ya/openttd-yandex-web-keys.js
+          grep -Fq "document.addEventListener('selectstart'" /tmp/ya/openttd-yandex-web-keys.js
+          grep -Fq "key === 'F1' || key === 'F5'" /tmp/ya/openttd-yandex-web-keys.js
+
+          node --check /tmp/ya/yandex-bridge.js
+          node --check /tmp/ya/openttd-full-viewport.js
+          node --check /tmp/ya/openttd-yandex-web-keys.js
+          node --check /tmp/ya/openttd-yandex-shell-i18n.js
+          node --check /tmp/ya/openttd-shell-2.js
+          node --check /tmp/ya/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/ya -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "yandex_unpacked_bytes=$UNPACKED"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('/tmp/ya')
+          for p in root.rglob('*'):
+              rel=p.relative_to(root).as_posix()
+              if any(ord(ch)>127 for ch in rel): raise SystemExit(f'Non-ASCII path: {rel}')
+              if ' ' in rel: raise SystemExit(f'Whitespace path: {rel}')
+          print('package_names=PASS')
+          PY
+
+      - name: Create final publication archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/ya && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip .)
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/ya')
+          zip_path=Path('/tmp/out/OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex vanilla publication release\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              'external_website_ui_removed=true\n'
+              'ad_request_cadence_active_gameplay_ms=150000\n'
+              'ad_warning_ms=2000\n'
+              'ad_warning_style=openttd\n'
+              'ad_gameplay_pause=true\n'
+              'ad_audio_pause=true\n'
+              'gameplay_api_integrated=true\n'
+              'max_active_field_aspect_ratio=2.0\n'
+              'legacy_canvas_100vw_override_removed=true\n'
+              'shell_ru_en_localization=true\n'
+              'global_context_menu_guard=true\n'
+              'browser_reserved_hotkey_guard=true\n'
+              'large_saves_local_fallback=true\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(zip_path.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-PUBLICATION-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+          ls -lah /tmp/out
+
+      - name: Upload final Yandex publication release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-vanilla-publication-release
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-PUBLICATION-RESULTS.txt
+          if-no-files-found: error
