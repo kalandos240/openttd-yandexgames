@@ -1,0 +1,159 @@
+name: Build v14 Yandex mobile touch-pan V4 final
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - '.github/workflows/build-v14-yandex-mobile-touchpan-v4-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V3_ARTIFACT_ID: '9866771365'
+  NATIVE_RUN_ID: '33686672401'
+
+jobs:
+  build-yandex-mobile-touchpan-v4-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Download V3 and native SDL runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v3 /tmp/native-art /tmp/native-pkg /tmp/mobile /tmp/out
+          mkdir -p /tmp/v3 /tmp/native-art /tmp/native-pkg /tmp/mobile /tmp/out
+
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V3_ARTIFACT_ID}/zip" \
+            -o /tmp/v3-artifact.zip
+          unzip -q /tmp/v3-artifact.zip -d /tmp/v3
+          V3="$(find /tmp/v3 -type f -name 'OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip' -print -quit)"
+          test -s "$V3"
+          unzip -q "$V3" -d /tmp/mobile
+
+          ARTIFACTS="$(curl -fsSL --retry 5 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}/artifacts")"
+          NATIVE_ID="$(printf '%s' "$ARTIFACTS" | python3 -c 'import sys,json; d=json.load(sys.stdin); xs=[a for a in d.get("artifacts",[]) if a.get("name")=="openttd-v14-yandex-mobile-hidpi-fullscreen-release"]; print(xs[0]["id"] if xs else "")')"
+          test -n "$NATIVE_ID"
+          echo "native_artifact_id=$NATIVE_ID"
+
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${NATIVE_ID}/zip" \
+            -o /tmp/native-artifact.zip
+          unzip -q /tmp/native-artifact.zip -d /tmp/native-art
+          NATIVE_ZIP="$(find /tmp/native-art -type f -name 'OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip' -print -quit)"
+          test -s "$NATIVE_ZIP"
+          unzip -q "$NATIVE_ZIP" -d /tmp/native-pkg
+          test -s /tmp/native-pkg/openttd-runtime.js
+          cp /tmp/native-pkg/openttd-runtime.js /tmp/mobile/openttd-runtime.js
+
+      - name: Apply V4 native SDL touch bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-pan-v4.py
+          python3 ci/patch-yandex-mobile-pan-v4.py /tmp/mobile
+
+      - name: Validate V4 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test ! -e /tmp/mobile/licenses/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/mobile/openttd-runtime.js
+          grep -Fq 'module._em_openttd_touch_mouse_event' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeEvent(1, down)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeEvent(0, p)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeEvent(2, p)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeEvent(3, down)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeEvent(nextDistance > pinchDistance ? 5 : 6, c)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "setGui('scroll_mode', '3')" /tmp/mobile/openttd-yandex-fixes.js
+
+          grep -Fq 'Module.setCanvasSize(box.width, box.height)' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('width'," /tmp/mobile/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('height'," /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'backingWidth' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'MAX_TOUCH_DPR' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
+
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          grep -Fq "const CLOUD_CONFIG_KEY = 'openttdMobileConfigV1';" /tmp/mobile/yandex-bridge.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/mobile --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/yandex-bridge.js
+          node --check /tmp/mobile/openttd-yandex-fixes.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_v4_unpacked_bytes=$UNPACKED"
+
+      - name: Create V4 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-TouchPan-V4.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-TouchPan-V4.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-TouchPan-V4.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-TouchPan-V4.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex mobile touch-pan V4\n'
+              'base_visual=crisp-fullscreen-v3\n'
+              'native_sdl_touch_bridge=true\n'
+              'one_finger_pan=SDL_LMB_drag\n'
+              'tap=SDL_LMB_click\n'
+              'long_press=SDL_RMB_click\n'
+              'pinch_zoom=SDL_mousewheel\n'
+              'scroll_mode=MapLMB\n'
+              'native_software_cursor=false\n'
+              'browser_cursor=false\n'
+              'logical_framebuffer_1to1=true\n'
+              'safe_area_letterboxing=false\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-V4-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V4 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-touchpan-v4-final
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-TouchPan-V4.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-V4-RESULTS.txt
+          if-no-files-found: error
