@@ -1,0 +1,127 @@
+name: Build v14 Yandex mobile crisp V3
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-mobile-crisp-v3.py'
+      - '.github/workflows/build-v14-yandex-mobile-crisp-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  HIDPI_ARTIFACT_ID: '9833997076'
+
+jobs:
+  build-yandex-mobile-crisp-v3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Download previous cursorless mobile package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/mobile /tmp/out
+          mkdir -p /tmp/base /tmp/mobile /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${HIDPI_ARTIFACT_ID}/zip" \
+            -o /tmp/base-artifact.zip
+          unzip -q /tmp/base-artifact.zip -d /tmp/base
+          BASE="$(find /tmp/base -type f -name 'OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip' -print -quit)"
+          test -s "$BASE"
+          unzip -q "$BASE" -d /tmp/mobile
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+
+      - name: Apply corrected framebuffer scaling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-crisp-v3.py
+          python3 ci/patch-yandex-mobile-crisp-v3.py /tmp/mobile
+
+      - name: Validate corrected mobile invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq 'window.__openttdAdaptiveViewportV3Installed' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'Module.setCanvasSize(box.width, box.height)' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'Module.setCanvasSize(box.backingWidth, box.backingHeight)' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'MAX_TOUCH_DPR' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq "image-rendering', box.touchUi ? 'pixelated'" /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'profile.renderScale = 1' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'profile.guiScale = profile.cssGuiScale' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'cssWidth = viewport.width' /tmp/mobile/openttd-yandex-mobile.js || true
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_v3_unpacked_bytes=$UNPACKED"
+
+      - name: Create corrected mobile V3 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex mobile crisp fullscreen V3\n'
+              'native_software_cursor=false\n'
+              'browser_cursor=false\n'
+              'touch_only_controls=true\n'
+              'dpr_framebuffer_multiplier=false\n'
+              'framebuffer_css_desync_fixed=true\n'
+              'logical_framebuffer_equals_visual_viewport=true\n'
+              'pixel_art_sampling=pixelated\n'
+              'mobile_visual_viewport_fill=true\n'
+              'safe_area_letterboxing=false\n'
+              'adaptive_gui_scale=150|175|200\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-V3-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload corrected mobile V3 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-crisp-fullscreen-v3
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-V3-RESULTS.txt
+          if-no-files-found: error
