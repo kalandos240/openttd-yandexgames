@@ -16,6 +16,9 @@ TOUCH_BRIDGE = r'''  const installTouchBridge = () => {
     const canvas = document.getElementById('canvas');
     if (!canvas || canvas.__openttdTouchBridgeInstalled) return;
     canvas.__openttdTouchBridgeInstalled = true;
+    canvas.style.setProperty('touch-action', 'none', 'important');
+    canvas.style.setProperty('-webkit-user-select', 'none', 'important');
+    canvas.style.setProperty('user-select', 'none', 'important');
 
     const pointers = new Map();
     let primaryId = null;
@@ -35,6 +38,7 @@ TOUCH_BRIDGE = r'''  const installTouchBridge = () => {
       taps: 0,
       longPresses: 0,
       pinchSteps: 0,
+      touchPromotions: 0,
     };
 
     const clearLongPress = () => {
@@ -46,7 +50,19 @@ TOUCH_BRIDGE = r'''  const installTouchBridge = () => {
     const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const center = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 
-    const isTouchPointer = e => profile.touchUi && (e.pointerType === 'touch' || e.pointerType === 'pen');
+    /* Actual pointerType is authoritative. Do not depend on Yandex/UA device
+       classification here; some portal/browser combinations report desktop
+       while still delivering real touch pointers. */
+    const isTouchPointer = e => e.pointerType === 'touch' || e.pointerType === 'pen';
+
+    const promoteTouchUi = () => {
+      if (profile.touchUi) return;
+      profile.touchUi = true;
+      profile.isMobile = true;
+      stats.touchPromotions++;
+      document.documentElement.classList.add('openttd-touch-ui');
+      document.documentElement.classList.add('openttd-mobile');
+    };
 
     const localPoint = p => {
       const rect = canvas.getBoundingClientRect();
@@ -100,6 +116,7 @@ TOUCH_BRIDGE = r'''  const installTouchBridge = () => {
 
     const stopBrowserTouch = e => {
       if (!isTouchPointer(e)) return false;
+      promoteTouchUi();
       e.preventDefault();
       e.stopImmediatePropagation();
       return true;
@@ -201,6 +218,8 @@ TOUCH_BRIDGE = r'''  const installTouchBridge = () => {
     canvas.addEventListener('pointerup', finishPointer, { capture: true, passive: false });
     canvas.addEventListener('pointercancel', finishPointer, { capture: true, passive: false });
     canvas.addEventListener('contextmenu', e => e.preventDefault(), { capture: true });
+    canvas.addEventListener('touchstart', e => e.preventDefault(), { passive: false, capture: true });
+    canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false, capture: true });
 
     const module = getModule();
     console.info('[OpenTTD mobile] V5 direct viewport touch bridge installed', {
