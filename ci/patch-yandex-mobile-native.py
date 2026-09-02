@@ -3,10 +3,9 @@
 
 The desktop publication build is untouched. In the dedicated mobile runtime:
 - OpenTTD never renders its software mouse cursor;
-- JavaScript can enqueue real SDL mouse/wheel events for touch gestures.
-
-The SDL bridge avoids relying on synthetic DOM MouseEvent objects, which are
-not reliable enough for click-and-drag viewport scrolling in Emscripten/SDL2.
+- JavaScript can enqueue real SDL mouse/wheel events for tap/right-click/zoom;
+- one-finger panning can bypass the desktop mouse state machine and call the
+  viewport's native OnScroll() path directly.
 """
 from pathlib import Path
 
@@ -28,7 +27,7 @@ if cursor_marker not in text:
     gfx.write_text(text, encoding='utf-8')
 
 # ---------------------------------------------------------------------------
-# 2. Add a small Emscripten -> SDL event queue bridge.
+# 2. Add an Emscripten -> SDL event queue bridge for taps/right-click/zoom.
 # ---------------------------------------------------------------------------
 sdl = Path('openttd/src/video/sdl2_v.cpp')
 if not sdl.is_file():
@@ -53,8 +52,9 @@ if bridge_marker not in text:
  *   5 = wheel up / zoom in
  *   6 = wheel down / zoom out
  *
- * The events are intentionally inserted into SDL's own queue, so OpenTTD sees
- * exactly the same event stream as it would receive from a physical mouse.
+ * These events are used for discrete touch actions. Continuous one-finger
+ * panning uses em_openttd_touch_pan() in window.cpp instead, so it does not
+ * depend on OpenTTD's desktop mouse-drag state machine.
  */
 extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int x, int y)
 {
@@ -103,4 +103,62 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
     text = text.replace(anchor, bridge + anchor, 1)
     sdl.write_text(text, encoding='utf-8')
 
-print('Yandex mobile native cursor + SDL touch bridge patch applied')
+# ---------------------------------------------------------------------------
+# 3. Export a direct viewport-pan path from the native window system.
+# ---------------------------------------------------------------------------
+window = Path('openttd/src/window.cpp')
+if not window.is_file():
+    raise SystemExit(f'Missing OpenTTD source: {window}')
+
+text = window.read_text(encoding='utf-8')
+pan_marker = 'Yandex mobile direct touch pan: bypass desktop mouse-scroll state.'
+if pan_marker not in text:
+    safeguards = '#include "safeguards.h"\n'
+    include_block = '#ifdef __EMSCRIPTEN__\n#include <emscripten/emscripten.h>\n#endif\n\n#include "safeguards.h"\n'
+    if text.count(safeguards) != 1:
+        raise SystemExit(f'Could not locate safeguards include: count={text.count(safeguards)}')
+    text = text.replace(safeguards, include_block, 1)
+
+    anchor = """\t_cursor.wheel_moved = false;\n\treturn ES_HANDLED;\n}\n\n/**\n * Check if a window can be made relative top-most window"""
+    if text.count(anchor) != 1:
+        raise SystemExit(f'Could not locate HandleViewportScroll tail: count={text.count(anchor)}')
+
+    direct_pan = r'''
+#ifdef __EMSCRIPTEN__
+/* Yandex mobile direct touch pan: bypass desktop mouse-scroll state.
+ *
+ * Coordinates are canvas/OpenTTD screen coordinates. dx/dy are the movement
+ * of the finger since the previous pointer event. The hit test is performed
+ * natively so dragging over toolbars/windows does not scroll the map behind
+ * them. Returning 1 means a viewport consumed the movement.
+ */
+extern "C" EMSCRIPTEN_KEEPALIVE int em_openttd_touch_pan(int x, int y, int dx, int dy)
+{
+	Window *w = FindWindowFromPt(x, y);
+	if (w == nullptr || w->flags.Test(WindowFlag::DisableVpScroll)) return 0;
+
+	Viewport *vp = IsPtInWindowViewport(w, x, y);
+	if (vp == nullptr || _game_mode == GM_MENU || HasModalProgress()) return 0;
+
+	if (w == GetMainWindow() && w->viewport->follow_vehicle != VehicleID::Invalid()) {
+		const Vehicle *veh = Vehicle::Get(w->viewport->follow_vehicle);
+		ScrollMainWindowTo(veh->x_pos, veh->y_pos, veh->z_pos, true);
+	}
+
+	if (dx != 0 || dy != 0) {
+		Point delta{-dx, -dy};
+		w->OnScroll(delta);
+	}
+	return 1;
+}
+#endif
+
+'''
+    text = text.replace(
+        anchor,
+        "\t_cursor.wheel_moved = false;\n\treturn ES_HANDLED;\n}\n" + direct_pan + "\n/**\n * Check if a window can be made relative top-most window",
+        1,
+    )
+    window.write_text(text, encoding='utf-8')
+
+print('Yandex mobile native cursor + SDL discrete input + direct viewport pan patches applied')
