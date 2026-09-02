@@ -121,8 +121,8 @@ jobs:
 
           # Keep the fixed V3 presentation: logical framebuffer == CSS viewport.
           grep -Fq 'Module.setCanvasSize(box.width, box.height)' /tmp/mobile/openttd-full-viewport.js
-          grep -Fq "canvas.style.setProperty('width', `${box.width}px`, 'important')" /tmp/mobile/openttd-full-viewport.js
-          grep -Fq "canvas.style.setProperty('height', `${box.height}px`, 'important')" /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'canvas.style.setProperty('\''width'\'', `${box.width}px`, '\''important'\')' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'canvas.style.setProperty('\''height'\'', `${box.height}px`, '\''important'\')' /tmp/mobile/openttd-full-viewport.js
           ! grep -Fq 'backingWidth' /tmp/mobile/openttd-full-viewport.js
           ! grep -Fq 'MAX_TOUCH_DPR' /tmp/mobile/openttd-full-viewport.js
           grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
