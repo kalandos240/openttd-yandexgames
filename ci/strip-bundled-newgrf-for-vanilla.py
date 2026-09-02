@@ -10,8 +10,88 @@ idx=r/'index.html'
 if not idx.is_file() or not (r/'openttd-runtime.js').is_file(): raise SystemExit('bad package root')
 s=idx.read_text(encoding='utf-8')
 tag='<script src="openttd-bundled-addons.js"></script>'
+migration_tag='<script src="openttd-vanilla-migration.js"></script>'
 if s.count(tag)!=1: raise SystemExit(f'expected one addon script tag, got {s.count(tag)}')
-idx.write_text(s.replace(tag,'',1),encoding='utf-8')
+idx.write_text(s.replace(tag,migration_tag,1),encoding='utf-8')
+
+migration=r'''/* Vanilla profile migration: remove NewGRF state left by older bundled-add-on builds.
+ * Runs after the final platform/cloud restore wrapper has been installed and before
+ * openttd-runtime.js starts main(), so stale IDBFS/cloud config cannot reactivate it. */
+(function () {
+  'use strict';
+  if (window.__openttdVanillaMigrationInstalled) return;
+  window.__openttdVanillaMigrationInstalled = true;
+
+  const removeTree = (FS, path) => {
+    let entries;
+    try { entries = FS.readdir(path); } catch (_) { return false; }
+    for (const name of entries) {
+      if (name === '.' || name === '..') continue;
+      const child = path + '/' + name;
+      try {
+        const stat = FS.stat(child);
+        if (FS.isDir(stat.mode)) removeTree(FS, child);
+        else FS.unlink(child);
+      } catch (_) {}
+    }
+    try { FS.rmdir(path); } catch (_) {}
+    return true;
+  };
+
+  const unlink = (FS, path) => {
+    try { FS.unlink(path); return true; } catch (_) { return false; }
+  };
+
+  const stripNewGRFSections = (text) => {
+    const lines = String(text || '').split(/\r?\n/);
+    const out = [];
+    let skip = false;
+    for (const line of lines) {
+      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (section) {
+        const name = section[1].trim().toLowerCase();
+        skip = name === 'newgrf' || name === 'newgrf-static';
+        if (skip) continue;
+      }
+      if (!skip) out.push(line);
+    }
+    return out.join('\n');
+  };
+
+  const purge = (FS, personalDir) => {
+    const removed = [];
+    for (const path of [personalDir + '/newgrf', personalDir + '/content_download/newgrf']) {
+      if (removeTree(FS, path)) removed.push(path);
+    }
+    const oldBase = personalDir + '/baseset/OpenGFX2_Classic-0.8.1.tar';
+    if (unlink(FS, oldBase)) removed.push(oldBase);
+
+    const configPath = personalDir + '/openttd.cfg';
+    try {
+      const before = FS.readFile(configPath, { encoding: 'utf8' });
+      const after = stripNewGRFSections(before);
+      if (after !== before) {
+        FS.writeFile(configPath, after);
+        removed.push(configPath + ':[newgrf]');
+      }
+    } catch (_) {}
+
+    console.info('[OpenTTD vanilla] Persistent NewGRF migration complete', removed);
+  };
+
+  const previousRestore = window.yandexRestoreOpenTTDCloud;
+  window.yandexRestoreOpenTTDCloud = async function (FS, personalDir) {
+    if (typeof previousRestore === 'function') await previousRestore(FS, personalDir);
+    purge(FS, personalDir);
+    if (typeof FS.syncfs === 'function') {
+      await new Promise((resolve) => {
+        try { FS.syncfs(false, () => resolve()); } catch (_) { resolve(); }
+      });
+    }
+  };
+})();
+'''
+(r/'openttd-vanilla-migration.js').write_text(migration,encoding='utf-8')
 
 for name in ['BUNDLED-ADDONS.md','LOCALIZATION-REPORT.md','OPENTTD-BUNDLED-ADDONS.json','ADDON-PACKAGE-SHA256SUMS.txt','THIRD-PARTY-ADDONS.md','openttd-bundled-addons.js']:
  p=r/name
@@ -64,6 +144,6 @@ for p in r.rglob('*'):
    if m in t: bad.append(rel+':'+m)
   if platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): bad.append(rel+':playgama-marker')
 if bad: raise SystemExit('release remnants: '+repr(bad))
-print(f'vanilla strip passed for {platform}')
-
-# Keep this script in the release workflow trigger set so QA-only workflow fixes can be rebuilt deterministically.
+if migration_tag not in idx.read_text(encoding='utf-8'): raise SystemExit('vanilla migration tag missing')
+if not (r/'openttd-vanilla-migration.js').is_file(): raise SystemExit('vanilla migration script missing')
+print(f'vanilla strip passed for {platform}; persistent NewGRF migration installed')
