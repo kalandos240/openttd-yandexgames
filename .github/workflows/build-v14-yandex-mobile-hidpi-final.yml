@@ -1,0 +1,232 @@
+name: Build v14 Yandex mobile HiDPI final
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-mobile-native.py'
+      - 'ci/patch-yandex-mobile-adaptive.py'
+      - 'ci/patch-yandex-mobile-visual-fixes.py'
+      - '.github/workflows/build-v14-yandex-mobile-hidpi-final.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PUBLICATION_ARTIFACT_ID: '9831915283'
+
+jobs:
+  build-yandex-mobile-hidpi-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire native mobile patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+          cp ci/patch-yandex-mobile-native.py legacy/ci/patch-yandex-mobile-native.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          native_hooks=(help_anchor +
+              "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-native.py\\n'\n")
+          s=s.replace(help_anchor,native_hooks,1)
+
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'\n")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          font_anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          font_repl=font_anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(font_anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(font_anchor,font_repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py \
+            legacy/ci/patch-yandex-mobile-native.py
+
+      - name: Build cursorless native mobile runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          grep -Fq 'Yandex mobile: touch-only build, never render the software mouse cursor.' openttd/src/gfx.cpp
+          grep -A8 -F 'void DrawMouseCursor()' openttd/src/gfx.cpp | grep -Fq $'\treturn;'
+          ! grep -Fq 'Website: https://www.openttd.org' openttd/src/misc_gui.cpp
+          ! grep -Fq 'WEBSITE_LINK' openttd/src/help_gui.cpp
+          ! grep -Fq $'\tif (_settings_game.difficulty.competitors_interval == 0) return;' openttd/src/company_cmd.cpp
+
+      - name: Download verified publication package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/base /tmp/mobile /tmp/out
+          mkdir -p /tmp/base /tmp/mobile /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PUBLICATION_ARTIFACT_ID}/zip" \
+            -o /tmp/base-artifact.zip
+          unzip -q /tmp/base-artifact.zip -d /tmp/base
+          BASE="$(find /tmp/base -type f -name 'OpenTTD-v14-Yandex-Vanilla-Publication-Release.zip' -print -quit)"
+          test -s "$BASE"
+          unzip -q "$BASE" -d /tmp/mobile
+          cp /tmp/native/openttd-runtime.js /tmp/mobile/openttd-runtime.js
+
+      - name: Apply adaptive mobile and HiDPI fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-adaptive.py ci/patch-yandex-mobile-visual-fixes.py
+          python3 ci/patch-yandex-mobile-adaptive.py /tmp/mobile
+          python3 ci/patch-yandex-mobile-visual-fixes.py /tmp/mobile
+
+      - name: Validate final mobile invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/index.html
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test ! -e /tmp/mobile/licenses/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq 'viewport-fit=cover' /tmp/mobile/index.html
+          grep -Fq 'openttd-yandex-mobile.js' /tmp/mobile/index.html
+          grep -Fq "const CONFIG_NAME = 'openttd-mobile.cfg';" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'ysdk && ysdk.deviceInfo' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'visualViewport' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'safe-area-inset-top' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'profile.renderScale = renderScale' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'Math.min(500' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "Math.min(500, guiScale)" /tmp/mobile/openttd-yandex-fixes.js
+
+          grep -Fq 'const MAX_TOUCH_DPR = 3;' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'cssWidth = viewport.width' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'cssHeight = viewport.height' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'backingWidth = Math.max(64, Math.round(cssWidth * renderScale))' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'Module.setCanvasSize(box.backingWidth, box.backingHeight)' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('cursor', box.touchUi ? 'none' : 'auto', 'important')" /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'viewport.width - safe.left - safe.right' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'viewport.height - safe.top - safe.bottom' /tmp/mobile/openttd-full-viewport.js
+
+          grep -Fq "const CLOUD_CONFIG_KEY = 'openttdMobileConfigV1';" /tmp/mobile/yandex-bridge.js
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/mobile --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/yandex-bridge.js
+          node --check /tmp/mobile/openttd-yandex-fixes.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_hidpi_unpacked_bytes=$UNPACKED"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('/tmp/mobile')
+          for p in root.rglob('*'):
+              rel=p.relative_to(root).as_posix()
+              if any(ord(ch)>127 for ch in rel): raise SystemExit(f'Non-ASCII path: {rel}')
+              if ' ' in rel: raise SystemExit(f'Whitespace path: {rel}')
+          print('mobile_hidpi_package_names=PASS')
+          PY
+
+      - name: Create final HiDPI mobile archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex mobile HiDPI fullscreen release\n'
+              'native_software_cursor=false\n'
+              'browser_cursor=false\n'
+              'touch_only_controls=true\n'
+              'hidpi_backing_store=true\n'
+              'max_touch_device_pixel_ratio=3\n'
+              'gui_scale_compensates_dpr=true\n'
+              'mobile_visual_viewport_fill=true\n'
+              'safe_area_letterboxing=false\n'
+              'orientation_resize=true\n'
+              'mobile_config_isolated=true\n'
+              'shared_save_directory=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-HIDPI-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+          ls -lah /tmp/out
+
+      - name: Upload final HiDPI mobile release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-hidpi-fullscreen-release
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-HiDPI-Fullscreen-Release.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-HIDPI-RESULTS.txt
+          if-no-files-found: error
