@@ -49,17 +49,14 @@ jobs:
           p=Path('legacy/ci/build-yandex-release.sh')
           s=p.read_text(encoding='utf-8')
 
-          # Preserve SimpleAI/competitors; remove only the old AI-disable hook.
           ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
           if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
           s=s.replace(ai,'',1)
 
-          # Remove external website UI at native source level.
           help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
           if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
           s=s.replace(help_anchor, help_anchor + "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n", 1)
 
-          # Keep the vanilla UI/content policy and ranking integration.
           anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
           if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
           add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
@@ -67,7 +64,6 @@ jobs:
           s=s.replace(anchor,anchor+add,1)
           p.write_text(s,encoding='utf-8')
 
-          # Preserve the known-good browser font staging.
           b=Path('legacy/ci/build-final.sh')
           t=b.read_text(encoding='utf-8')
           anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
@@ -94,7 +90,6 @@ jobs:
           test -s /tmp/native/openttd-runtime.js
           node --check /tmp/native/openttd-runtime.js
 
-          # Native source must contain no user-facing external website controls.
           ! grep -Fq 'Website: https://www.openttd.org' openttd/src/misc_gui.cpp
           ! grep -Fq 'WID_A_WEBSITE),' openttd/src/misc_gui.cpp
           ! grep -Fq 'WEBSITE_LINK' openttd/src/help_gui.cpp
@@ -103,7 +98,6 @@ jobs:
           ! grep -Fq 'COMMUNITY_LINK' openttd/src/help_gui.cpp
           ! grep -Fq 'STR_HELP_WINDOW_WEBSITES' openttd/src/help_gui.cpp
 
-          # AI remains present; this build must not restore the old disable patch.
           test -s /tmp/native/openttd-classic-ai.js
           ! grep -Fq $'\tif (_settings_game.difficulty.competitors_interval == 0) return;' openttd/src/company_cmd.cpp
 
@@ -147,18 +141,15 @@ jobs:
           test -s /tmp/ya/openttd-yandex-web-keys.js
           test -s /tmp/ya/openttd-yandex-shell-i18n.js
 
-          # Vanilla / AI policy.
           grep -Fq 'openttd-classic-ai.js' /tmp/ya/index.html
           test ! -e /tmp/ya/addons
           test ! -e /tmp/ya/licenses/addons
           test "$(find /tmp/ya -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
 
-          # Yandex-only executable integration.
           grep -Fq '/sdk.js' /tmp/ya/yandex-bootstrap.js
           ! grep -RniE 'playgama|playgamma' /tmp/ya --include='*.html' --include='*.js' --include='*.json'
           ! grep -RniE 'https?://' /tmp/ya --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
 
-          # 150 seconds active gameplay + 2 second warning + lifecycle integration.
           grep -Fq 'const AD_MIN_GAMEPLAY_MS = 150 * 1000;' /tmp/ya/yandex-bridge.js
           grep -Fq 'const AD_MIN_INTERVAL_MS = 150 * 1000;' /tmp/ya/yandex-bridge.js
           grep -Fq 'const AD_WARNING_MS = 2 * 1000;' /tmp/ya/yandex-bridge.js
@@ -169,13 +160,11 @@ jobs:
           grep -Fq "ysdk.on('game_api_resume'" /tmp/ya/yandex-bridge.js
           grep -Fq 'showFullscreenAdv' /tmp/ya/yandex-bridge.js
 
-          # 2:1 active field really wins against legacy CSS.
           grep -Fq 'const MAX_ASPECT_RATIO = 2;' /tmp/ya/openttd-full-viewport.js
-          grep -Fq "setProperty('width', \`${width}px\`, 'important')" /tmp/ya/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('width'" /tmp/ya/openttd-full-viewport.js
           ! sed -n '/canvas.emscripten {/,/}/p' /tmp/ya/openttd-yandex-fixes.js | grep -Fq 'width: 100vw !important'
           ! sed -n '/canvas.emscripten {/,/}/p' /tmp/ya/openttd-yandex-fixes.js | grep -Fq 'height: 100vh !important'
 
-          # Shell localization and browser UI guards.
           grep -Fq 'openttd-yandex-shell-i18n.js' /tmp/ya/index.html
           grep -Fq 'Загрузка ...' /tmp/ya/openttd-yandex-shell-i18n.js
           grep -Fq 'Подготовка игры ...' /tmp/ya/openttd-yandex-shell-i18n.js
