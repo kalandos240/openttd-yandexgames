@@ -65,3 +65,5 @@ for p in r.rglob('*'):
   if platform=='yandex' and re.search(r'playgama|playgamma',t,re.I): bad.append(rel+':playgama-marker')
 if bad: raise SystemExit('release remnants: '+repr(bad))
 print(f'vanilla strip passed for {platform}')
+
+# Keep this script in the release workflow trigger set so QA-only workflow fixes can be rebuilt deterministically.
