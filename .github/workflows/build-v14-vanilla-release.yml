@@ -140,6 +140,13 @@ jobs:
             test -s "$d/index.html"
             test -s "$d/openttd-runtime.js"
             test -s "$d/openttd-classic-ai.js"
+            test -s "$d/openttd-vanilla-migration.js"
+            grep -Fq 'openttd-vanilla-migration.js' "$d/index.html"
+            grep -Fq "personalDir + '/newgrf'" "$d/openttd-vanilla-migration.js"
+            grep -Fq "personalDir + '/content_download/newgrf'" "$d/openttd-vanilla-migration.js"
+            grep -Fq "name === 'newgrf-static'" "$d/openttd-vanilla-migration.js"
+            grep -Fq 'FS.syncfs(false' "$d/openttd-vanilla-migration.js"
+            node --check "$d/openttd-vanilla-migration.js"
             test ! -e "$d/addons"
             test ! -e "$d/licenses/addons"
             test ! -e "$d/openttd-bundled-addons.js"
@@ -160,7 +167,7 @@ jobs:
           grep -Fq 'bridge.playgama.com' /tmp/pg/platform-bridge-loader.js
           grep -Fq '__openttdPlatformStartupIndependent' /tmp/pg/openttd-runtime.js
           ! grep -Fq '__openttdPlatformStartupIndependent' /tmp/ya/openttd-runtime.js
-          echo 'All vanilla release invariants passed.'
+          echo 'All vanilla release invariants passed, including persistent NewGRF cleanup.'
 
       - name: Create vanilla release archives
         shell: bash
@@ -181,6 +188,9 @@ jobs:
               'OpenTTD v14 browser vanilla release\n'
               'bundled_newgrf_count=0\n'
               'bundled_base_graphics_addon_count=0\n'
+              'persistent_newgrf_migration=true\n'
+              'persistent_newgrf_paths_purged=/home/web_user/.openttd/newgrf,/home/web_user/.openttd/content_download/newgrf\n'
+              'persistent_newgrf_config_sections_purged=[newgrf],[newgrf-static]\n'
               'simpleai_preserved=true\n'
               'online_content_main_menu_removed=true\n'
               'newgrf_engine_removed=false\n'
