@@ -13,17 +13,24 @@ if not p.is_file():
     raise SystemExit(f'Missing OpenTTD source: {p}')
 
 s = p.read_text(encoding='utf-8')
-marker = 'Yandex mobile touch context: distinguish UI, pan and placement.'
-if marker in s:
+context_marker = 'Yandex mobile touch context: distinguish UI, pan and placement.'
+if context_marker in s:
     print('Yandex mobile build-context patch already applied')
     raise SystemExit(0)
 
-anchor = '''\treturn 1;\n}\n#endif\n\n/**\n * Check if a window can be made relative top-most window'''
-if s.count(anchor) != 1:
-    raise SystemExit(f'Could not locate direct-pan tail: count={s.count(anchor)}')
+pan_marker = '/* Yandex mobile direct touch pan: bypass desktop mouse-scroll state. */'
+start = s.find(pan_marker)
+if start < 0:
+    raise SystemExit('Could not locate direct-pan marker')
 
-addition = r'''\treturn 1;
-}
+# Both direct-pan and touch-context exports belong to the same Emscripten block.
+# Insert immediately before that block's first #endif after the unique pan marker;
+# this is robust to whitespace/comment changes around the following function.
+end = s.find('\n#endif', start)
+if end < 0:
+    raise SystemExit('Could not locate Emscripten #endif after direct-pan marker')
+
+addition = r'''
 
 /* Yandex mobile touch context: distinguish UI, pan and placement.
  * Return values:
@@ -41,11 +48,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE int em_openttd_touch_context(int x, int y)
 
 	return _thd.place_mode != HT_NONE ? 2 : 1;
 }
-#endif
+'''
 
-/**
- * Check if a window can be made relative top-most window'''
-
-s = s.replace(anchor, addition, 1)
+s = s[:end] + addition + s[end:]
 p.write_text(s, encoding='utf-8')
 print('Yandex mobile native build-context export applied')
