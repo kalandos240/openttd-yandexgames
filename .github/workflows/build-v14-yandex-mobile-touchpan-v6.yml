@@ -1,0 +1,236 @@
+name: Build v14 Yandex mobile touch-pan V6
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-mobile-native.py'
+      - 'ci/patch-yandex-mobile-pan-v6.py'
+      - '.github/workflows/build-v14-yandex-mobile-touchpan-v6.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V3_ARTIFACT_ID: '9866771365'
+
+jobs:
+  build-yandex-mobile-touchpan-v6:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire mobile native patch stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+          cp ci/patch-yandex-mobile-native.py legacy/ci/patch-yandex-mobile-native.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          native_hooks=(help_anchor +
+              "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-native.py\\n'\n")
+          s=s.replace(help_anchor,native_hooks,1)
+
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'\n")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          font_anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          font_repl=font_anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(font_anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(font_anchor,font_repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py \
+            legacy/ci/patch-yandex-mobile-native.py
+
+      - name: Build gesture-locked native runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          grep -Fq 'Yandex mobile: touch-only build, never render the software mouse cursor.' openttd/src/gfx.cpp
+          grep -Fq 'YANDEX_TOUCH_EVENT_ID' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'em_openttd_touch_gesture_state' openttd/src/video/sdl2_v.cpp
+          grep -Fq '_yandex_touch_gesture_active' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'ev.button.which != YANDEX_TOUCH_EVENT_ID' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'Yandex mobile direct touch pan: bypass desktop mouse-scroll state.' openttd/src/window.cpp
+          grep -Fq 'w->OnScroll(delta);' openttd/src/window.cpp
+
+          grep -Fq '_em_openttd_touch_gesture_state' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/native/openttd-runtime.js
+
+      - name: Download crisp V3 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v3 /tmp/mobile /tmp/out
+          mkdir -p /tmp/v3 /tmp/mobile /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V3_ARTIFACT_ID}/zip" \
+            -o /tmp/v3-artifact.zip
+          unzip -q /tmp/v3-artifact.zip -d /tmp/v3
+          V3="$(find /tmp/v3 -type f -name 'OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip' -print -quit)"
+          test -s "$V3"
+          unzip -q "$V3" -d /tmp/mobile
+          cp /tmp/native/openttd-runtime.js /tmp/mobile/openttd-runtime.js
+
+      - name: Apply V6 exclusive pan-build bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-pan-v6.py
+          python3 ci/patch-yandex-mobile-pan-v6.py /tmp/mobile
+
+      - name: Validate V6 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/index.html
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test ! -e /tmp/mobile/licenses/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq '_em_openttd_touch_gesture_state' /tmp/mobile/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/mobile/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/mobile/openttd-runtime.js
+
+          grep -Fq 'V6-exclusive-pan-build-lock' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'gestureLock(true)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'scheduleUnlock()' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq '__openttdRawTouchBlocked' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "['touchstart', 'touchmove', 'touchend', 'touchcancel']" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativePan(p, last)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'COMPAT_MOUSE_GUARD_MS = 220' /tmp/mobile/openttd-yandex-mobile.js
+
+          # Construction-click events may only be emitted in the tap branch.
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/mobile/openttd-yandex-mobile.js').read_text(encoding='utf-8')
+          drag=s[s.index("if (dragging) {"):s.index("const finishPointer", s.index("if (dragging) {"))]
+          if 'nativeMouse(1' in drag or 'nativeMouse(2' in drag or 'nativeMouse(3' in drag:
+              raise SystemExit('Mouse click leaked into pan branch')
+          if 'nativePan(p, last)' not in drag:
+              raise SystemExit('Direct pan missing from pan branch')
+          print('exclusive_pan_branch=PASS')
+          PY
+
+          # Keep known-good V3 presentation.
+          grep -Fq 'Module.setCanvasSize(box.width, box.height)' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'backingWidth' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'MAX_TOUCH_DPR' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
+
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          grep -Fq "const CLOUD_CONFIG_KEY = 'openttdMobileConfigV1';" /tmp/mobile/yandex-bridge.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/mobile --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/yandex-bridge.js
+          node --check /tmp/mobile/openttd-yandex-fixes.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_v6_unpacked_bytes=$UNPACKED"
+
+      - name: Create V6 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-ExclusivePan-V6.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-ExclusivePan-V6.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-ExclusivePan-V6.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-ExclusivePan-V6.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex mobile exclusive-pan V6\n'
+              'base_visual=crisp-fullscreen-v3\n'
+              'pan_build_mutually_exclusive=true\n'
+              'raw_touch_capture_block=true\n'
+              'native_compat_mouse_gesture_lock=true\n'
+              'compat_mouse_post_touch_guard_ms=220\n'
+              'touch_pan_path=Window::OnScroll_direct\n'
+              'tap=tagged_SDL_LMB_click\n'
+              'long_press=tagged_SDL_RMB_click\n'
+              'pinch_zoom=tagged_SDL_mousewheel\n'
+              'native_software_cursor=false\n'
+              'browser_cursor=false\n'
+              'logical_framebuffer_1to1=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-V6-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V6 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-exclusivepan-v6
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-ExclusivePan-V6.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-V6-RESULTS.txt
+          if-no-files-found: error
