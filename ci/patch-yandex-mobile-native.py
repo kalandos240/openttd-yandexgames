@@ -127,9 +127,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
 		}
 		if (blocked) return true;
 	}
+#else
+	SDL_Event ev;
+	if (!SDL_PollEvent(&ev)) return false;
+#endif
 '''
-    # PollEvent already declares/polls SDL_Event immediately after the anchor.
-    # Replace the first two lines too so there is only one declaration/poll.
     old_body = anchor + "\tSDL_Event ev;\n\n\tif (!SDL_PollEvent(&ev)) return false;\n"
     if text.count(old_body) != 1:
         raise SystemExit(f'Could not locate PollEvent prologue: count={text.count(old_body)}')
