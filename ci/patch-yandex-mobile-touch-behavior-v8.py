@@ -32,6 +32,29 @@ def replace_once(rel: str, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding='utf-8')
 
 
+def replace_in_class(rel: str, class_marker: str, old: str, new: str) -> None:
+    """Replace the first anchor after a specific window class declaration.
+
+    Several large OpenTTD GUI translation units contain multiple OnPlaceObject
+    overrides with identical signatures. Scoping to the owning class prevents
+    a source-version-stable patch from accidentally targeting another window.
+    """
+    path = ROOT / rel
+    if not path.is_file():
+        raise SystemExit(f'Missing OpenTTD source: {path}')
+    text = path.read_text(encoding='utf-8')
+    if new in text:
+        return
+    start = text.find(class_marker)
+    if start < 0:
+        raise SystemExit(f'Class marker missing in {rel}: {class_marker}')
+    pos = text.find(old, start)
+    if pos < 0:
+        raise SystemExit(f'Class-scoped anchor missing in {rel}: {class_marker}')
+    text = text[:pos] + new + text[pos + len(old):]
+    path.write_text(text, encoding='utf-8')
+
+
 # ---------------------------------------------------------------------------
 # 1. Give every Window a conservative touch-placement policy.
 #    Default is release-only: this is the safe behaviour for fixed structures
@@ -79,7 +102,7 @@ road_insert = r'''	bool WantsTouchDragPlacement() const override
 	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
 '''
-replace_once('src/road_gui.cpp', road_anchor, road_insert)
+replace_in_class('src/road_gui.cpp', 'struct BuildRoadToolbarWindow', road_anchor, road_insert)
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +138,7 @@ rail_insert = r'''	bool WantsTouchDragPlacement() const override
 	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
 '''
-replace_once('src/rail_gui.cpp', rail_anchor, rail_insert)
+replace_in_class('src/rail_gui.cpp', 'struct BuildRailToolbarWindow', rail_anchor, rail_insert)
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +164,7 @@ terraform_insert = r'''	bool WantsTouchDragPlacement() const override
 	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
 '''
-replace_once('src/terraform_gui.cpp', terraform_anchor, terraform_insert)
+replace_in_class('src/terraform_gui.cpp', 'struct TerraformToolbarWindow', terraform_anchor, terraform_insert)
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +193,7 @@ dock_insert = r'''	bool WantsTouchDragPlacement() const override
 	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
 '''
-replace_once('src/dock_gui.cpp', dock_anchor, dock_insert)
+replace_in_class('src/dock_gui.cpp', 'struct BuildDocksToolbarWindow', dock_anchor, dock_insert)
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +208,7 @@ tree_insert = r'''	bool WantsTouchDragPlacement() const override
 	void OnPlaceObject([[maybe_unused]] Point pt, TileIndex tile) override
 	{
 '''
-replace_once('src/tree_gui.cpp', tree_anchor, tree_insert)
+replace_in_class('src/tree_gui.cpp', 'class BuildTreesWindow', tree_anchor, tree_insert)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +227,7 @@ object_insert = r'''	bool WantsTouchDragPlacement() const override
 	{
 		const ObjectSpec *spec = ObjectClass::Get(_object_gui.sel_class)->GetSpec(_object_gui.sel_type);
 '''
-replace_once('src/object_gui.cpp', object_anchor, object_insert)
+replace_in_class('src/object_gui.cpp', 'class BuildObjectWindow', object_anchor, object_insert)
 
 
 # ---------------------------------------------------------------------------
