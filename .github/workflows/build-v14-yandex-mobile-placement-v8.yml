@@ -1,0 +1,274 @@
+name: Build v14 Yandex mobile placement V8
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-mobile-touch-behavior-v8.py'
+      - 'ci/patch-yandex-mobile-placement-v8.py'
+      - '.github/workflows/build-v14-yandex-mobile-placement-v8.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V3_ARTIFACT_ID: '9866771365'
+
+jobs:
+  build-yandex-mobile-placement-v8:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout mobile branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire V8 native touch semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+          cp ci/patch-yandex-mobile-native.py legacy/ci/patch-yandex-mobile-native.py
+          cp ci/patch-yandex-mobile-touch-behavior-v8.py legacy/ci/patch-yandex-mobile-touch-behavior-v8.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          native_hooks=(help_anchor +
+              "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-native.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-touch-behavior-v8.py\\n'\n")
+          s=s.replace(help_anchor,native_hooks,1)
+
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          font_anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          font_repl=font_anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(font_anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(font_anchor,font_repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py \
+            legacy/ci/patch-yandex-mobile-native.py \
+            legacy/ci/patch-yandex-mobile-touch-behavior-v8.py
+
+      - name: Build V8 native runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          grep -Fq 'Yandex mobile direct touch pan: bypass desktop mouse-scroll state.' openttd/src/window.cpp
+          grep -Fq 'Yandex mobile touch context V8: drag tools versus release placement.' openttd/src/window.cpp
+          grep -Fq 'owner->WantsTouchDragPlacement() ? 2 : 3' openttd/src/window.cpp
+          grep -Fq 'virtual bool WantsTouchDragPlacement() const { return false; }' openttd/src/window_gui.h
+          grep -Fq 'bool WantsTouchDragPlacement() const override' openttd/src/road_gui.cpp
+          grep -Fq 'bool WantsTouchDragPlacement() const override' openttd/src/rail_gui.cpp
+          grep -Fq 'bool WantsTouchDragPlacement() const override' openttd/src/terraform_gui.cpp
+          grep -Fq 'bool WantsTouchDragPlacement() const override' openttd/src/dock_gui.cpp
+          grep -Fq 'bool WantsTouchDragPlacement() const override' openttd/src/tree_gui.cpp
+          grep -Fq 'spec != nullptr && spec->size == OBJECT_SIZE_1X1' openttd/src/object_gui.cpp
+
+          grep -Fq '_em_openttd_touch_gesture_state' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/native/openttd-runtime.js
+
+      - name: Download crisp V3 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v3 /tmp/mobile /tmp/out
+          mkdir -p /tmp/v3 /tmp/mobile /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V3_ARTIFACT_ID}/zip" \
+            -o /tmp/v3-artifact.zip
+          unzip -q /tmp/v3-artifact.zip -d /tmp/v3
+          V3="$(find /tmp/v3 -type f -name 'OpenTTD-v14-Yandex-Mobile-Crisp-Fullscreen-V3.zip' -print -quit)"
+          test -s "$V3"
+          unzip -q "$V3" -d /tmp/mobile
+          cp /tmp/native/openttd-runtime.js /tmp/mobile/openttd-runtime.js
+
+      - name: Apply V8 deferred placement bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-mobile-placement-v8.py
+          python3 ci/patch-yandex-mobile-placement-v8.py /tmp/mobile
+
+      - name: Validate V8 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/mobile/index.html
+          test -s /tmp/mobile/openttd-runtime.js
+          test -s /tmp/mobile/openttd-yandex-mobile.js
+          test -s /tmp/mobile/openttd-full-viewport.js
+          test -s /tmp/mobile/openttd-classic-ai.js
+          test ! -e /tmp/mobile/addons
+          test ! -e /tmp/mobile/licenses/addons
+          test "$(find /tmp/mobile -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq '_em_openttd_touch_context' /tmp/mobile/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "return 'place'" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq "if (gestureMode === 'place')" /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'stats.placementMoves++' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'stats.placementTaps++' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'startOriginalDrag(gestureMode, p)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativeMouse(1, down)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'finishPointer(e, true)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq 'nativePan(c, multiPanLast)' /tmp/mobile/openttd-yandex-mobile.js
+          grep -Fq '__openttdRawTouchBlocked' /tmp/mobile/openttd-yandex-mobile.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/mobile/openttd-yandex-mobile.js').read_text(encoding='utf-8')
+
+          # Fixed-placement move branch must be preview-only: motion is allowed,
+          # but no LMB down/up may occur while the finger is still held.
+          a=s.index("if (gestureMode === 'place')")
+          b=s.index("if (gestureMode === 'build' || gestureMode === 'ui')", a)
+          place_branch=s[a:b]
+          if 'nativeMouse(0, p)' not in place_branch:
+              raise SystemExit('Fixed placement does not update hover preview')
+          if 'nativeMouse(1' in place_branch or 'nativeMouse(2' in place_branch:
+              raise SystemExit('LMB event leaked into fixed-placement move branch')
+
+          # Map pan must remain construction-free.
+          a=s.index("if (gestureMode === 'map')")
+          b=s.index("if (gestureMode === 'place')", a)
+          map_branch=s[a:b]
+          if 'nativeMouse(1' in map_branch or 'nativeMouse(2' in map_branch:
+              raise SystemExit('Construction mouse event leaked into map-pan branch')
+          if 'nativePan(p, last)' not in map_branch:
+              raise SystemExit('Direct map pan missing')
+
+          # Drag-capable construction keeps the original down/move/up semantics.
+          drag=s[s.index('const startOriginalDrag'):s.index('const chooseMode')]
+          for needle in ('nativeMouse(0, down)', 'nativeMouse(1, down)', 'nativeMouse(0, current)'):
+              if needle not in drag: raise SystemExit(f'Missing original drag step: {needle}')
+
+          # Fixed placement is committed in finishPointer, after release only.
+          finish=s[s.index('const finishPointer'):s.index("canvas.addEventListener('pointerup'")]
+          if "gestureMode === 'place'" not in finish or 'stats.placementTaps++' not in finish:
+              raise SystemExit('Release-only placement commit missing')
+          for needle in ('nativeMouse(0, p)', 'nativeMouse(1, p)', 'nativeMouse(2, p)'):
+              if needle not in finish: raise SystemExit(f'Missing release commit step: {needle}')
+          if "!cancelled" not in finish:
+              raise SystemExit('Pointer cancel is not guarded from placement commit')
+
+          print('v8_deferred_placement_arbitration=PASS')
+          PY
+
+          grep -Fq 'Module.setCanvasSize(box.width, box.height)' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'backingWidth' /tmp/mobile/openttd-full-viewport.js
+          ! grep -Fq 'MAX_TOUCH_DPR' /tmp/mobile/openttd-full-viewport.js
+          grep -Fq 'cursor: none !important' /tmp/mobile/openttd-yandex-mobile.js
+
+          grep -Fq '/sdk.js' /tmp/mobile/yandex-bootstrap.js
+          grep -Fq "const CLOUD_CONFIG_KEY = 'openttdMobileConfigV1';" /tmp/mobile/yandex-bridge.js
+          ! grep -RniE 'playgama|playgamma' /tmp/mobile --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/mobile --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/mobile/openttd-yandex-mobile.js
+          node --check /tmp/mobile/openttd-full-viewport.js
+          node --check /tmp/mobile/yandex-bridge.js
+          node --check /tmp/mobile/openttd-yandex-fixes.js
+          node --check /tmp/mobile/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/mobile -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "mobile_v8_unpacked_bytes=$UNPACKED"
+
+      - name: Create V8 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/mobile && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/mobile')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex mobile release-placement V8\n'
+              'base_visual=crisp-fullscreen-v3\n'
+              'native_touch_context=drag_vs_fixed_placement\n'
+              'fixed_object_hold=preview_only\n'
+              'fixed_object_move=preview_only_no_lmb\n'
+              'fixed_object_commit=touch_release_only\n'
+              'pointer_cancel_commits_fixed_object=false\n'
+              'road_and_rail_drag=original_SDL_LMB_drag\n'
+              'terrain_area_drag=original_SDL_LMB_drag\n'
+              'canal_tree_area_drag=original_SDL_LMB_drag\n'
+              'one_finger_no_tool=direct_pan\n'
+              'two_finger_camera_pan=true\n'
+              'pinch_zoom=true\n'
+              'raw_touch_capture_block=true\n'
+              'native_software_cursor=false\n'
+              'browser_cursor=false\n'
+              'logical_framebuffer_1to1=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-MOBILE-V8-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V8 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-mobile-release-placement-v8
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-MOBILE-V8-RESULTS.txt
+          if-no-files-found: error
