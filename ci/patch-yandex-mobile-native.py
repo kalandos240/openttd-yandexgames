@@ -3,9 +3,10 @@
 
 The desktop publication build is untouched. In the dedicated mobile runtime:
 - OpenTTD never renders its software mouse cursor;
-- JavaScript can enqueue real SDL mouse/wheel events for tap/right-click/zoom;
-- one-finger panning can bypass the desktop mouse state machine and call the
-  viewport's native OnScroll() path directly.
+- JavaScript can enqueue tagged SDL mouse/wheel events for tap/right-click/zoom;
+- one-finger panning calls the viewport's native OnScroll() path directly;
+- a touch gesture lock suppresses browser/SDL compatibility mouse events while
+  a finger gesture is being classified, preventing build tools firing on pan.
 """
 from pathlib import Path
 
@@ -27,35 +28,41 @@ if cursor_marker not in text:
     gfx.write_text(text, encoding='utf-8')
 
 # ---------------------------------------------------------------------------
-# 2. Add an Emscripten -> SDL event queue bridge for taps/right-click/zoom.
+# 2. Add an Emscripten -> SDL event queue bridge plus gesture lock.
 # ---------------------------------------------------------------------------
 sdl = Path('openttd/src/video/sdl2_v.cpp')
 if not sdl.is_file():
     raise SystemExit(f'Missing OpenTTD source: {sdl}')
 
 text = sdl.read_text(encoding='utf-8')
-bridge_marker = 'Yandex mobile native touch bridge: enqueue real SDL input events.'
+bridge_marker = 'Yandex mobile native touch bridge: enqueue tagged SDL input events.'
 if bridge_marker not in text:
     anchor = """bool VideoDriver_SDL_Base::PollEvent()\n{\n"""
     if text.count(anchor) != 1:
         raise SystemExit(f'Could not locate SDL PollEvent anchor: count={text.count(anchor)}')
 
     bridge = r'''#ifdef __EMSCRIPTEN__
-/* Yandex mobile native touch bridge: enqueue real SDL input events.
+/* Yandex mobile native touch bridge: enqueue tagged SDL input events.
  *
- * type:
- *   0 = mouse motion
- *   1 = left button down
- *   2 = left button up
- *   3 = right button down
- *   4 = right button up
- *   5 = wheel up / zoom in
- *   6 = wheel down / zoom out
- *
- * These events are used for discrete touch actions. Continuous one-finger
- * panning uses em_openttd_touch_pan() in window.cpp instead, so it does not
- * depend on OpenTTD's desktop mouse-drag state machine.
+ * Continuous one-finger panning bypasses the mouse state machine. Discrete
+ * tap/right-click/zoom events are tagged so PollEvent can distinguish them
+ * from browser compatibility mouse events while a touch gesture is active.
  */
+static constexpr uint32_t YANDEX_TOUCH_EVENT_ID = 0x59414E44u; // "YAND"
+static bool _yandex_touch_gesture_active = false;
+
+extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_gesture_state(int active)
+{
+	_yandex_touch_gesture_active = active != 0;
+	if (_yandex_touch_gesture_active) {
+		_left_button_down = false;
+		_left_button_clicked = false;
+		_right_button_down = false;
+		_right_button_clicked = false;
+		_cursor.delta = {0, 0};
+	}
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int x, int y)
 {
 	SDL_Event ev{};
@@ -64,6 +71,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
 		case 0:
 			ev.type = SDL_MOUSEMOTION;
 			ev.motion.type = SDL_MOUSEMOTION;
+			ev.motion.which = YANDEX_TOUCH_EVENT_ID;
 			ev.motion.x = x;
 			ev.motion.y = y;
 			break;
@@ -74,6 +82,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
 		case 4:
 			ev.type = (type == 1 || type == 3) ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
 			ev.button.type = ev.type;
+			ev.button.which = YANDEX_TOUCH_EVENT_ID;
 			ev.button.button = (type == 1 || type == 2) ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
 			ev.button.state = (type == 1 || type == 3) ? SDL_PRESSED : SDL_RELEASED;
 			ev.button.clicks = 1;
@@ -85,6 +94,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
 		case 6:
 			ev.type = SDL_MOUSEWHEEL;
 			ev.wheel.type = SDL_MOUSEWHEEL;
+			ev.wheel.which = YANDEX_TOUCH_EVENT_ID;
 			ev.wheel.y = type == 5 ? 1 : -1;
 #if SDL_VERSION_ATLEAST(2, 18, 0)
 			ev.wheel.preciseY = type == 5 ? 1.0f : -1.0f;
@@ -100,7 +110,30 @@ extern "C" EMSCRIPTEN_KEEPALIVE void em_openttd_touch_mouse_event(int type, int 
 #endif
 
 '''
-    text = text.replace(anchor, bridge + anchor, 1)
+    replacement = bridge + anchor + r'''#ifdef __EMSCRIPTEN__
+	/* During a real touch gesture, browsers/Emscripten may also create
+	 * compatibility mouse events. Ignore those completely. Only events tagged
+	 * by em_openttd_touch_mouse_event() are allowed through the lock. */
+	SDL_Event ev;
+	if (!SDL_PollEvent(&ev)) return false;
+	if (_yandex_touch_gesture_active) {
+		bool blocked = false;
+		switch (ev.type) {
+			case SDL_MOUSEMOTION: blocked = ev.motion.which != YANDEX_TOUCH_EVENT_ID; break;
+			case SDL_MOUSEBUTTONDOWN:
+			case SDL_MOUSEBUTTONUP: blocked = ev.button.which != YANDEX_TOUCH_EVENT_ID; break;
+			case SDL_MOUSEWHEEL: blocked = ev.wheel.which != YANDEX_TOUCH_EVENT_ID; break;
+			default: break;
+		}
+		if (blocked) return true;
+	}
+'''
+    # PollEvent already declares/polls SDL_Event immediately after the anchor.
+    # Replace the first two lines too so there is only one declaration/poll.
+    old_body = anchor + "\tSDL_Event ev;\n\n\tif (!SDL_PollEvent(&ev)) return false;\n"
+    if text.count(old_body) != 1:
+        raise SystemExit(f'Could not locate PollEvent prologue: count={text.count(old_body)}')
+    text = text.replace(old_body, replacement, 1)
     sdl.write_text(text, encoding='utf-8')
 
 # ---------------------------------------------------------------------------
@@ -125,13 +158,7 @@ if pan_marker not in text:
 
     direct_pan = r'''
 #ifdef __EMSCRIPTEN__
-/* Yandex mobile direct touch pan: bypass desktop mouse-scroll state.
- *
- * Coordinates are canvas/OpenTTD screen coordinates. dx/dy are the movement
- * of the finger since the previous pointer event. The hit test is performed
- * natively so dragging over toolbars/windows does not scroll the map behind
- * them. Returning 1 means a viewport consumed the movement.
- */
+/* Yandex mobile direct touch pan: bypass desktop mouse-scroll state. */
 extern "C" EMSCRIPTEN_KEEPALIVE int em_openttd_touch_pan(int x, int y, int dx, int dy)
 {
 	Window *w = FindWindowFromPt(x, y);
@@ -161,4 +188,4 @@ extern "C" EMSCRIPTEN_KEEPALIVE int em_openttd_touch_pan(int x, int y, int dx, i
     )
     window.write_text(text, encoding='utf-8')
 
-print('Yandex mobile native cursor + SDL discrete input + direct viewport pan patches applied')
+print('Yandex mobile native cursor + tagged SDL input + gesture lock + direct viewport pan applied')
