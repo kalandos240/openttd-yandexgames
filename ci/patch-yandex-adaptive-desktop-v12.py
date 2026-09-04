@@ -60,7 +60,7 @@ def main() -> None:
         v = v.replace(
             '/* Adaptive V9 desktop + touch viewport.',
             '/* Adaptive V12 desktop + touch viewport.\n'
-            ' * Desktop uses the browser/OS pointer at native size; OpenTTD software cursor is suppressed.\n'
+            ' * desktop uses the browser/OS pointer at native size; OpenTTD software cursor is suppressed.\n'
             ' *\n * Based on Adaptive V9 viewport.',
             1,
         )
