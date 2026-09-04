@@ -1,0 +1,257 @@
+name: Build v14 Yandex adaptive desktop-mobile V23
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v23-resize-recovery
+    paths:
+      - 'ci/patch-yandex-adaptive-native-v9.py'
+      - 'ci/patch-yandex-adaptive-native-v22.py'
+      - 'ci/patch-yandex-adaptive-package-v9.py'
+      - 'ci/patch-yandex-adaptive-package-v20.py'
+      - 'ci/patch-yandex-adaptive-package-v21.py'
+      - 'ci/patch-yandex-adaptive-package-v23.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v23.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V8_ARTIFACT_ID: '9910985415'
+
+jobs:
+  build-yandex-adaptive-v23:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    container:
+      image: emscripten/emsdk:3.1.57
+    steps:
+      - name: Checkout V23 branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire verified V8 touch semantics plus V9/V22 adaptive native patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+          cp ci/patch-yandex-mobile-native.py legacy/ci/patch-yandex-mobile-native.py
+          cp ci/patch-yandex-mobile-touch-behavior-v8.py legacy/ci/patch-yandex-mobile-touch-behavior-v8.py
+          cp ci/patch-yandex-adaptive-native-v9.py legacy/ci/patch-yandex-adaptive-native-v9.py
+          cp ci/patch-yandex-adaptive-native-v22.py legacy/ci/patch-yandex-adaptive-native-v22.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          native_hooks=(help_anchor +
+              "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-native.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-touch-behavior-v8.py\\n'\n" +
+              "    'python3 ci/patch-yandex-adaptive-native-v9.py\\n'\n" +
+              "    'python3 ci/patch-yandex-adaptive-native-v22.py\\n'\n")
+          s=s.replace(help_anchor,native_hooks,1)
+
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          font_anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          font_repl=font_anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(font_anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(font_anchor,font_repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py \
+            legacy/ci/patch-yandex-mobile-native.py \
+            legacy/ci/patch-yandex-mobile-touch-behavior-v8.py \
+            legacy/ci/patch-yandex-adaptive-native-v9.py \
+            legacy/ci/patch-yandex-adaptive-native-v22.py
+
+      - name: Build verified adaptive native runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          grep -Fq 'Yandex adaptive V9 native cursor mode.' openttd/src/gfx.cpp
+          grep -Fq 'if (_yandex_touch_ui_active) return;' openttd/src/gfx.cpp
+          grep -Fq 'em_openttd_set_touch_ui' openttd/src/gfx.cpp
+          grep -Fq 'bool _yandex_touch_ui_active = false;' openttd/src/gfx.cpp
+          ! grep -Fq 'static bool _yandex_touch_ui_active = false;' openttd/src/gfx.cpp
+          grep -Fq 'Yandex adaptive V22: disable native tooltips in touch UI.' openttd/src/misc_gui.cpp
+          grep -Fq 'extern bool _yandex_touch_ui_active;' openttd/src/misc_gui.cpp
+          grep -Fq 'if (_yandex_touch_ui_active) return;' openttd/src/misc_gui.cpp
+          grep -Fq 'Yandex mobile touch context V8: drag tools versus release placement.' openttd/src/window.cpp
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/native/openttd-runtime.js
+
+      - name: Download verified V8 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v8 /tmp/package /tmp/out
+          mkdir -p /tmp/v8 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V8_ARTIFACT_ID}/zip" \
+            -o /tmp/v8-artifact.zip
+          unzip -q /tmp/v8-artifact.zip -d /tmp/v8
+          V8="$(find /tmp/v8 -type f -name 'OpenTTD-v14-Yandex-Mobile-ReleasePlacement-V8.zip' -print -quit)"
+          test -s "$V8"
+          unzip -q "$V8" -d /tmp/package
+          cp /tmp/native/openttd-runtime.js /tmp/package/openttd-runtime.js
+
+      - name: Apply V9 adaptive split plus V20/V21/V23 package hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            ci/patch-yandex-adaptive-package-v9.py \
+            ci/patch-yandex-adaptive-package-v20.py \
+            ci/patch-yandex-adaptive-package-v21.py \
+            ci/patch-yandex-adaptive-package-v23.py
+          python3 ci/patch-yandex-adaptive-package-v9.py /tmp/package
+          python3 ci/patch-yandex-adaptive-package-v20.py /tmp/package
+          python3 ci/patch-yandex-adaptive-package-v21.py /tmp/package
+          python3 ci/patch-yandex-adaptive-package-v23.py /tmp/package
+
+      - name: Validate V23 invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # Existing touch/building and V21/V22 fixes remain intact.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "if (gestureMode === 'place')" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'stats.placementTaps++' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'return !!(module && module.calledRun === true);' /tmp/package/openttd-yandex-mobile.js
+          ! grep -Fq 'module.HEAP8 && module.HEAP8.buffer' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
+
+          # V23: recover after delayed DevTools/Yandex iframe viewport changes.
+          grep -Fq 'Adaptive V23 resilient full-viewport desktop + touch layout.' /tmp/package/openttd-full-viewport.js
+          grep -Fq "probe.id = 'openttd-viewport-probe'" /tmp/package/openttd-full-viewport.js
+          grep -Fq "probe.style.setProperty('width', '100vw', 'important')" /tmp/package/openttd-full-viewport.js
+          grep -Fq "CSS?.supports?.('height', '100dvh')" /tmp/package/openttd-full-viewport.js
+          grep -Fq 'const ro = new ResizeObserver(() => scheduleBurst());' /tmp/package/openttd-full-viewport.js
+          grep -Fq "for (const delay of [50, 150, 350, 800, 1500])" /tmp/package/openttd-full-viewport.js
+          grep -Fq "window.addEventListener(type, scheduleBurst, { passive: true });" /tmp/package/openttd-full-viewport.js
+          grep -Fq 'module.setCanvasSize(box.width, box.height)' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'MAX_DESKTOP_ASPECT_RATIO' /tmp/package/openttd-full-viewport.js
+
+          # Autonomous/Yandex-only rules remain unchanged.
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          ! grep -RniF 'early-vehicle-set-0.0.2.grf' /tmp/package
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/openttd-vanilla-migration.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          node --check /tmp/package/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v23_unpacked_bytes=$UNPACKED"
+
+      - name: Create V23 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V23.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V23.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V23.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V23.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V23\n'
+              'base_line=V22_plus_resilient_viewport_recovery\n'
+              'devtools_resize_recovery=true\n'
+              'resize_observer=true\n'
+              'visual_viewport_resize=true\n'
+              'css_viewport_probe=true\n'
+              'permanent_resize_polling=false\n'
+              'canvas_css_backing_scale=1.0\n'
+              'desktop_aspect_ratio_clamp=false\n'
+              'mobile_native_tooltips=false\n'
+              'desktop_native_tooltips=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'v21_newgrf_cleanup_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'optimization_changes=false\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V23-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V23 adaptive release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v23
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V23.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V23-RESULTS.txt
+          if-no-files-found: error
