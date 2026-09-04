@@ -1,0 +1,172 @@
+name: Build v14 Yandex adaptive desktop-mobile V10
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-adaptive-startup-v10.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v10.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V9_ARTIFACT_ID: '9922708980'
+
+jobs:
+  build-yandex-adaptive-v10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout adaptive branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V9 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v9 /tmp/package /tmp/out
+          mkdir -p /tmp/v9 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V9_ARTIFACT_ID}/zip" \
+            -o /tmp/v9-artifact.zip
+          unzip -q /tmp/v9-artifact.zip -d /tmp/v9
+          V9="$(find /tmp/v9 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V9.zip' -print -quit)"
+          test -s "$V9"
+          unzip -q "$V9" -d /tmp/package
+
+      - name: Apply V10 WASM-ready startup guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-startup-v10.py
+          python3 ci/patch-yandex-adaptive-startup-v10.py /tmp/package
+
+      - name: Validate V10 startup and platform invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq "version: 'V10-wasm-ready-deferred-placement'" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'nativeModule?.calledRun === true' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'module?.calledRun !== true' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "if (module?.calledRun !== true) return;" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_gesture_state' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          s=Path('/tmp/package/openttd-yandex-mobile.js').read_text(encoding='utf-8')
+          checks = {
+              'publish setter gated': "nativeModule?.calledRun === true && typeof nativeTouchSetter === 'function'",
+              'gesture lock gated': "const gestureLock = active => {\n      const module = getModule();\n      if (module?.calledRun !== true) return false;",
+              'native mouse gated': "const nativeMouse = (type, p) => {\n      const module = getModule();\n      if (module?.calledRun !== true) return false;",
+              'native context gated': "const nativeContext = p => {\n      const module = getModule();\n      if (module?.calledRun !== true) return 0;",
+              'native pan gated': "const nativePan = (p, previous) => {\n      const module = getModule();\n      if (module?.calledRun !== true || !previous) return false;",
+              'mode sync gated': "const nativeModeSync = setInterval(() => {\n    const module = window.Module;\n    if (module?.calledRun !== true) return;",
+          }
+          for label, needle in checks.items():
+              if needle not in s: raise SystemExit(f'Missing startup guard: {label}')
+
+          # No pre-run direct native invocation may remain in the known V9 forms.
+          forbidden = [
+              "const fn = getModule()?._em_openttd_touch_gesture_state;",
+              "const fn = getModule()?._em_openttd_touch_mouse_event;",
+              "const fn = getModule()?._em_openttd_touch_context;",
+              "const fn = getModule()?._em_openttd_touch_pan;",
+              "if (typeof nativeTouchSetter === 'function') nativeTouchSetter(profile.touchUi ? 1 : 0);",
+          ]
+          for needle in forbidden:
+              if needle in s: raise SystemExit(f'Unguarded pre-run native call remains: {needle}')
+          print('v10_wasm_startup_guards=PASS')
+          PY
+
+          # Preserve V9 desktop/mobile split and V8 placement semantics.
+          grep -Fq "window.openttdConfigFilename = 'openttd.cfg';" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "const CONFIG_NAME = 'openttd-mobile.cfg';" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "window.openttdBootTouchUi ? 'openttdMobileConfigV1' : 'openttdConfigV1'" /tmp/package/yandex-bridge.js
+          grep -Fq 'Adaptive V9 desktop + touch viewport.' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'setInterval(apply, 250);' /tmp/package/openttd-full-viewport.js
+          grep -Fq "bg.style.setProperty('display', 'none', 'important')" /tmp/package/openttd-full-viewport.js
+          grep -Fq "if (gestureMode === 'place')" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'stats.placementTaps++' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'startOriginalDrag(gestureMode, p)' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'nativePan(p, last)' /tmp/package/openttd-yandex-mobile.js
+
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          node --check /tmp/package/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v10_unpacked_bytes=$UNPACKED"
+
+      - name: Create V10 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V10\n'
+              'base=adaptive-v9\n'
+              'black_screen_startup_fix=true\n'
+              'native_calls_before_wasm_ready=false\n'
+              'native_ready_gate=Module.calledRun\n'
+              'native_call_exception_guard=true\n'
+              'desktop_native_software_cursor=true\n'
+              'touch_native_software_cursor=false\n'
+              'desktop_config=openttd.cfg\n'
+              'touch_config=openttd-mobile.cfg\n'
+              'desktop_canvas_watchdog=true\n'
+              'runtime_loading_background_hidden_after_start=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V10-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V10 adaptive release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v10
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V10-RESULTS.txt
+          if-no-files-found: error
