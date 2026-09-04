@@ -19,7 +19,7 @@ from pathlib import Path
 
 VIEWPORT_V26 = r'''/* Adaptive V26 exact child-viewport + native-pixel layout.
  * The real iframe viewport is authoritative. Never synthesize a larger backing
- * store from window.outerWidth/outerHeight: SDL/OpenTTD and the browser canvas
+ * store from browser outer-window metrics: SDL/OpenTTD and the browser canvas
  * must agree on the same pixel dimensions or the framebuffer gets resampled.
  */
 (() => {
