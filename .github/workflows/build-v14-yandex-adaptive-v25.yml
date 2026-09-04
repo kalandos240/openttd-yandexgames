@@ -5,7 +5,7 @@ on:
     branches:
       - fix/v14-yandex-adaptive-v25-viewport-perf-recovery
     paths:
-      - 'ci/patch-v14-performance-package.py'
+      - 'ci/patch-v14-webgl-runtime.py'
       - '.github/workflows/build-v14-yandex-adaptive-v25.yml'
   workflow_dispatch:
 
@@ -42,12 +42,12 @@ jobs:
           test -s "$V24"
           unzip -q "$V24" -d /tmp/package
 
-      - name: Restore measured renderer optimization
+      - name: Restore measured WebGL framebuffer presenter
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m py_compile ci/patch-v14-performance-package.py
-          python3 ci/patch-v14-performance-package.py /tmp/package --platform yandex
+          python3 -m py_compile ci/patch-v14-webgl-runtime.py
+          python3 ci/patch-v14-webgl-runtime.py /tmp/package/openttd-runtime.js
 
       - name: Validate V25 viewport and performance invariants
         shell: bash
@@ -79,12 +79,11 @@ jobs:
           ! grep -Fq 'MAX_DESKTOP_ASPECT_RATIO' /tmp/package/openttd-full-viewport.js
           ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
 
-          # V25 restores the fast framebuffer presenter that the adaptive native
-          # rebuild accidentally dropped. Canvas2D fallback stays available.
+          # V25 restores only the measured missing renderer fast path. No gameplay,
+          # simulation, AI, ranking, cloud or input logic is changed here.
           grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
           grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
           grep -Fq 'Canvas2D fallback' /tmp/package/openttd-runtime.js
-          grep -Fq '__openttdCloudDedupV2' /tmp/package/yandex-bridge.js
 
           # Autonomous/Yandex-only rules remain unchanged.
           grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
@@ -125,12 +124,13 @@ jobs:
               'canvas_polling_watchdog=false\n'
               'webgl_framebuffer_presenter=true\n'
               'canvas2d_presenter=fallback_only\n'
-              'yandex_cloud_write_dedup=true\n'
               'mobile_v8_release_placement_preserved=true\n'
               'mobile_native_tooltips=false\n'
               'desktop_native_tooltips=true\n'
               'v21_newgrf_cleanup_preserved=true\n'
               'simpleai_preserved=true\n'
+              'gameplay_changes=false\n'
+              'simulation_changes=false\n'
               'bundled_newgrf_count=0\n'
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
