@@ -1,0 +1,87 @@
+name: Build v14 Yandex adaptive V13 platform ads restored
+
+on:
+  push:
+    branches:
+      - fix/yandex-restore-platform-ads
+    paths:
+      - 'ci/patch-yandex-adaptive-desktop-v12.py'
+      - 'ci/patch-yandex-restore-platform-ads.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v13.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V11_ARTIFACT_ID: '9923928615'
+
+jobs:
+  build-yandex-adaptive-v13:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download verified V11 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v11 /tmp/package /tmp/out
+          mkdir -p /tmp/v11 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V11_ARTIFACT_ID}/zip" \
+            -o /tmp/v11-artifact.zip
+          unzip -q /tmp/v11-artifact.zip -d /tmp/v11
+          V11="$(find /tmp/v11 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip' -print -quit)"
+          test -s "$V11"
+          unzip -q "$V11" -d /tmp/package
+
+      - name: Apply V12 cursor fix and restore Yandex ad placement
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-desktop-v12.py ci/patch-yandex-restore-platform-ads.py
+          python3 ci/patch-yandex-adaptive-desktop-v12.py /tmp/package
+          python3 ci/patch-yandex-restore-platform-ads.py /tmp/package
+
+      - name: Validate V13 package
+        run: |
+          set -euo pipefail
+          for file in index.html openttd-runtime.js openttd-yandex-mobile.js openttd-full-viewport.js openttd-yandex-fixes.js yandex-bridge.js openttd-classic-ai.js; do
+            test -s "/tmp/package/$file"
+          done
+          grep -Fq 'desktop uses the browser/OS pointer at native size' /tmp/package/openttd-full-viewport.js
+          grep -Fq "box.touchUi ? 'none' : 'default'" /tmp/package/openttd-full-viewport.js
+          grep -Fq "setGlobal('gui_scale', 100);" /tmp/package/openttd-yandex-fixes.js
+          ! grep -Fq 'hideBannerAdv' /tmp/package/yandex-bridge.js
+          ! grep -Fq '__openttdStickySuppressionV11' /tmp/package/yandex-bridge.js
+          ! grep -Fq 'yandexHideStickyBanner' /tmp/package/yandex-bridge.js
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          test "$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')" -lt 100000000
+
+      - name: Create V13 archive
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V13.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V13.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V13.zip > /tmp/out/SHA256SUMS.txt
+
+      - name: Upload V13 release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v13
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V13.zip
+            /tmp/out/SHA256SUMS.txt
+          if-no-files-found: error
