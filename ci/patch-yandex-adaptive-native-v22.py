@@ -18,11 +18,16 @@ if not gfx.is_file():
 text = gfx.read_text(encoding='utf-8')
 old_flag = 'static bool _yandex_touch_ui_active = false;\n'
 new_flag = 'bool _yandex_touch_ui_active = false;\n'
-if new_flag not in text:
+# Check the exact old declaration first. The new declaration text is also a
+# substring of the old "static bool ..." line, so a plain substring test for
+# new_flag before this replacement would incorrectly treat the old line as done.
+if old_flag in text:
     if text.count(old_flag) != 1:
-        raise SystemExit(f'Could not locate adaptive touch flag: count={text.count(old_flag)}')
+        raise SystemExit(f'Could not uniquely locate adaptive touch flag: count={text.count(old_flag)}')
     text = text.replace(old_flag, new_flag, 1)
     gfx.write_text(text, encoding='utf-8')
+elif new_flag not in text:
+    raise SystemExit('Could not locate adaptive touch flag declaration')
 
 # ---------------------------------------------------------------------------
 # 2. Suppress every native tooltip in touch UI, at the central creation point.
