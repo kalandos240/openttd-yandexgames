@@ -94,10 +94,15 @@ def patch_migration(path: Path) -> None:
         raise SystemExit(f'config migration anchor: expected one supported form, found {matches}')
     s = s.replace(dynamic if dynamic in s else desktop_only, both, 1)
 
+    restore_old = """  const previousRestore = window.yandexRestoreOpenTTDCloud;\n  window.yandexRestoreOpenTTDCloud = async function (FS, personalDir) {\n    if (typeof previousRestore === 'function') await previousRestore(FS, personalDir);\n    purge(FS, personalDir);\n    if (typeof FS.syncfs === 'function') {\n"""
+    restore_new = """  const previousRestore = window.yandexRestoreOpenTTDCloud;\n  window.yandexRestoreOpenTTDCloud = async function (FS, personalDir) {\n    /* V21-pre-restore-purge: clean local IDBFS immediately. The native boot\n       path has a cloud-restore timeout, so waiting for the SDK before cleanup\n       can let OpenTTD parse a stale NewGRF reference first. */\n    purge(FS, personalDir);\n    if (typeof previousRestore === 'function') await previousRestore(FS, personalDir);\n    /* Clean once more in case a legacy cloud profile supplied stale state. */\n    purge(FS, personalDir);\n    if (typeof FS.syncfs === 'function') {\n"""
+    s = replace_once(s, restore_old, restore_new, 'pre-restore NewGRF purge')
+
     for needle in (
         "['openttd.cfg', 'openttd-mobile.cfg']",
         'newgrf(?:[-_]static)?',
         'window.yandexRestoreOpenTTDCloud = async function',
+        'V21-pre-restore-purge',
         'FS.syncfs(false',
     ):
         if needle not in s:
