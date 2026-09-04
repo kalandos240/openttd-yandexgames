@@ -1,0 +1,156 @@
+name: Build v14 Yandex adaptive desktop-mobile V26
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v26-native-pixel-geometry
+    paths:
+      - 'ci/patch-yandex-adaptive-package-v26.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v26.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V25_ARTIFACT_ID: '9957948515'
+
+jobs:
+  build-yandex-adaptive-v26:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout V26 branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V25 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v25 /tmp/package /tmp/out
+          mkdir -p /tmp/v25 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V25_ARTIFACT_ID}/zip" \
+            -o /tmp/v25-artifact.zip
+          unzip -q /tmp/v25-artifact.zip -d /tmp/v25
+          V25="$(find /tmp/v25 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip' -print -quit)"
+          test -s "$V25"
+          unzip -q "$V25" -d /tmp/package
+
+      - name: Apply exact native-pixel geometry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-package-v26.py
+          python3 ci/patch-yandex-adaptive-package-v26.py /tmp/package
+
+      - name: Validate V26 quality and behavior invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # Existing working mobile/native behavior must remain.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
+
+          # V26: real child viewport is authoritative. No synthetic host dimensions.
+          grep -Fq 'Adaptive V26 exact child-viewport + native-pixel layout.' /tmp/package/openttd-full-viewport.js
+          grep -Fq "mode: 'actual-child-viewport'" /tmp/package/openttd-full-viewport.js
+          grep -Fq 'module.setCanvasSize(box.width, box.height)' /tmp/package/openttd-full-viewport.js
+          grep -Fq "bg.style.setProperty('display', 'none', 'important')" /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'window.outerWidth' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'window.outerHeight' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'recoverDesktopBox' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'fullscreen.request()' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'MAX_DESKTOP_ASPECT_RATIO' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
+
+          # V25 WebGL performance remains, but V26 never stretches source pixels.
+          grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
+          grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
+          grep -Fq '__openttdPresenterMismatch' /tmp/package/openttd-runtime.js
+          grep -Fq '__otExactPixels' /tmp/package/openttd-runtime.js
+          grep -Fq '__otGl.viewport(0,__otViewportY,__otW,__otH)' /tmp/package/openttd-runtime.js
+          ! grep -Fq '__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height)' /tmp/package/openttd-runtime.js
+
+          # Yandex-only/autonomous package rules remain unchanged.
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          ! grep -RniF 'early-vehicle-set-0.0.2.grf' /tmp/package
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/openttd-vanilla-migration.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          node --check /tmp/package/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v26_unpacked_bytes=$UNPACKED"
+
+      - name: Create V26 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V26\n'
+              'base_line=verified_V25\n'
+              'viewport_geometry=actual_child_viewport_only\n'
+              'synthetic_outer_window_recovery=false\n'
+              'webgl_framebuffer_presenter=true\n'
+              'webgl_source_pixel_stretch=false\n'
+              'framebuffer_canvas_1_to_1=true\n'
+              'devtools_resize=event_driven_resize_observer\n'
+              'background_layer_hidden=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'v21_newgrf_cleanup_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'gameplay_changes=false\n'
+              'simulation_changes=false\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V26-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V26 adaptive release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v26
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V26-RESULTS.txt
+          if-no-files-found: error
