@@ -34,8 +34,8 @@ def main() -> None:
     old = """    if (window.openttdMobileProfile?.touchUi) {
       setGlobal('gui_scale', Math.max(100, Math.min(500, guiScale)));
       setGui('osk_activation', 'immediately');
-      setGui('left_mouse_btn_scrolling', '1');
-      setGui('scroll_mode', '1');
+      setGui('scroll_mode', '3');
+      setGui('scrollwheel_scrolling', '0');
       setGui('hover_delay_ms', '0');
       setGui('toolbar_pos', '1');
       setGui('statusbar_pos', '1');
@@ -46,8 +46,8 @@ def main() -> None:
     if (window.openttdMobileProfile?.touchUi) {
       setGlobal('gui_scale', Math.max(100, Math.min(500, guiScale)));
       setGui('osk_activation', 'immediately');
-      setGui('left_mouse_btn_scrolling', '1');
-      setGui('scroll_mode', '1');
+      setGui('scroll_mode', '3');
+      setGui('scrollwheel_scrolling', '0');
       setGui('hover_delay_ms', '0');
       setGui('toolbar_pos', '1');
       setGui('statusbar_pos', '1');
