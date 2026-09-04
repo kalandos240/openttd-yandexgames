@@ -1,0 +1,150 @@
+name: Build v14 Yandex adaptive desktop-mobile V25
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v25-viewport-perf-recovery
+    paths:
+      - 'ci/patch-v14-performance-package.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v25.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V24_ARTIFACT_ID: '9954881775'
+
+jobs:
+  build-yandex-adaptive-v25:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout V25 branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V24 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v24 /tmp/package /tmp/out
+          mkdir -p /tmp/v24 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V24_ARTIFACT_ID}/zip" \
+            -o /tmp/v24-artifact.zip
+          unzip -q /tmp/v24-artifact.zip -d /tmp/v24
+          V24="$(find /tmp/v24 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V24.zip' -print -quit)"
+          test -s "$V24"
+          unzip -q "$V24" -d /tmp/package
+
+      - name: Restore measured renderer optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-v14-performance-package.py
+          python3 ci/patch-v14-performance-package.py /tmp/package --platform yandex
+
+      - name: Validate V25 viewport and performance invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # V20/V21/V22 mobile and native touch behavior remains intact.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+
+          # V24 geometry fixes are required: full host box, no aspect-ratio letterbox,
+          # no 250 ms polling watchdog and no loading/background layer behind canvas.
+          grep -Fq 'Adaptive V24 host-aware full-viewport desktop + touch layout.' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'module.setCanvasSize(box.width, box.height)' /tmp/package/openttd-full-viewport.js
+          grep -Fq "bg.style.setProperty('display', 'none', 'important')" /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'MAX_DESKTOP_ASPECT_RATIO' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
+
+          # V25 restores the fast framebuffer presenter that the adaptive native
+          # rebuild accidentally dropped. Canvas2D fallback stays available.
+          grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
+          grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
+          grep -Fq 'Canvas2D fallback' /tmp/package/openttd-runtime.js
+          grep -Fq '__openttdCloudDedupV2' /tmp/package/yandex-bridge.js
+
+          # Autonomous/Yandex-only rules remain unchanged.
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          ! grep -RniF 'early-vehicle-set-0.0.2.grf' /tmp/package
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/openttd-vanilla-migration.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          node --check /tmp/package/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v25_unpacked_bytes=$UNPACKED"
+
+      - name: Create V25 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V25\n'
+              'base_line=verified_V24\n'
+              'desktop_aspect_letterbox_removed=true\n'
+              'desktop_full_host_canvas=true\n'
+              'devtools_resize_recovery=V24_preserved\n'
+              'canvas_polling_watchdog=false\n'
+              'webgl_framebuffer_presenter=true\n'
+              'canvas2d_presenter=fallback_only\n'
+              'yandex_cloud_write_dedup=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'mobile_native_tooltips=false\n'
+              'desktop_native_tooltips=true\n'
+              'v21_newgrf_cleanup_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V25-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V25 adaptive release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v25
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V25.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V25-RESULTS.txt
+          if-no-files-found: error
