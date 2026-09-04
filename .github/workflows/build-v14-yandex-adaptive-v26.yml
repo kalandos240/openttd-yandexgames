@@ -63,7 +63,6 @@ jobs:
           test ! -e /tmp/package/licenses/addons
           test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
 
-          # Existing working mobile/native behavior must remain.
           grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
           grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
           grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
@@ -72,7 +71,6 @@ jobs:
           grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
           grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
 
-          # V26: real child viewport is authoritative. No synthetic host dimensions.
           grep -Fq 'Adaptive V26 exact child-viewport + native-pixel layout.' /tmp/package/openttd-full-viewport.js
           grep -Fq "mode: 'actual-child-viewport'" /tmp/package/openttd-full-viewport.js
           grep -Fq 'module.setCanvasSize(box.width, box.height)' /tmp/package/openttd-full-viewport.js
@@ -84,7 +82,6 @@ jobs:
           ! grep -Fq 'MAX_DESKTOP_ASPECT_RATIO' /tmp/package/openttd-full-viewport.js
           ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
 
-          # V25 WebGL performance remains, but V26 never stretches source pixels.
           grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
           grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
           grep -Fq '__openttdPresenterMismatch' /tmp/package/openttd-runtime.js
@@ -92,7 +89,6 @@ jobs:
           grep -Fq '__otGl.viewport(0,__otViewportY,__otW,__otH)' /tmp/package/openttd-runtime.js
           ! grep -Fq '__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height)' /tmp/package/openttd-runtime.js
 
-          # Yandex-only/autonomous package rules remain unchanged.
           grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
           ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
           ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
@@ -154,3 +150,5 @@ jobs:
             /tmp/out/SHA256SUMS.txt
             /tmp/out/YANDEX-ADAPTIVE-V26-RESULTS.txt
           if-no-files-found: error
+
+# Explicit trigger commit for V26 validation.
