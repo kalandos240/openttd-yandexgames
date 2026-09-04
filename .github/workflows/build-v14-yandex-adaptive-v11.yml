@@ -1,0 +1,144 @@
+name: Build v14 Yandex adaptive desktop-mobile V11
+
+on:
+  push:
+    branches:
+      - feature/v14-mobile-adaptive
+    paths:
+      - 'ci/patch-yandex-adaptive-desktop-v11.py'
+      - '.github/workflows/build-v14-yandex-adaptive-v11.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V10_ARTIFACT_ID: '9923134575'
+
+jobs:
+  build-yandex-adaptive-v11:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout adaptive branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V10 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v10 /tmp/package /tmp/out
+          mkdir -p /tmp/v10 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V10_ARTIFACT_ID}/zip" \
+            -o /tmp/v10-artifact.zip
+          unzip -q /tmp/v10-artifact.zip -d /tmp/v10
+          V10="$(find /tmp/v10 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V10.zip' -print -quit)"
+          test -s "$V10"
+          unzip -q "$V10" -d /tmp/package
+
+      - name: Apply V11 desktop GUI and sticky fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-desktop-v11.py
+          python3 ci/patch-yandex-adaptive-desktop-v11.py /tmp/package
+
+      - name: Validate V11 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-yandex-fixes.js
+          test -s /tmp/package/yandex-bridge.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq "setGlobal('gui_scale', 100);" /tmp/package/openttd-yandex-fixes.js
+          grep -Fq '__openttdStickySuppressionV11' /tmp/package/yandex-bridge.js
+          grep -Fq 'hideBannerAdv' /tmp/package/yandex-bridge.js
+          grep -Fq "hideStickyBanner('sdk-ready')" /tmp/package/yandex-bridge.js
+          grep -Fq "hideStickyBanner('game-api-resume')" /tmp/package/yandex-bridge.js
+          grep -Fq "document.addEventListener('fullscreenchange', hideStickyForViewport" /tmp/package/yandex-bridge.js
+
+          # Preserve V10 startup safety and adaptive platform split.
+          grep -Fq "version: 'V10-wasm-ready-deferred-placement'" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'nativeModule?.calledRun === true' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "window.openttdConfigFilename = 'openttd.cfg';" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "const CONFIG_NAME = 'openttd-mobile.cfg';" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq 'Adaptive V9 desktop + touch viewport.' /tmp/package/openttd-full-viewport.js
+          grep -Fq "if (gestureMode === 'place')" /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'nativePan(p, last)' /tmp/package/openttd-yandex-mobile.js
+
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-full-viewport.js
+          node --check /tmp/package/openttd-runtime.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v11_unpacked_bytes=$UNPACKED"
+
+      - name: Create V11 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V11\n'
+              'base=adaptive-v10\n'
+              'desktop_gui_scale_forced=100\n'
+              'fullscreen_desktop_gui_auto_enlarge=false\n'
+              'sticky_banner_hide_api=true\n'
+              'sticky_banner_hide_method=ysdk.adv.hideBannerAdv\n'
+              'sticky_banner_console_api_mode_required=true\n'
+              'sticky_banner_startup_retries=12\n'
+              'sticky_banner_hide_on_resize=true\n'
+              'sticky_banner_hide_on_fullscreenchange=true\n'
+              'sticky_banner_hide_on_game_api_resume=true\n'
+              'black_screen_startup_fix_preserved=true\n'
+              'mobile_v10_touch_behavior_preserved=true\n'
+              'desktop_native_software_cursor=true\n'
+              'touch_native_software_cursor=false\n'
+              'simpleai_preserved=true\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V11-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V11 adaptive release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v11
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V11.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V11-RESULTS.txt
+          if-no-files-found: error
