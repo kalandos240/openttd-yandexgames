@@ -9,6 +9,8 @@ on:
       - 'crazygames/patch-v28-package-v2.py'
       - 'crazygames/crazygames-bootstrap.js'
       - 'crazygames/crazygames-bridge.js'
+      - 'crazygames/prepare-mobile-homepage-payload.py'
+      - 'crazygames/validate-mobile-homepage.py'
       - 'ci/patch-v14-webgl-runtime.py'
       - '.github/workflows/build-crazygames-v2-fixed.yml'
   workflow_dispatch:
@@ -71,11 +73,26 @@ jobs:
           PY
           bash -n crazygames/build-v2-fixed.sh
 
+      - name: Trim non-gameplay initial payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 crazygames/prepare-mobile-homepage-payload.py legacy
+          bash -n legacy/ci/build-final.sh
+
       - name: Build, validate and package CrazyGames V2
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: bash crazygames/build-v2-fixed.sh
+
+      - name: Validate mobile-homepage initial budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 crazygames/validate-mobile-homepage.py \
+            /tmp/out/OpenTTD-v14-CrazyGames-Adaptive-Desktop-Mobile-V2.zip \
+            | tee /tmp/out/CRAZYGAMES-MOBILE-BUDGET.txt
 
       - name: Upload tested CrazyGames V2
         uses: actions/upload-artifact@v4
@@ -86,4 +103,5 @@ jobs:
             /tmp/out/SHA256SUMS.txt
             /tmp/out/CRAZYGAMES-V2-SIZE.txt
             /tmp/out/CRAZYGAMES-V2-RESULTS.txt
+            /tmp/out/CRAZYGAMES-MOBILE-BUDGET.txt
           if-no-files-found: error
