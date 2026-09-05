@@ -1,0 +1,189 @@
+name: Build v14 Yandex adaptive desktop-mobile V28
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v28-system-cursor
+    paths:
+      - 'ci/patch-yandex-adaptive-package-v28.py'
+      - 'ci/test-yandex-adaptive-v28-cursor.mjs'
+      - '.github/workflows/build-v14-yandex-adaptive-v28.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V27_ARTIFACT_ID: '9958997861'
+
+jobs:
+  build-yandex-adaptive-v28:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout V28 branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V27 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v27 /tmp/package /tmp/out
+          mkdir -p /tmp/v27 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V27_ARTIFACT_ID}/zip" \
+            -o /tmp/v27-artifact.zip
+          unzip -q /tmp/v27-artifact.zip -d /tmp/v27
+          V27="$(find /tmp/v27 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip' -print -quit)"
+          V27_RESULTS="$(find /tmp/v27 -type f -name 'YANDEX-ADAPTIVE-V27-RESULTS.txt' -print -quit)"
+          test -s "$V27"
+          test -s "$V27_RESULTS"
+          grep -Fq 'devtools_close_black_strip_regression_test=PASS' "$V27_RESULTS"
+          grep -Fq 'framebuffer_canvas_1_to_1=true' "$V27_RESULTS"
+          grep -Fq 'webgl_source_pixel_stretch=false' "$V27_RESULTS"
+          unzip -q "$V27" -d /tmp/package
+          cp "$V27_RESULTS" /tmp/v27-base-results.txt
+
+      - name: Apply V28 cursor-only package patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-package-v28.py
+
+          # Prove that V28 changes no packaged file except the adaptive viewport script.
+          find /tmp/package -type f ! -name 'openttd-full-viewport.js' -print0 \
+            | sort -z | xargs -0 sha256sum > /tmp/v28-preserved-before.sha256
+
+          python3 ci/patch-yandex-adaptive-package-v28.py /tmp/package
+
+          find /tmp/package -type f ! -name 'openttd-full-viewport.js' -print0 \
+            | sort -z | xargs -0 sha256sum > /tmp/v28-preserved-after.sha256
+          cmp /tmp/v28-preserved-before.sha256 /tmp/v28-preserved-after.sha256
+
+          node --check /tmp/package/openttd-full-viewport.js
+
+      - name: Run desktop system cursor regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ci/test-yandex-adaptive-v28-cursor.mjs /tmp/package | tee /tmp/v28-cursor-test.txt
+          grep -Fq 'V28_SYSTEM_CURSOR_REGRESSION=PASS' /tmp/v28-cursor-test.txt
+          grep -Fq 'desktop_system_cursor=hidden' /tmp/v28-cursor-test.txt
+          grep -Fq 'openttd_software_cursor=preserved' /tmp/v28-cursor-test.txt
+          grep -Fq 'touch_cursor=hidden' /tmp/v28-cursor-test.txt
+
+      - name: Validate V28 package invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # V27 framebuffer/DevTools recovery stays intact.
+          grep -Fq '_em_openttd_force_window_resize' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_width' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_height' /tmp/package/openttd-runtime.js
+          grep -Fq 'Adaptive V27 host-aware native-framebuffer recovery.' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'resizeDesktopNatively(module, canvas, box.width, box.height)' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'host.nativeResizePending = !exact;' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
+
+          # Exact-pixel WebGL presenter remains unchanged.
+          grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
+          grep -Fq '__openttdPresenterMismatch' /tmp/package/openttd-runtime.js
+          grep -Fq '__otExactPixels' /tmp/package/openttd-runtime.js
+          grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
+          ! grep -Fq '__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height)' /tmp/package/openttd-runtime.js
+
+          # V28: browser/OS cursor must never be enabled over the game canvas.
+          grep -Fq "canvas.style.setProperty('cursor', 'none', 'important');" /tmp/package/openttd-full-viewport.js
+          grep -Fq 'V28: OpenTTD renders its own cursor; suppress the host OS cursor.' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq "canvas.style.setProperty('cursor', box.touchUi ? 'none' : 'auto', 'important');" /tmp/package/openttd-full-viewport.js
+          grep -Fq 'cursor:none!important' /tmp/package/index.html
+
+          # Mobile construction/touch and AI remain exactly the V27 files.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
+
+          # Autonomous/Yandex-only rules remain unchanged.
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          ! grep -RniF 'early-vehicle-set-0.0.2.grf' /tmp/package
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-vanilla-migration.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v28_unpacked_bytes=$UNPACKED"
+
+      - name: Create V28 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          test=Path('/tmp/v28-cursor-test.txt').read_text(encoding='utf-8').strip()
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V28\n'
+              'base_line=verified_V27\n'
+              'desktop_system_cursor_regression_test=PASS\n'
+              'desktop_system_cursor=hidden_over_game_canvas\n'
+              'openttd_software_cursor=preserved\n'
+              'touch_cursor=hidden\n'
+              'v27_devtools_close_regression_preserved=true\n'
+              'framebuffer_canvas_1_to_1=true\n'
+              'webgl_source_pixel_stretch=false\n'
+              'non_viewport_package_files_unchanged=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'v21_newgrf_cleanup_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'gameplay_changes=false\n'
+              'simulation_changes=false\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+              '--- cursor regression output ---\n' + test + '\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V28-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V28 tested release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v28
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V28-RESULTS.txt
+            /tmp/v28-cursor-test.txt
+          if-no-files-found: error
