@@ -36,6 +36,38 @@ jobs:
           ref: fix/direct-file-launch
           path: legacy
 
+      - name: Repair split-check mutation for legacy pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('crazygames/build-v2-fixed.sh')
+          s = p.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r"old_checks = .*?"
+              r"if old_checks not in s:\n"
+              r"    raise SystemExit\('direct-file artifact checks missing'\)\n"
+              r"s = s\.replace\(old_checks, new_checks, 1\)\n",
+              re.S,
+          )
+          replacement = '''for old_line, new_line in (
+              ("test ! -e dist/openttd.wasm", "test -s dist/openttd.wasm"),
+              ("test ! -e dist/openttd.data", "test -s dist/openttd.data"),
+          ):
+              if old_line not in s:
+                  raise SystemExit(f"split artifact assertion missing: {old_line}")
+              s = s.replace(old_line, new_line, 1)
+'''
+          s2, count = pattern.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'Could not repair split-check mutation block, count={count}')
+          p.write_text(s2, encoding='utf-8')
+          PY
+          bash -n crazygames/build-v2-fixed.sh
+
       - name: Build, validate and package CrazyGames V2
         env:
           GH_TOKEN: ${{ github.token }}
