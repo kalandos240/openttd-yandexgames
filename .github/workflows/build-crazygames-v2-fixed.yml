@@ -1,0 +1,54 @@
+name: Build v14 CrazyGames split-runtime V2 fixed
+
+on:
+  push:
+    branches:
+      - port/crazygames-v2-split-runtime
+    paths:
+      - 'crazygames/build-v2-fixed.sh'
+      - 'crazygames/patch-v28-package-v2.py'
+      - 'crazygames/crazygames-bootstrap.js'
+      - 'crazygames/crazygames-bridge.js'
+      - '.github/workflows/build-crazygames-v2-fixed.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V28_ARTIFACT_ID: '9960231016'
+
+jobs:
+  build-crazygames-v2-fixed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout CrazyGames branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Build, validate and package CrazyGames V2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: bash crazygames/build-v2-fixed.sh
+
+      - name: Upload tested CrazyGames V2
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-crazygames-adaptive-desktop-mobile-v2-fixed
+          path: |
+            /tmp/out/OpenTTD-v14-CrazyGames-Adaptive-Desktop-Mobile-V2.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/CRAZYGAMES-V2-SIZE.txt
+            /tmp/out/CRAZYGAMES-V2-RESULTS.txt
+          if-no-files-found: error
