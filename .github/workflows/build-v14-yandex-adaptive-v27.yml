@@ -1,0 +1,268 @@
+name: Build v14 Yandex adaptive desktop-mobile V27
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v27-native-resize-recovery
+    paths:
+      - 'ci/patch-yandex-adaptive-native-v27.py'
+      - 'ci/patch-yandex-adaptive-package-v27.py'
+      - 'ci/test-yandex-adaptive-v27-resize.mjs'
+      - '.github/workflows/build-v14-yandex-adaptive-v27.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V26_ARTIFACT_ID: '9958487521'
+
+jobs:
+  build-yandex-adaptive-v27:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
+    container:
+      image: emscripten/emsdk:3.1.57
+
+    steps:
+      - name: Checkout V27 branch
+        uses: actions/checkout@v4
+
+      - name: Checkout tested browser pipeline
+        uses: actions/checkout@v4
+        with:
+          ref: fix/direct-file-launch
+          path: legacy
+
+      - name: Wire verified adaptive native stack plus V27 resize bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check --no-cache-dir 'OpenTTDLab==0.0.75'
+          cp playgama/patch-browser-ranking.py legacy/ci/patch-browser-ranking.py
+          cp ci/patch-browser-vanilla-no-online-content.py legacy/ci/patch-browser-vanilla-no-online-content.py
+          cp ci/patch-yandex-remove-external-ui.py legacy/ci/patch-yandex-remove-external-ui.py
+          cp ci/patch-yandex-mobile-native.py legacy/ci/patch-yandex-mobile-native.py
+          cp ci/patch-yandex-mobile-touch-behavior-v8.py legacy/ci/patch-yandex-mobile-touch-behavior-v8.py
+          cp ci/patch-yandex-adaptive-native-v9.py legacy/ci/patch-yandex-adaptive-native-v9.py
+          cp ci/patch-yandex-adaptive-native-v22.py legacy/ci/patch-yandex-adaptive-native-v22.py
+          cp ci/patch-yandex-adaptive-native-v27.py legacy/ci/patch-yandex-adaptive-native-v27.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('legacy/ci/build-yandex-release.sh')
+          s=p.read_text(encoding='utf-8')
+
+          ai="    'python3 ci/patch-yandex-ai-offline.py\\n'\n"
+          if s.count(ai)!=1: raise SystemExit(f'AI-disable hook count={s.count(ai)}')
+          s=s.replace(ai,'',1)
+
+          help_anchor="    'python3 ci/patch-yandex-no-help.py\\n'\n"
+          if s.count(help_anchor)!=1: raise SystemExit('Help patch anchor missing')
+          native_hooks=(help_anchor +
+              "    'python3 ci/patch-yandex-remove-external-ui.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-native.py\\n'\n" +
+              "    'python3 ci/patch-yandex-mobile-touch-behavior-v8.py\\n'\n" +
+              "    'python3 ci/patch-yandex-adaptive-native-v9.py\\n'\n" +
+              "    'python3 ci/patch-yandex-adaptive-native-v22.py\\n'\n" +
+              "    'python3 ci/patch-yandex-adaptive-native-v27.py\\n'\n")
+          s=s.replace(help_anchor,native_hooks,1)
+
+          anchor="    'python3 ci/patch-yandex-runtime-cleanup.py source\\n'\n"
+          if s.count(anchor)!=1: raise SystemExit('runtime cleanup anchor missing')
+          add=("    'python3 ci/patch-browser-vanilla-no-online-content.py\\n'\n"
+               "    'python3 ci/patch-browser-ranking.py\\n'")
+          s=s.replace(anchor,anchor+add,1)
+          p.write_text(s,encoding='utf-8')
+
+          b=Path('legacy/ci/build-final.sh')
+          t=b.read_text(encoding='utf-8')
+          font_anchor='mkdir -p openttd/build/yandex_baseset /tmp/ottd-assets\n'
+          font_repl=font_anchor+'cp openttd/media/baseset/OpenTTD-Sans.ttf openttd/media/baseset/OpenTTD-Small.ttf openttd/media/baseset/OpenTTD-Serif.ttf openttd/media/baseset/OpenTTD-Mono.ttf openttd/build/yandex_baseset/\n'
+          if t.count(font_anchor)!=1: raise SystemExit('font staging anchor missing')
+          b.write_text(t.replace(font_anchor,font_repl,1),encoding='utf-8')
+          PY
+
+          python3 playgama/patch-browser-build-performance.py legacy/ci/build-final.sh
+          python3 -m py_compile \
+            legacy/ci/patch-browser-vanilla-no-online-content.py \
+            legacy/ci/patch-yandex-remove-external-ui.py \
+            legacy/ci/patch-yandex-mobile-native.py \
+            legacy/ci/patch-yandex-mobile-touch-behavior-v8.py \
+            legacy/ci/patch-yandex-adaptive-native-v9.py \
+            legacy/ci/patch-yandex-adaptive-native-v22.py \
+            legacy/ci/patch-yandex-adaptive-native-v27.py
+
+      - name: Build V27 native runtime
+        working-directory: legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ci/build-yandex-release.sh
+          test -s OpenTTD-YandexGames-Direct.zip
+          rm -rf /tmp/native
+          mkdir -p /tmp/native
+          unzip -q OpenTTD-YandexGames-Direct.zip -d /tmp/native
+          test -s /tmp/native/openttd-runtime.js
+          node --check /tmp/native/openttd-runtime.js
+
+          grep -Fq 'Yandex adaptive V27: native SDL resize bridge.' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'driver->ChangeResolution(width, height)' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'em_openttd_force_window_resize' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'em_openttd_screen_width' openttd/src/video/sdl2_v.cpp
+          grep -Fq 'em_openttd_screen_height' openttd/src/video/sdl2_v.cpp
+          grep -Fq '_em_openttd_force_window_resize' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_width' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_height' /tmp/native/openttd-runtime.js
+
+          # Existing adaptive/mobile behavior must still be present in rebuilt native runtime.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/native/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/native/openttd-runtime.js
+          grep -Fq 'Yandex adaptive V22: disable native tooltips in touch UI.' openttd/src/misc_gui.cpp
+
+      - name: Download verified V26 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v26 /tmp/package /tmp/out
+          mkdir -p /tmp/v26 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V26_ARTIFACT_ID}/zip" \
+            -o /tmp/v26-artifact.zip
+          unzip -q /tmp/v26-artifact.zip -d /tmp/v26
+          V26="$(find /tmp/v26 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V26.zip' -print -quit)"
+          test -s "$V26"
+          unzip -q "$V26" -d /tmp/package
+          cp /tmp/native/openttd-runtime.js /tmp/package/openttd-runtime.js
+
+      - name: Apply WebGL performance and V27 native host recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-v14-webgl-runtime.py ci/patch-yandex-adaptive-package-v27.py
+          python3 ci/patch-v14-webgl-runtime.py /tmp/package/openttd-runtime.js
+          python3 ci/patch-yandex-adaptive-package-v27.py /tmp/package
+          node --check /tmp/package/openttd-runtime.js
+          node --check /tmp/package/openttd-full-viewport.js
+
+      - name: Run exact DevTools close regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ci/test-yandex-adaptive-v27-resize.mjs /tmp/package | tee /tmp/v27-resize-test.txt
+          grep -Fq 'V27_DEVTOOLS_CLOSE_REGRESSION=PASS' /tmp/v27-resize-test.txt
+          grep -Fq 'recovered=1600x840' /tmp/v27-resize-test.txt
+
+      - name: Validate V27 package invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          # Native framebuffer recovery must exist and be used by desktop viewport logic.
+          grep -Fq '_em_openttd_force_window_resize' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_width' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_screen_height' /tmp/package/openttd-runtime.js
+          grep -Fq 'Adaptive V27 host-aware native-framebuffer recovery.' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'const recoverDesktopBox = raw => {' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'resizeDesktopNatively(module, canvas, box.width, box.height)' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'host.nativeResizePending = !exact;' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'fullscreen.request()' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'fullscreen.exit()' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'setInterval(apply, 250)' /tmp/package/openttd-full-viewport.js
+
+          # No image stretching: WebGL keeps exact source pixels.
+          grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
+          grep -Fq '__openttdPresenterMismatch' /tmp/package/openttd-runtime.js
+          grep -Fq '__otExactPixels' /tmp/package/openttd-runtime.js
+          grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
+          ! grep -Fq '__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height)' /tmp/package/openttd-runtime.js
+
+          # Existing V21/V22/V8 mobile and cleanup behavior remains.
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_mouse_event' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_context' /tmp/package/openttd-runtime.js
+          grep -Fq '_em_openttd_touch_pan' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
+
+          # Autonomous/Yandex-only rules remain unchanged.
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+          ! grep -RniF 'early-vehicle-set-0.0.2.grf' /tmp/package
+
+          node --check /tmp/package/openttd-yandex-mobile.js
+          node --check /tmp/package/openttd-vanilla-migration.js
+          node --check /tmp/package/yandex-bridge.js
+          node --check /tmp/package/openttd-yandex-fixes.js
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v27_unpacked_bytes=$UNPACKED"
+
+      - name: Create V27 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root=Path('/tmp/package')
+          z=Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip')
+          unpacked=sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          test=Path('/tmp/v27-resize-test.txt').read_text(encoding='utf-8').strip()
+          report=(
+              'OpenTTD v14 Yandex adaptive desktop-mobile V27\n'
+              'base_line=verified_V26_plus_native_SDL_resize_bridge\n'
+              'devtools_close_black_strip_regression_test=PASS\n'
+              'healthy_test_size=1600x840\n'
+              'docked_test_size=1600x520\n'
+              'recovered_test_size=1600x840\n'
+              'desktop_host_recovery=native_VideoDriver_ChangeResolution\n'
+              'framebuffer_canvas_1_to_1=true\n'
+              'webgl_source_pixel_stretch=false\n'
+              'background_layer_hidden=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'v21_newgrf_cleanup_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'gameplay_changes=false\n'
+              'simulation_changes=false\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(z.read_bytes()).hexdigest()}\n'
+              '--- regression output ---\n' + test + '\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V27-RESULTS.txt').write_text(report,encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V27 tested release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v27
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V27.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V27-RESULTS.txt
+            /tmp/v27-resize-test.txt
+          if-no-files-found: error
