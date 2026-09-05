@@ -9,6 +9,7 @@ on:
       - 'crazygames/patch-v28-package-v2.py'
       - 'crazygames/crazygames-bootstrap.js'
       - 'crazygames/crazygames-bridge.js'
+      - 'ci/patch-v14-webgl-runtime.py'
       - '.github/workflows/build-crazygames-v2-fixed.yml'
   workflow_dispatch:
 
