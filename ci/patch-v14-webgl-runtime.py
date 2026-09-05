@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Patch the generated SDL2 software framebuffer presenter to a WebGL fast path.
 
-The locator is deliberately independent of Emscripten numeric entry IDs and of
-whether the generated JS uses readable or minified local variable names.
+Supports both the minified SINGLE_FILE glue used by the verified V28 package and
+the normal split Emscripten 3.1.57 JS glue used by CrazyGames V2.  The locator
+is deliberately independent of numeric EM_ASM entry IDs, property quoting and
+local variable names.
 """
 from __future__ import annotations
 
@@ -11,39 +13,138 @@ import re
 from pathlib import Path
 
 
+def _matching_brace(text: str, open_pos: int) -> int:
+    """Return the position of the closing brace for a JS block.
+
+    Generated Emscripten EM_ASM bodies can contain nested functions, strings and
+    comments, so a simple `},<next id>:` boundary is not reliable across output
+    modes.  This small scanner is sufficient for generated JS and deliberately
+    does not try to parse the whole JavaScript grammar.
+    """
+    if open_pos < 0 or open_pos >= len(text) or text[open_pos] != "{":
+        raise ValueError("open_pos is not a JavaScript block")
+
+    depth = 0
+    i = open_pos
+    quote: str | None = None
+    escaped = False
+    line_comment = False
+    block_comment = False
+
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if line_comment:
+            if ch in "\r\n":
+                line_comment = False
+            i += 1
+            continue
+        if block_comment:
+            if ch == "*" and nxt == "/":
+                block_comment = False
+                i += 2
+            else:
+                i += 1
+            continue
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            line_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            block_comment = True
+            i += 2
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+
+    raise SystemExit("Could not locate SDL2 presenter closing brace")
+
+
+def _entry_headers(text: str, start: int, end: int):
+    """Yield supported Emscripten ASM_CONST entry headers in a window."""
+    window = text[start:end]
+    patterns = (
+        # Emscripten optimized output: 123:(a,b,c)=>{
+        re.compile(r"(?:^|[,\{])\s*(\d+)\s*:\s*\(([^)]*)\)\s*=>\s*\{"),
+        # Readable/older output: 123:function(a,b,c){
+        re.compile(r"(?:^|[,\{])\s*(\d+)\s*:\s*function\s*\(([^)]*)\)\s*\{"),
+        # Some post-processors quote numeric object keys.
+        re.compile(r"(?:^|[,\{])\s*['\"](\d+)['\"]\s*:\s*\(([^)]*)\)\s*=>\s*\{"),
+        re.compile(r"(?:^|[,\{])\s*['\"](\d+)['\"]\s*:\s*function\s*\(([^)]*)\)\s*\{"),
+    )
+    hits = []
+    for pattern in patterns:
+        for match in pattern.finditer(window):
+            brace_rel = match.end() - 1
+            hits.append((start + match.start(), start + brace_rel, match.group(1), match.group(2)))
+    return sorted(hits, key=lambda item: item[0])
+
+
 def find_presenter(text: str) -> tuple[int, int, list[str], str, str]:
     """Return body start/end, argument names, original body and entry ID."""
-    candidate = None
-    for hit in re.finditer(r"\.putImageData\(", text):
+    candidates: list[int] = []
+    for hit in re.finditer(r"\.putImageData\s*\(", text):
         pos = hit.start()
-        nearby = text[max(0, pos - 3000):pos]
-        if "Module.SDL2" in nearby and "createImageData" in nearby:
-            candidate = pos
-            break
-    if candidate is None:
-        raise SystemExit("Could not locate SDL2 software framebuffer presenter")
+        nearby = text[max(0, pos - 6000):pos + 512]
+        # SDL2's software presenter always creates ImageData and writes it with
+        # putImageData.  Accept both Module.SDL2 and Module['SDL2'] layouts.
+        if "createImageData" in nearby and "SDL2" in nearby:
+            candidates.append(pos)
 
-    window_start = max(0, candidate - 10000)
-    entries = list(re.finditer(r"(\d+):\(([^)]*)\)=>\{", text[window_start:candidate]))
-    if not entries:
-        raise SystemExit("Could not locate Emscripten entry containing SDL2 presenter")
-    entry = entries[-1]
-    entry_id = entry.group(1)
-    args = [part.strip() for part in entry.group(2).split(",") if part.strip()]
-    if len(args) != 3:
-        raise SystemExit(f"Unexpected SDL2 presenter signature in entry {entry_id}: {args}")
+    if not candidates:
+        # Provide diagnostics in CI rather than silently dropping the fast path.
+        raise SystemExit(
+            "Could not locate SDL2 software framebuffer presenter "
+            f"(putImageData={text.count('.putImageData')}, "
+            f"createImageData={text.count('createImageData')}, SDL2={text.count('SDL2')})"
+        )
 
-    body_start = window_start + entry.end()
-    boundary = re.search(r"\},\d+:", text[candidate:])
-    if boundary is None:
-        raise SystemExit("Could not locate SDL2 presenter end boundary")
-    body_end = candidate + boundary.start()
-    original = text[body_start:body_end]
-    if "Module.SDL2" not in original or ".putImageData(" not in original or "createImageData" not in original:
-        raise SystemExit(f"Resolved wrong Emscripten body for SDL2 presenter entry {entry_id}")
-    if not 400 <= len(original) <= 10000:
-        raise SystemExit(f"Unexpected SDL2 presenter body size in entry {entry_id}: {len(original)}")
-    return body_start, body_end, args, original, entry_id
+    for candidate in candidates:
+        window_start = max(0, candidate - 20000)
+        headers = _entry_headers(text, window_start, candidate)
+        for _, open_brace, entry_id, raw_args in reversed(headers):
+            try:
+                close_brace = _matching_brace(text, open_brace)
+            except (ValueError, SystemExit):
+                continue
+            if not (open_brace < candidate < close_brace):
+                continue
+
+            args = [part.strip() for part in raw_args.split(",") if part.strip()]
+            if len(args) != 3:
+                continue
+            body_start = open_brace + 1
+            body_end = close_brace
+            original = text[body_start:body_end]
+            if (
+                ".putImageData" in original
+                and "createImageData" in original
+                and "SDL2" in original
+                and 250 <= len(original) <= 20000
+            ):
+                return body_start, body_end, args, original, entry_id
+
+    raise SystemExit("Could not resolve Emscripten EM_ASM entry containing SDL2 presenter")
 
 
 def webgl_fast_path(w: str, h: str, pixels: str) -> str:
