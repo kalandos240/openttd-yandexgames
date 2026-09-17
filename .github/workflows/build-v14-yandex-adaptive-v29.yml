@@ -1,0 +1,169 @@
+name: Build v14 Yandex adaptive desktop-mobile V29
+
+on:
+  push:
+    branches:
+      - fix/v14-yandex-adaptive-v29-fullscreen-exit
+    paths:
+      - 'ci/patch-yandex-adaptive-package-v29.py'
+      - 'ci/test-yandex-adaptive-v29-fullscreen-exit.mjs'
+      - '.github/workflows/build-v14-yandex-adaptive-v29.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  V28_ARTIFACT_ID: '9960231016'
+
+jobs:
+  build-yandex-adaptive-v29:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout V29 branch
+        uses: actions/checkout@v4
+
+      - name: Download verified V28 package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v28 /tmp/package /tmp/out
+          mkdir -p /tmp/v28 /tmp/package /tmp/out
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${V28_ARTIFACT_ID}/zip" \
+            -o /tmp/v28-artifact.zip
+          unzip -q /tmp/v28-artifact.zip -d /tmp/v28
+          V28="$(find /tmp/v28 -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V28.zip' -print -quit)"
+          V28_RESULTS="$(find /tmp/v28 -type f -name 'YANDEX-ADAPTIVE-V28-RESULTS.txt' -print -quit)"
+          test -s "$V28"
+          test -s "$V28_RESULTS"
+          grep -Fq 'desktop_system_cursor_regression_test=PASS' "$V28_RESULTS"
+          grep -Fq 'v27_devtools_close_regression_preserved=true' "$V28_RESULTS"
+          grep -Fq 'framebuffer_canvas_1_to_1=true' "$V28_RESULTS"
+          grep -Fq 'webgl_source_pixel_stretch=false' "$V28_RESULTS"
+          unzip -q "$V28" -d /tmp/package
+
+      - name: Apply fullscreen-exit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile ci/patch-yandex-adaptive-package-v29.py
+          find /tmp/package -type f ! -name 'openttd-full-viewport.js' -print0 \
+            | sort -z | xargs -0 sha256sum > /tmp/v29-preserved-before.sha256
+          python3 ci/patch-yandex-adaptive-package-v29.py /tmp/package
+          find /tmp/package -type f ! -name 'openttd-full-viewport.js' -print0 \
+            | sort -z | xargs -0 sha256sum > /tmp/v29-preserved-after.sha256
+          cmp /tmp/v29-preserved-before.sha256 /tmp/v29-preserved-after.sha256
+          node --check /tmp/package/openttd-full-viewport.js
+
+      - name: Run viewport regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node ci/test-yandex-adaptive-v29-fullscreen-exit.mjs /tmp/package | tee /tmp/v29-fullscreen-test.txt
+          grep -Fq 'V29_FULLSCREEN_EXIT_REGRESSION=PASS' /tmp/v29-fullscreen-test.txt
+          grep -Fq 'yandex_parent_fullscreen=PASS' /tmp/v29-fullscreen-test.txt
+          grep -Fq 'bottom_status_bar_viewport=preserved' /tmp/v29-fullscreen-test.txt
+          grep -Fq 'mobile_visual_viewport=preserved' /tmp/v29-fullscreen-test.txt
+
+          node ci/test-yandex-adaptive-v27-resize.mjs /tmp/package | tee /tmp/v27-resize-test.txt
+          grep -Fq 'V27_DEVTOOLS_CLOSE_REGRESSION=PASS' /tmp/v27-resize-test.txt
+
+          node ci/test-yandex-adaptive-v28-cursor.mjs /tmp/package | tee /tmp/v28-cursor-test.txt
+          grep -Fq 'V28_SYSTEM_CURSOR_REGRESSION=PASS' /tmp/v28-cursor-test.txt
+
+      - name: Validate package invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/package/index.html
+          test -s /tmp/package/openttd-runtime.js
+          test -s /tmp/package/openttd-yandex-mobile.js
+          test -s /tmp/package/openttd-full-viewport.js
+          test -s /tmp/package/openttd-vanilla-migration.js
+          test -s /tmp/package/openttd-classic-ai.js
+          test ! -e /tmp/package/addons
+          test ! -e /tmp/package/licenses/addons
+          test "$(find /tmp/package -type f \( -iname '*.grf' -o -iname '*.grf.bin' -o -iname '*.tar.bin' \) | wc -l)" -eq 0
+
+          grep -Fq '_em_openttd_force_window_resize' /tmp/package/openttd-runtime.js
+          grep -Fq 'const isFullscreenLike = (raw, outer) => {' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'if (isFullscreenLike(raw, outer)) return;' /tmp/package/openttd-full-viewport.js
+          grep -Fq 'const compatibleFrame =' /tmp/package/openttd-full-viewport.js
+          ! grep -Fq 'candidate.deltaHeight + 24 < host.baseline.deltaHeight' /tmp/package/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('cursor', 'none', 'important');" /tmp/package/openttd-full-viewport.js
+
+          grep -Fq '__openttdWebGLPresenter' /tmp/package/openttd-runtime.js
+          grep -Fq '__otExactPixels' /tmp/package/openttd-runtime.js
+          grep -Fq 'texSubImage2D' /tmp/package/openttd-runtime.js
+          ! grep -Fq '__otGl.viewport(0,0,__otCanvas.width,__otCanvas.height)' /tmp/package/openttd-runtime.js
+
+          grep -Fq '_em_openttd_set_touch_ui' /tmp/package/openttd-runtime.js
+          grep -Fq 'V8-deferred-fixed-placement' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' /tmp/package/openttd-yandex-mobile.js
+          grep -Fq "['openttd.cfg', 'openttd-mobile.cfg']" /tmp/package/openttd-vanilla-migration.js
+          grep -Fq '/sdk.js' /tmp/package/yandex-bootstrap.js
+          ! grep -RniE 'playgama|playgamma' /tmp/package --include='*.html' --include='*.js' --include='*.json'
+          ! grep -RniE 'https?://' /tmp/package --include='*.html' --include='*.js' --exclude='openttd-runtime.js'
+
+          UNPACKED="$(find /tmp/package -type f -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+          test "$UNPACKED" -lt 100000000
+          echo "adaptive_v29_unpacked_bytes=$UNPACKED"
+
+      - name: Create V29 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd /tmp/package && zip -9 -r /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip .)
+          unzip -t /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip >/dev/null
+          sha256sum /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip | tee /tmp/out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          root = Path('/tmp/package')
+          archive = Path('/tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip')
+          unpacked = sum(p.stat().st_size for p in root.rglob('*') if p.is_file())
+          report = (
+              'OpenTTD v14 Yandex adaptive desktop-mobile V29\n'
+              'base_line=verified_V28\n'
+              'fullscreen_exit_regression_test=PASS\n'
+              'yandex_parent_fullscreen=PASS\n'
+              'document_fullscreen=PASS\n'
+              'bottom_status_bar_viewport=preserved\n'
+              'windowed_native_canvas_css_sync=true\n'
+              'v27_devtools_close_regression_preserved=true\n'
+              'v28_system_cursor_fix_preserved=true\n'
+              'framebuffer_canvas_1_to_1=true\n'
+              'webgl_source_pixel_stretch=false\n'
+              'mobile_visual_viewport_preserved=true\n'
+              'mobile_v8_release_placement_preserved=true\n'
+              'simpleai_preserved=true\n'
+              'gameplay_changes=false\n'
+              'simulation_changes=false\n'
+              'bundled_newgrf_count=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
+          )
+          Path('/tmp/out/YANDEX-ADAPTIVE-V29-RESULTS.txt').write_text(report, encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload V29 tested release
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-yandex-adaptive-desktop-mobile-v29
+          path: |
+            /tmp/out/OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip
+            /tmp/out/SHA256SUMS.txt
+            /tmp/out/YANDEX-ADAPTIVE-V29-RESULTS.txt
+            /tmp/v29-fullscreen-test.txt
+            /tmp/v27-resize-test.txt
+            /tmp/v28-cursor-test.txt
+          if-no-files-found: error
