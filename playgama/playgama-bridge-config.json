@@ -9,8 +9,8 @@
     }
   ],
   "advertisement": {
-    "minimumDelayBetweenInterstitial": 120,
-    "initialInterstitialDelay": 60,
+    "minimumDelayBetweenInterstitial": 150,
+    "initialInterstitialDelay": 150,
     "interstitial": {
       "disable": false
     },
