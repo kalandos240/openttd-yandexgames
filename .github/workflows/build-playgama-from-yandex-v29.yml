@@ -29,7 +29,7 @@ jobs:
 
       - name: Download verified Yandex V29 package
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -37,22 +37,22 @@ jobs:
           mkdir -p /tmp/v29-artifact /tmp/v29-base dist-playgama out
 
           curl -fL --retry 5 --retry-all-errors \
-            -H "Authorization: Bearer \${GH_TOKEN}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/\${GITHUB_REPOSITORY}/actions/artifacts/\${YANDEX_V29_ARTIFACT_ID}/zip" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${YANDEX_V29_ARTIFACT_ID}/zip" \
             -o /tmp/v29-artifact.zip
 
           unzip -q /tmp/v29-artifact.zip -d /tmp/v29-artifact
-          inner="\$(find /tmp/v29-artifact -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip' -print -quit)"
-          report="\$(find /tmp/v29-artifact -type f -name 'YANDEX-ADAPTIVE-V29-RESULTS.txt' -print -quit)"
-          test -s "\$inner"
-          test -s "\$report"
-          grep -Fq 'fullscreen_exit_regression_test=PASS' "\$report"
-          grep -Fq 'v28_system_cursor_fix_preserved=true' "\$report"
-          grep -Fq 'framebuffer_canvas_1_to_1=true' "\$report"
-          grep -Fq 'mobile_visual_viewport_preserved=true' "\$report"
+          inner="$(find /tmp/v29-artifact -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip' -print -quit)"
+          report="$(find /tmp/v29-artifact -type f -name 'YANDEX-ADAPTIVE-V29-RESULTS.txt' -print -quit)"
+          test -s "$inner"
+          test -s "$report"
+          grep -Fq 'fullscreen_exit_regression_test=PASS' "$report"
+          grep -Fq 'v28_system_cursor_fix_preserved=true' "$report"
+          grep -Fq 'framebuffer_canvas_1_to_1=true' "$report"
+          grep -Fq 'mobile_visual_viewport_preserved=true' "$report"
 
-          unzip -q "\$inner" -d /tmp/v29-base
+          unzip -q "$inner" -d /tmp/v29-base
           cp -a /tmp/v29-base/. dist-playgama/
 
       - name: Apply Playgama Bridge v2 platform layer
@@ -110,7 +110,7 @@ jobs:
             openttd-vanilla-migration.js \
             yandex-bridge.js
           do
-            cmp "/tmp/v29-base/\$file" "dist-playgama/\$file"
+            cmp "/tmp/v29-base/$file" "dist-playgama/$file"
           done
 
           grep -Fq 'const isFullscreenLike = (raw, outer) => {' dist-playgama/openttd-full-viewport.js
@@ -138,18 +138,18 @@ jobs:
           print('External URL allowlist PASS:', sorted(found))
           PY
 
-          unpacked_bytes="\$(du -sb dist-playgama | cut -f1)"
-          echo "Unpacked Playgama bytes: \${unpacked_bytes}"
-          test "\${unpacked_bytes}" -lt 300000000
+          unpacked_bytes="$(du -sb dist-playgama | cut -f1)"
+          echo "Unpacked Playgama bytes: ${unpacked_bytes}"
+          test "${unpacked_bytes}" -lt 300000000
 
       - name: Create Playgama V1 archive and report
         shell: bash
         run: |
           set -euo pipefail
           archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip"
-          (cd dist-playgama && zip -9 -X -r "../\${archive}" .)
-          unzip -t "\$archive" >/dev/null
-          sha256sum "\$archive" | tee out/SHA256SUMS.txt
+          (cd dist-playgama && zip -9 -X -r "../${archive}" .)
+          unzip -t "$archive" >/dev/null
+          sha256sum "$archive" | tee out/SHA256SUMS.txt
 
           python3 - <<'PY'
           from pathlib import Path
