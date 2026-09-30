@@ -85,13 +85,14 @@
     await window.bridge.initialize({ configFilePath: './playgama-bridge-config.json' });
     const bridge = window.bridge;
 
-    // Do not hard-code a major Bridge version here. The public JS Core uses the
-    // stable v1 CDN and Playgama can update the stable implementation without a
-    // game rebuild. A previous v2-only assertion caused startup failure.
+    const major = Number.parseInt(String(bridge.version || '2').split('.')[0], 10);
+    if (Number.isFinite(major) && major < 2) {
+      throw new Error(`Playgama Bridge v2+ required, got ${bridge.version}`);
+    }
     document.documentElement.dataset.playgamaBridge = 'ready';
-    document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || 'stable');
+    document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || 'v2');
 
-    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(120); } catch (_) {}
+    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(150); } catch (_) {}
 
     platformAudioEnabled = bridge.platform?.isAudioEnabled !== false;
     if (!platformAudioEnabled) pauseTrackedAudio();
@@ -155,9 +156,12 @@
           try { await bridge.storage?.set?.(String(key), value); } catch (_) {}
         }
       },
+      isAuthorized() {
+        return bridge.player?.isAuthorized === true || bridge.player?.isAuthorizationSupported === false;
+      },
       getMode() { return 'full'; },
-      getUniqueID() { return ''; },
-      getName() { return ''; }
+      getUniqueID() { return String(bridge.player?.id || ''); },
+      getName() { return String(bridge.player?.name || ''); }
     };
     return pseudoPlayer;
   };
@@ -212,6 +216,36 @@
     catch (error) { console.info(`[Playgama] platform message ${message} was not accepted.`, error); }
   };
 
+  const createLeaderboards = (bridge) => ({
+    async setScore(id, score) {
+      if (!bridge.leaderboards?.setScore) throw new Error('Leaderboards are unavailable');
+      return bridge.leaderboards.setScore(String(id), Number(score));
+    },
+    async getEntries(id) {
+      if (!bridge.leaderboards?.getEntries) throw new Error('Leaderboards are unavailable');
+      const rows = await bridge.leaderboards.getEntries(String(id));
+      const list = Array.isArray(rows) ? rows : [];
+      const ownId = bridge.player?.id == null ? null : String(bridge.player.id);
+      let userRank = null;
+      const entries = list.map((row) => {
+        const rank = Number.isFinite(Number(row?.rank)) ? Number(row.rank) : 0;
+        if (ownId !== null && row?.id != null && String(row.id) === ownId) userRank = rank;
+        const name = String(row?.name || 'Player');
+        return {
+          rank,
+          score: Number(row?.score || 0),
+          player: {
+            uniqueID: String(row?.id || ''),
+            publicName: name,
+            getName() { return name; },
+            getAvatarSrc() { return String(row?.photo || ''); }
+          }
+        };
+      });
+      return { entries, userRank };
+    }
+  });
+
   const createSdk = (bridge) => {
     if (pseudoSdk) return pseudoSdk;
     const player = createPlayer(bridge);
@@ -243,6 +277,13 @@
         }
       },
       adv: { showFullscreenAdv: createFullscreenAd(bridge) },
+      leaderboards: createLeaderboards(bridge),
+      auth: {
+        async openAuthDialog() {
+          if (!bridge.player?.authorize) throw new Error('Authorization is unavailable');
+          return bridge.player.authorize({});
+        }
+      },
       async getPlayer() { return player; },
       on(eventName, listener) {
         if (eventName === 'game_api_pause') pauseListeners.add(listener);
@@ -253,27 +294,37 @@
         else if (eventName === 'game_api_resume') resumeListeners.delete(listener);
       },
       isAvailableMethod(methodName) {
+        const method = String(methodName || '');
+        if (method === 'leaderboards.setScore') {
+          return Promise.resolve(typeof bridge.leaderboards?.setScore === 'function');
+        }
+        if (method === 'leaderboards.getEntries') {
+          return Promise.resolve(typeof bridge.leaderboards?.getEntries === 'function');
+        }
         return Promise.resolve(new Set([
           'getPlayer',
           'adv.showFullscreenAdv',
           'features.LoadingAPI.ready',
           'features.GameplayAPI.start',
           'features.GameplayAPI.stop'
-        ]).has(String(methodName || '')));
+        ]).has(method));
       }
     };
 
     window.ysdk = pseudoSdk;
     window.playgamaYandexCompatSdk = pseudoSdk;
+    window.yandexGameLanguage = pseudoSdk.environment.i18n.lang;
     return pseudoSdk;
   };
 
+  window.yandexGamesSDKReady = window.playgamaBridgeReady.then((bridge) => {
+    if (!bridge) return null;
+    return createSdk(bridge);
+  });
+
   window.YaGames = {
     init() {
-      return window.playgamaBridgeReady.then((bridge) => {
-        if (!bridge) throw new Error('Playgama Bridge initialization failed');
-        return createSdk(bridge);
-      });
+      return window.yandexGamesSDKReady;
     }
   };
 
