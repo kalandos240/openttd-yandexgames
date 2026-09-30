@@ -1,0 +1,195 @@
+name: Build Playgama V1 from verified Yandex V29
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - port/playgama-v1-from-yandex-v29-bridge2
+    paths:
+      - 'playgama/package_from_yandex_v29.py'
+      - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-config.json'
+      - '.github/workflows/build-playgama-from-yandex-v29.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  YANDEX_V29_ARTIFACT_ID: '10524282138'
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout independent Playgama branch
+        uses: actions/checkout@v4
+
+      - name: Download verified Yandex V29 package
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/v29-artifact /tmp/v29-base dist-playgama out
+          mkdir -p /tmp/v29-artifact /tmp/v29-base dist-playgama out
+
+          curl -fL --retry 5 --retry-all-errors \
+            -H "Authorization: Bearer \${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/\${GITHUB_REPOSITORY}/actions/artifacts/\${YANDEX_V29_ARTIFACT_ID}/zip" \
+            -o /tmp/v29-artifact.zip
+
+          unzip -q /tmp/v29-artifact.zip -d /tmp/v29-artifact
+          inner="\$(find /tmp/v29-artifact -type f -name 'OpenTTD-v14-Yandex-Adaptive-Desktop-Mobile-V29.zip' -print -quit)"
+          report="\$(find /tmp/v29-artifact -type f -name 'YANDEX-ADAPTIVE-V29-RESULTS.txt' -print -quit)"
+          test -s "\$inner"
+          test -s "\$report"
+          grep -Fq 'fullscreen_exit_regression_test=PASS' "\$report"
+          grep -Fq 'v28_system_cursor_fix_preserved=true' "\$report"
+          grep -Fq 'framebuffer_canvas_1_to_1=true' "\$report"
+          grep -Fq 'mobile_visual_viewport_preserved=true' "\$report"
+
+          unzip -q "\$inner" -d /tmp/v29-base
+          cp -a /tmp/v29-base/. dist-playgama/
+
+      - name: Apply Playgama Bridge v2 platform layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/package_from_yandex_v29.py
+          python3 playgama/package_from_yandex_v29.py dist-playgama \
+            --adapter playgama/playgama-yandex-compat.js \
+            --config playgama/playgama-bridge-config.json
+
+      - name: Validate SDK and preserved V29 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          grep -Fq 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
+          grep -Fq 'playgama-yandex-compat.js' dist-playgama/index.html
+          ! grep -Fq 'yandex-bootstrap.js' dist-playgama/index.html
+          ! grep -Fq '/sdk.js' dist-playgama/index.html
+          test ! -e dist-playgama/yandex-bootstrap.js
+
+          grep -Fq 'Playgama Bridge v2+ required' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'window.yandexGamesSDKReady' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'createLeaderboards' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'openAuthDialog' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'setMinimumDelayBetweenInterstitial?.(150)' dist-playgama/playgama-yandex-compat.js
+          node --check dist-playgama/playgama-yandex-compat.js
+          python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path('dist-playgama/playgama-bridge-config.json').read_text(encoding='utf-8'))
+          ads = cfg['advertisement']
+          assert ads['minimumDelayBetweenInterstitial'] == 150
+          assert ads['initialInterstitialDelay'] == 150
+          assert ads['interstitial']['disable'] is False
+          assert ads['rewarded']['disable'] is True
+          assert ads['banner']['disable'] is True
+          assert cfg['device']['supportedOrientations'] == ['landscape']
+          PY
+
+          for file in \
+            openttd-runtime.js \
+            openttd-yandex-mobile.js \
+            openttd-full-viewport.js \
+            openttd-yandex-fixes.js \
+            openttd-global-ranking.js \
+            openttd-ranking-core.js \
+            openttd-classic-ai.js \
+            openttd-shell-2.js \
+            openttd-yandex-shell-i18n.js \
+            openttd-yandex-web-keys.js \
+            openttd-vanilla-migration.js \
+            yandex-bridge.js
+          do
+            cmp "/tmp/v29-base/\$file" "dist-playgama/\$file"
+          done
+
+          grep -Fq 'const isFullscreenLike = (raw, outer) => {' dist-playgama/openttd-full-viewport.js
+          grep -Fq "canvas.style.setProperty('cursor', 'none', 'important');" dist-playgama/openttd-full-viewport.js
+          grep -Fq '_em_openttd_force_window_resize' dist-playgama/openttd-runtime.js
+          grep -Fq '__openttdWebGLPresenter' dist-playgama/openttd-runtime.js
+          grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' dist-playgama/openttd-yandex-mobile.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          allowed = {'https://bridge.playgama.com/v2/stable/playgama-bridge.js'}
+          found = set()
+          for path in Path('dist-playgama').rglob('*'):
+              if not path.is_file() or path.name == 'openttd-runtime.js':
+                  continue
+              if path.suffix.lower() not in {'.html', '.js', '.json'}:
+                  continue
+              text = path.read_text(encoding='utf-8', errors='ignore')
+              found.update(re.findall(r'https?://[^"\'\s<>]+', text))
+          unexpected = sorted(url for url in found if url not in allowed)
+          if unexpected:
+              raise SystemExit(f'Unexpected external URLs: {unexpected}')
+          print('External URL allowlist PASS:', sorted(found))
+          PY
+
+          unpacked_bytes="\$(du -sb dist-playgama | cut -f1)"
+          echo "Unpacked Playgama bytes: \${unpacked_bytes}"
+          test "\${unpacked_bytes}" -lt 300000000
+
+      - name: Create Playgama V1 archive and report
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip"
+          (cd dist-playgama && zip -9 -X -r "../\${archive}" .)
+          unzip -t "\$archive" >/dev/null
+          sha256sum "\$archive" | tee out/SHA256SUMS.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip')
+          unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
+          report = (
+              'OpenTTD v14 Playgama Desktop-Mobile V1\n'
+              'base=Yandex V29 verified artifact 10524282138\n'
+              'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
+              'playgama_bridge=v2/stable\n'
+              'platform_layer_only=true\n'
+              'v29_runtime_preserved=true\n'
+              'v29_mobile_preserved=true\n'
+              'v29_fullscreen_preserved=true\n'
+              'v29_cursor_preserved=true\n'
+              'v29_ai_preserved=true\n'
+              'v29_localization_preserved=true\n'
+              'interstitial_enabled=true\n'
+              'interstitial_minimum_delay_seconds=150\n'
+              'rewarded_enabled=false\n'
+              'banner_enabled=false\n'
+              'cloud_storage_adapter=true\n'
+              'leaderboard_adapter=true\n'
+              'authorization_adapter=true\n'
+              'unexpected_external_urls=0\n'
+              f'unpacked_file_bytes={unpacked}\n'
+              f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
+          )
+          Path('out/PLAYGAMA-V1-RESULTS.txt').write_text(report, encoding='utf-8')
+          print(report)
+          PY
+
+      - name: Upload Playgama V1
+        uses: actions/upload-artifact@v4
+        with:
+          name: openttd-v14-playgama-desktop-mobile-v1-from-yandex-v29
+          path: |
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip
+            out/PLAYGAMA-V1-RESULTS.txt
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
