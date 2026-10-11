@@ -1,4 +1,4 @@
-# OpenTTD Playgama V4 — based on verified Yandex V29
+# OpenTTD Playgama V5 — based on verified Yandex V29
 
 This is **not** the old Playgama v10 runtime. The active release pipeline is
 `.github/workflows/build-playgama-from-yandex-v29.yml`, running on branch
@@ -10,12 +10,16 @@ This is **not** the old Playgama v10 runtime. The active release pipeline is
 - Source artifact ID: `10524282138` (expires 2026-12-16). Source commit:
   `646b534248c8984c5cac97fbdf5c63f14e5d09ed`.
 - The action downloads that exact artifact, validates the original V29 QA
-  report and verifies unchanged runtime, fullscreen, cursor, touch,
-  localization, AI and OpenTTD shell files with `cmp`.
-- The Playgama packaging script changes only the SDK bootstrap and adds the
-  adapter/config. It removes `yandex-bootstrap.js` and the Yandex-only
-  integration notice. A missing Yandex V29 source artifact **fails the build**
-  instead of substituting an older runtime.
+  report and verifies fullscreen, cursor, touch, localization, AI and shell
+  gameplay files byte-for-byte with `cmp`. The large Emscripten runtime
+  differs in **exactly two literal startup timeouts**, checked against the
+  original source by `playgama/patch_v29_startup_timeout.py`. Gameplay,
+  rendering logic and WASM content remain unchanged.
+- Playgama packaging replaces the Yandex SDK bootstrap, adds the
+  Bridge adapter/config/cloud-save module, and narrowly patches the ad policy,
+  unsupported leaderboard response, and two runtime startup timeouts.
+  A missing original Yandex V29 artifact **fails the build** instead of
+  substituting an older runtime.
 
 ## Playgama SDK mapping
 
@@ -42,7 +46,7 @@ preserves falsy values such as `0`, omits absent keys, and **propagates
 failed reads/writes** instead of quietly returning an empty save or pretending
 that a failed upload succeeded.
 
-**V4 cloud save upgrade (experimental):** the new module is loaded
+**V5 cloud save upgrade (experimental):** the new module is loaded
 after `yandex-bridge.js` and replaces ONLY the Yandex
 `yandexRestoreOpenTTDCloud`/`yandexBackupOpenTTDCloud` hooks.
 It removes the previous 120,000-byte client upload ceiling by encoding the
@@ -50,11 +54,20 @@ It removes the previous 120,000-byte client upload ceiling by encoding the
 chunks. It keeps two independent metadata generations (slots A/B),
 writes all chunks before their commit marker, validates size and CRC32 on
 restore, and falls back to the previous valid slot if the latest is corrupt.
-Writes are debounced and serialized; unchanged files are not uploaded again.
+Writes are debounced and serialized; unchanged files/config are not uploaded
+again. The module refuses to overwrite a newer cloud save from an older
+local session, bounds malformed cloud metadata, and retries storage-capability
+detection when a player authorizes cloud storage after startup.
 A 64 MiB **client memory-safety ceiling** applies (not a Playgama quota).
 
-Startup cloud restore is limited to a 6.5-second budget, after which the
-game continues with existing local IDBFS progress. Existing V29
+Startup cloud restore is limited to a **6.5-second budget**. The original
+Yandex V29 Emscripten startup would give up on cloud restore after 2.5 seconds,
+which could allow a slow cloud response to write into the already-running
+game. V5 changes that outer timeout to **8.5 seconds** and the native
+filesystem/watchdog timeout from 8 to **14 seconds**. Both edits are
+mechanically verified as the ONLY compiled JS runtime differences from V29.
+An expired 6.5-second cloud request does not restore local files after
+gameplay has started; the game instead continues with local IDBFS progress. Existing V29
 `openttdSaveV1`, `openttdConfigV1`, and `openttdMobileConfigV1`
 records can be imported. Cloud synchronization is attempted only when
 Playgama `platform_internal` storage is both supported and available.
@@ -71,7 +84,7 @@ large save files, reload and cross-device restores with the Playgama QA tool.
 
 ### Ads and ranking
 
-Interstitial minimum/initial delays are both 150 seconds. The Playgama V4
+Interstitial minimum/initial delays are both 150 seconds. The Playgama V5
 package removes the Yandex V29 timer that could interrupt active gameplay
 after 150 seconds. Instead, after sufficient gameplay, the existing
 `yandexGameSetGameplay(false)` path requests ads only when returning to
@@ -80,7 +93,7 @@ against the Yandex V29 source and dynamically tested in Node VM.
 Pause/resume/audio restoration must
 be verified during Playgama QA. Rewarded ads and in-game banners are disabled.
 The adapter reports leaderboard methods as available only if the active
-platform supports the relevant leaderboard type. The V4 shell displays an
+platform supports the relevant leaderboard type. The V5 shell displays an
 offline status instead of attempting an unsupported leaderboard fetch. Playgama's native
 `playgama` adapter does not provide ordinary `in_game` leaderboards by
 default; optional SaaS leaderboards require separate configuration.
@@ -104,8 +117,10 @@ default; optional SaaS leaderboards require separate configuration.
 CI runs `node playgama/test-playgama-bridge-v2.cjs`,
 `node playgama/test-v29-natural-break-ads.cjs`, and
 `node playgama/test-v29-chunked-cloud.cjs` (large-save round trip,
-failed write, corrupted slot, old-format import and offline fallback).
-It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip`
+failed write, corrupted slot, malformed metadata, old-format import, stale
+offline saves, timed-out responses, authorization recovery, and local fallback).
+The byte-exact native timeout patch is also validated by Python in CI.
+It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V5-from-Yandex-V29.zip`
 plus SHA-256 and results report. **A successful CI run is not equivalent to
 passing the hosted Playgama QA/moderation tests.**
 
