@@ -1,4 +1,4 @@
-name: Build Playgama V3 from verified Yandex V29
+name: Build Playgama V4 from verified Yandex V29
 
 on:
   workflow_dispatch:
@@ -11,6 +11,8 @@ on:
       - 'playgama/test-playgama-bridge-v2.cjs'
       - 'playgama/patch_v29_playgama_breaks.py'
       - 'playgama/test-v29-natural-break-ads.cjs'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/test-v29-chunked-cloud.cjs'
       - 'playgama/playgama-bridge-config.json'
       - '.github/workflows/build-playgama-from-yandex-v29.yml'
 
@@ -65,7 +67,8 @@ jobs:
           python3 -m py_compile playgama/package_from_yandex_v29.py
           python3 playgama/package_from_yandex_v29.py dist-playgama \
             --adapter playgama/playgama-yandex-compat.js \
-            --config playgama/playgama-bridge-config.json
+            --config playgama/playgama-bridge-config.json \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js
 
       - name: Apply verified V29 Playgama natural-break and leaderboard fixes
         shell: bash
@@ -85,6 +88,9 @@ jobs:
           node --check dist-playgama/yandex-bridge.js
           node --check dist-playgama/openttd-global-ranking.js
           node playgama/test-v29-natural-break-ads.cjs dist-playgama/yandex-bridge.js
+          node --check dist-playgama/openttd-playgama-cloud-saves.js
+          node --check playgama/test-v29-chunked-cloud.cjs
+          node playgama/test-v29-chunked-cloud.cjs
 
       - name: Validate SDK and preserved V29 runtime
         shell: bash
@@ -96,11 +102,18 @@ jobs:
           ! grep -Fq 'yandex-bootstrap.js' dist-playgama/index.html
           ! grep -Fq '/sdk.js' dist-playgama/index.html
           test ! -e dist-playgama/yandex-bootstrap.js
+          test -s dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq '<script src="yandex-bridge.js"></script><script src="openttd-playgama-cloud-saves.js"></script>' dist-playgama/index.html
+          grep -Fq 'window.yandexRestoreOpenTTDCloud = async function(FS, personalDir)' dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq 'window.yandexBackupOpenTTDCloud = function(FS, personalDir)' dist-playgama/openttd-playgama-cloud-saves.js
 
           grep -Fq 'Playgama Bridge v2+ required' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'window.yandexGamesSDKReady' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'createLeaderboards' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'bridge.storage.get(requested)' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'info.bridge.storage.get(requested, info.type)' dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq 'info.bridge.storage.set(keyList, valueList, info.type)' dist-playgama/openttd-playgama-cloud-saves.js
+
           grep -Fq 'await bridge.storage.set(' dist-playgama/playgama-yandex-compat.js
           ! grep -Fq 'bridge.storage?.get?.(String(key))' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'openAuthDialog' dist-playgama/playgama-yandex-compat.js
@@ -169,11 +182,11 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama V3 archive and report
+      - name: Create Playgama V4 archive and report
         shell: bash
         run: |
           set -euo pipefail
-          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V3-from-Yandex-V29.zip"
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip"
           (cd dist-playgama && zip -9 -X -r "../${archive}" .)
           unzip -t "$archive" >/dev/null
           sha256sum "$archive" | tee out/SHA256SUMS.txt
@@ -181,10 +194,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V3-from-Yandex-V29.zip')
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip')
           unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
           report = (
-              'OpenTTD v14 Playgama Desktop-Mobile V3\n'
+              'OpenTTD v14 Playgama Desktop-Mobile V4\n'
               'base=Yandex V29 verified artifact 10524282138\n'
               'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
               'playgama_bridge=v2/stable\n'
@@ -206,21 +219,24 @@ jobs:
               'ad_policy=natural_break_only\n'
               'unsupported_leaderboard_status=offline\n'
               'v29_shell_patch_exact_delta=PASS\n'
+              'cloud_save_chunking=experimental_64KiB_A_B_CRC32\n'
+              'cloud_save_large_file_offline_and_corruption_tests=PASS\n'
+              'cloud_save_startup_budget_ms=6500\n'
               'unexpected_external_urls=0\n'
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
           )
-          Path('out/PLAYGAMA-V3-RESULTS.txt').write_text(report, encoding='utf-8')
+          Path('out/PLAYGAMA-V4-RESULTS.txt').write_text(report, encoding='utf-8')
           print(report)
           PY
 
-      - name: Upload Playgama V3
+      - name: Upload Playgama V4
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-v14-playgama-desktop-mobile-v3-from-yandex-v29
+          name: openttd-v14-playgama-desktop-mobile-v4-from-yandex-v29
           path: |
-            out/OpenTTD-v14-Playgama-Desktop-Mobile-V3-from-Yandex-V29.zip
-            out/PLAYGAMA-V3-RESULTS.txt
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip
+            out/PLAYGAMA-V4-RESULTS.txt
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90
