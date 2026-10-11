@@ -1,4 +1,4 @@
-# OpenTTD Playgama V7 — based on verified Yandex V29
+# OpenTTD Playgama V8 — based on verified Yandex V29
 
 This is **not** the old Playgama v10 runtime. The active release pipeline is
 `.github/workflows/build-playgama-from-yandex-v29.yml`, running on branch
@@ -14,7 +14,8 @@ This is **not** the old Playgama v10 runtime. The active release pipeline is
   gameplay files byte-for-byte with `cmp`. The large Emscripten JS runtime differs in the **two startup timeouts**
   and one profile-driven framebuffer upload throttle, all byte-exact
   checked against original V29 with `playgama/patch_v29_startup_timeout.py`
-  and `playgama/patch_v29_frame_upload.py`. Native WASM and game simulation
+  and `playgama/patch_v29_frame_upload.py`, plus a minimal SDK-independent
+  startup guard verified by `playgama/patch_v29_nonblocking_startup.py`. Native WASM and game simulation
   remain unchanged.
 - Playgama packaging replaces the Yandex SDK bootstrap, adds the
   Bridge adapter/config/cloud-save module, and narrowly patches the ad policy,
@@ -22,6 +23,33 @@ This is **not** the old Playgama v10 runtime. The active release pipeline is
   WebGL texture upload throttling guard.
   A missing original Yandex V29 artifact **fails the build** instead of
   substituting an older runtime.
+
+## Cold first launch reliability (V8)
+
+On a fresh Playgama sandbox visit, external SDK delivery may be slow or
+blocked. The SDK is now inserted asynchronously by the local
+`playgama-bridge-loader.js`, and the verified Emscripten runtime no longer
+waits for the platform SDK before releasing native startup. If Bridge finishes
+after `Module.calledRun`, the adapter sends the previously missed
+`game_ready` event.
+
+The cloud module waits at most **1.8 seconds** for Bridge initialization
+before falling back to local IndexedDB, without clearing existing saves.
+It combines six cloud metadata/configuration keys into **one** Bridge
+storage request at cold launch, instead of multiple serial calls. The
+independent cloud read/restore deadline remains 6.5 seconds, and the
+filesystem startup watchdog in V7/V8 is 30 seconds to tolerate first-time
+IndexedDB and WASM initialization.
+
+`node playgama/test-v29-first-launch.cjs` tests a hanging SDK request,
+later successful SDK load and `game_ready`, rejected SDK download, and
+the single batched first-launch cloud lookup. The runtime SDK-gate bypass
+is byte-exact checked against the frozen Yandex V29 baseline by
+`playgama/patch_v29_nonblocking_startup.py`.
+
+**Outstanding:** verify an actual first Playgama visit with an empty browser
+profile, blocked third-party cookies and slow network throttling; automated
+contract tests alone do not establish real-browser compatibility.
 
 ## Playgama SDK mapping
 
@@ -48,7 +76,7 @@ preserves falsy values such as `0`, omits absent keys, and **propagates
 failed reads/writes** instead of quietly returning an empty save or pretending
 that a failed upload succeeded.
 
-**V7 cloud save upgrade (experimental):** the new module is loaded
+**V8 cloud save upgrade (experimental):** the new module is loaded
 after `yandex-bridge.js` and replaces ONLY the Yandex
 `yandexRestoreOpenTTDCloud`/`yandexBackupOpenTTDCloud` hooks.
 It removes the previous 120,000-byte client upload ceiling by encoding the
@@ -86,7 +114,7 @@ large save files, reload and cross-device restores with the Playgama QA tool.
 
 ### Ads and ranking
 
-Interstitial minimum/initial delays are both **180 seconds**. The Playgama V7
+Interstitial minimum/initial delays are both **180 seconds**. The Playgama V8
 package removes the Yandex V29 timer that could interrupt active gameplay
 after 180 seconds. Instead, after at least three minutes of active gameplay, the existing
 `yandexGameSetGameplay(false)` path requests ads only when returning to
@@ -95,7 +123,7 @@ against the Yandex V29 source and dynamically tested in Node VM.
 Pause/resume/audio restoration must
 be verified during Playgama QA. Rewarded ads and in-game banners are disabled.
 The adapter reports leaderboard methods as available only if the active
-platform supports the relevant leaderboard type. The V7 shell displays an
+platform supports the relevant leaderboard type. The V8 shell displays an
 offline status instead of attempting an unsupported leaderboard fetch. Playgama's native
 `playgama` adapter does not provide ordinary `in_game` leaderboards by
 default; optional SaaS leaderboards require separate configuration.
@@ -175,7 +203,7 @@ CI runs `node playgama/test-playgama-bridge-v2.cjs`,
 failed write, corrupted slot, malformed metadata, old-format import, stale
 offline saves, timed-out responses, authorization recovery, and local fallback).
 The byte-exact native timeout patch and frame-upload patch are validated by Python; an executable JavaScript test confirms high-refresh uploads are capped and window resizes bypass the cap.
-It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V7-from-Yandex-V29.zip`
+It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip`
 plus SHA-256 and results report. **A successful CI run is not equivalent to
 passing the hosted Playgama QA/moderation tests.**
 
