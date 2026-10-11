@@ -8,6 +8,7 @@ on:
     paths:
       - 'playgama/package_from_yandex_v29.py'
       - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-loader.js'
       - 'playgama/test-playgama-bridge-v2.cjs'
       - 'playgama/patch_v29_playgama_breaks.py'
       - 'playgama/patch_v29_startup_timeout.py'
@@ -70,6 +71,7 @@ jobs:
           python3 -m py_compile playgama/package_from_yandex_v29.py
           python3 playgama/package_from_yandex_v29.py dist-playgama \
             --adapter playgama/playgama-yandex-compat.js \
+            --bridge-loader playgama/playgama-bridge-loader.js \
             --config playgama/playgama-bridge-config.json \
             --cloud-saves playgama/openttd-playgama-cloud-saves.js
 
@@ -101,6 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          node --check playgama/playgama-bridge-loader.js
           node --check playgama/playgama-yandex-compat.js
           node --check playgama/test-playgama-bridge-v2.cjs
           node playgama/test-playgama-bridge-v2.cjs
@@ -118,7 +121,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          grep -Fq 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
+          grep -Fq '<script src="playgama-bridge-loader.js"></script>' dist-playgama/index.html
+          grep -Fq 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/playgama-bridge-loader.js
           grep -Fq 'playgama-yandex-compat.js' dist-playgama/index.html
           ! grep -Fq 'yandex-bootstrap.js' dist-playgama/index.html
           ! grep -Fq '/sdk.js' dist-playgama/index.html
