@@ -134,7 +134,7 @@ async function main() {
   backend.failKey='openttdSaveChunkV2A_';
   fs2.writeFile(dir+'transport.sav',third);
   await app.save();
-  assert.equal(app.status().backup?.state,'uploaded',false);
+  assert.notEqual(app.status().backup?.state,'uploaded');
   assert.match(app.status().error,/simulated interrupted write/);
   assert.equal(backend.map.get('openttdSaveMetaV2A').slot,'a');
   backend.failKey=null;
