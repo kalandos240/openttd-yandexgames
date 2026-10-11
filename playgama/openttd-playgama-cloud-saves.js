@@ -29,6 +29,8 @@
   const MAX_SAVE_BYTES = 64 * 1024 * 1024; // browser safety guard, not a platform quota
   const CLOUD_DEBOUNCE_MS = 2500;
   const CLOUD_MIN_WRITE_MS = 10000;
+  const RESTORE_STARTUP_BUDGET_MS = 6500;
+  const STORAGE_REQUEST_TIMEOUT_MS = 5000;
 
   let cloudTimer = 0;
   let cloudWriteInFlight = false;
@@ -38,6 +40,22 @@
   let latestRemoteMeta = null;
 
   const bridgeReady = window.playgamaBridgeReady || Promise.resolve(window.bridge || null);
+
+  function deadlinePromise(promise, timeoutMs) {
+    let timeoutId;
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Playgama storage request timeout')), Math.max(1, timeoutMs));
+      }),
+    ]).finally(() => clearTimeout(timeoutId));
+  }
+
+  function remainingBudget(deadline) {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error('Playgama cloud restore exceeded startup budget');
+    return Math.min(left, STORAGE_REQUEST_TIMEOUT_MS);
+  }
 
   function ensureDir(FS, path) {
     let current = '';
@@ -147,53 +165,37 @@
     return storageInfoPromise;
   }
 
-  async function storageGet(keys) {
+  // Bridge v2 requires array arguments even for a single key. A rejected
+  // read/write is NEVER a successful cloud save: keep the last committed slot.
+  async function storageGet(keys, deadline) {
     const info = await resolveStorageInfo();
     if (!info) return Array.isArray(keys) ? [] : null;
-    const { bridge, type } = info;
-    const requested = Array.isArray(keys) ? keys : [keys];
+    const requested = (Array.isArray(keys) ? keys : [keys]).map(String);
     if (!requested.length) return Array.isArray(keys) ? [] : null;
-
-    try {
-      const result = await bridge.storage.get(requested.length === 1 ? requested[0] : requested, type);
-      if (requested.length === 1) return result;
-      if (Array.isArray(result)) return result;
-    } catch (error) {
-      if (requested.length === 1) throw error;
+    const timeout = deadline ? remainingBudget(deadline) : STORAGE_REQUEST_TIMEOUT_MS;
+    const values = await deadlinePromise(
+      info.bridge.storage.get(requested, info.type), timeout);
+    if (!Array.isArray(values) || values.length !== requested.length) {
+      throw new Error('Playgama storage returned a malformed result');
     }
-
-    const values = [];
-    for (const key of requested) values.push(await bridge.storage.get(key, type));
-    return values;
+    return Array.isArray(keys) ? values : values[0];
   }
 
   async function storageSet(keys, values) {
     const info = await resolveStorageInfo();
     if (!info) return false;
-    const { bridge, type } = info;
-    const keyList = Array.isArray(keys) ? keys : [keys];
+    const keyList = (Array.isArray(keys) ? keys : [keys]).map(String);
     const valueList = Array.isArray(keys) ? values : [values];
     if (keyList.length !== valueList.length) throw new Error('Cloud storage key/value length mismatch');
-
-    if (keyList.length === 1) {
-      await bridge.storage.set(keyList[0], valueList[0], type);
-      return true;
-    }
-
-    try {
-      await bridge.storage.set(keyList, valueList, type);
-      return true;
-    } catch (error) {
-      console.info('[Playgama/OpenTTD] Batched storage.set failed; retrying sequentially.', error);
-      for (let i = 0; i < keyList.length; i++) {
-        await bridge.storage.set(keyList[i], valueList[i], type);
-      }
-      return true;
-    }
+    if (!keyList.length) return true;
+    await deadlinePromise(
+      info.bridge.storage.set(keyList, valueList, info.type),
+      STORAGE_REQUEST_TIMEOUT_MS);
+    return true;
   }
 
-  async function readSlotMetas() {
-    const values = await storageGet([SLOT_META.a, SLOT_META.b]);
+  async function readSlotMetas(deadline) {
+    const values = await storageGet([SLOT_META.a, SLOT_META.b], deadline);
     const metas = [];
     for (let i = 0; i < 2; i++) {
       const slot = i === 0 ? 'a' : 'b';
@@ -213,10 +215,11 @@
     if (!meta || !save) return false;
     const localName = save.path.split('/').pop();
     const localMtime = statTime(save.stat);
-    return meta.name === localName && Number(meta.size) === Number(bytesLength) && Number(meta.mtime) === Number(localMtime);
+    return meta.name === localName && Number(meta.size) === Number(bytesLength) &&
+      Number(meta.mtime) === Number(localMtime) && meta.crc32 === crc32(save.bytes);
   }
 
-  async function readSlotBytes(meta) {
+  async function readSlotBytes(meta, deadline) {
     const keys = [];
     for (let i = 0; i < meta.chunks; i++) {
       keys.push(CHUNK_PREFIX[meta.slot] + String(i).padStart(4, '0'));
@@ -225,7 +228,7 @@
     const chunks = new Array(keys.length);
     for (let start = 0; start < keys.length; start += READ_BATCH) {
       const batchKeys = keys.slice(start, start + READ_BATCH);
-      const values = await storageGet(batchKeys);
+      const values = await storageGet(batchKeys, deadline);
       const batchValues = Array.isArray(values) ? values : [values];
       for (let i = 0; i < batchKeys.length; i++) {
         if (typeof batchValues[i] !== 'string' || !batchValues[i].length) {
@@ -249,7 +252,7 @@
     return bytes;
   }
 
-  async function restoreV2Save(FS, personalDir, metas) {
+  async function restoreV2Save(FS, personalDir, metas, deadline) {
     const localSave = newestSave(FS, personalDir);
     const localMtime = localSave ? statTime(localSave.stat) : 0;
 
@@ -257,7 +260,8 @@
       const cloudMtime = Number(meta.mtime || meta.updatedAt || 0);
       if (localSave && localMtime >= cloudMtime) return false;
       try {
-        const bytes = await readSlotBytes(meta);
+        const bytes = await readSlotBytes(meta, deadline);
+        remainingBudget(deadline); // Never write a late cloud restore into a live game.
         const saveDir = personalDir + '/save';
         ensureDir(FS, saveDir);
         const name = safeSaveName(meta.name);
@@ -277,7 +281,7 @@
     return false;
   }
 
-  function restoreLegacySave(FS, personalDir, legacy) {
+  function restoreLegacySave(FS, personalDir, legacy, deadline) {
     if (!legacy || Number(legacy.version) !== 1 || !legacy.data || !legacy.name) return false;
     try {
       const localSave = newestSave(FS, personalDir);
@@ -286,6 +290,7 @@
       if (localSave && localMtime >= cloudMtime) return false;
       const bytes = base64ToBytes(legacy.data);
       if (!bytes.length || bytes.length > MAX_SAVE_BYTES) return false;
+      remainingBudget(deadline);
       const saveDir = personalDir + '/save';
       ensureDir(FS, saveDir);
       const name = safeSaveName(legacy.name);
@@ -342,7 +347,7 @@
 
     const metas = await readSlotMetas();
     const current = metas[0] || latestRemoteMeta;
-    if (metaMatchesLocal(current, save, bytes.length)) {
+    if (metaMatchesLocal(current, { ...save, bytes }, bytes.length)) {
       return { state: 'unchanged', bytes: bytes.length };
     }
 
@@ -418,43 +423,40 @@
   }
 
   window.yandexRestoreOpenTTDCloud = async function(FS, personalDir) {
-    const info = await Promise.race([
-      resolveStorageInfo(),
-      new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
-    ]);
-    if (!info) return;
-
+    const deadline = Date.now() + RESTORE_STARTUP_BUDGET_MS;
     try {
-      const configValues = await storageGet([CONFIG_KEY, LEGACY_CONFIG_KEY]);
+      const info = await deadlinePromise(resolveStorageInfo(), remainingBudget(deadline));
+      if (!info) {
+        window.__openttdPlaygamaCloudStatus = { available: false, reason: 'platform_internal unavailable; local IDBFS active' };
+        return;
+      }
+      const configValues = await storageGet(
+        [CONFIG_KEY, LEGACY_CONFIG_KEY, 'openttdMobileConfigV1'], deadline);
       if (Array.isArray(configValues)) {
         restoreConfig(FS, personalDir, configValues[0]);
-        if (!configValues[0]) restoreConfig(FS, personalDir, configValues[1]);
+        if (!configValues[0]) restoreConfig(FS, personalDir, configValues[2] || configValues[1]);
       }
 
-      const metas = await readSlotMetas();
+      const metas = await readSlotMetas(deadline);
       let restored = false;
-      if (metas.length) restored = await restoreV2Save(FS, personalDir, metas);
+      if (metas.length) restored = await restoreV2Save(FS, personalDir, metas, deadline);
 
       if (!restored && !metas.length) {
-        const legacy = await storageGet(LEGACY_SAVE_KEY);
-        restored = restoreLegacySave(FS, personalDir, legacy);
+        const legacy = await storageGet(LEGACY_SAVE_KEY, deadline);
+        restored = restoreLegacySave(FS, personalDir, legacy, deadline);
       }
 
       if (restored) {
-        // The restored bytes are already visible in MEMFS. Persist them only
-        // after OpenTTD entered main so a cold IDBFS populate is never followed
-        // immediately by another database transaction during startup.
+        // MEMFS contains the restored save; flush only after native OpenTTD
+        // starts so a second IDBFS operation cannot block cold startup.
         persistRestoredStateAfterStartup(FS);
       }
       window.__openttdPlaygamaCloudStatus = {
-        available: true,
-        restored,
-        version: CLOUD_VERSION,
-        latest: latestRemoteMeta,
+        available: true, restored, version: CLOUD_VERSION, latest: latestRemoteMeta,
       };
     } catch (error) {
-      window.__openttdPlaygamaCloudStatus = { available: true, restored: false, error: String(error) };
-      console.warn('[Playgama/OpenTTD] Cloud restore failed; local IndexedDB save remains available.', error);
+      window.__openttdPlaygamaCloudStatus = { available: false, restored: false, error: String(error) };
+      console.warn('[Playgama/OpenTTD] Cloud restore skipped; local IndexedDB save remains intact.', error);
     }
   };
 
