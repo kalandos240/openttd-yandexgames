@@ -72,12 +72,17 @@ def verify_exact_delta(pristine: Path, patched: Path) -> None:
     for name, before, after in (
         ('yandex-bridge.js', OLD_AD, NEW_AD),
         ('openttd-global-ranking.js', OLD_RANK, NEW_RANK),
-        ('index.html', OLD_COMMENT, NEW_COMMENT),
     ):
         expected = (pristine/name).read_text(encoding='utf-8').replace(before, after, 1)
         actual = (patched/name).read_text(encoding='utf-8')
         if expected != actual:
             raise SystemExit(f'Unexpected Playgama customization outside approved patch: {name}')
+    # HTML also contains the independently verified SDK bootstrap replacement.
+    from package_from_yandex_v29 import patch_index
+    original_html = (pristine/'index.html').read_text(encoding='utf-8')
+    expected_html = patch_index(original_html).replace(OLD_COMMENT, NEW_COMMENT, 1)
+    if (patched/'index.html').read_text(encoding='utf-8') != expected_html:
+        raise SystemExit('Unexpected V29 HTML change beyond SDK/bootstrap/comment replacements')
     assert_patched(patched)
 
 
