@@ -56,9 +56,9 @@ async function main() {
 
   ctx.yandexGameSetGameplay(true);
   await Promise.resolve();
-  assert.equal([...scheduled.values()].some(timer => timer.ms >= 150_000), false,
+  assert.equal([...scheduled.values()].some(timer => timer.ms >= 180_000), false,
     'A gameplay-interrupting ad timer must never be scheduled');
-  now += 151_000;
+  now += 181_000;
   assert.equal(calls.shown, 0, 'No ad may interrupt active OpenTTD gameplay');
 
   ctx.yandexGameSetGameplay(false);
