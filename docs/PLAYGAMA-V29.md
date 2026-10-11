@@ -1,4 +1,4 @@
-# OpenTTD Playgama V2 — based on verified Yandex V29
+# OpenTTD Playgama V3 — based on verified Yandex V29
 
 This is **not** the old Playgama v10 runtime. The active release pipeline is
 `.github/workflows/build-playgama-from-yandex-v29.yml`, running on branch
@@ -42,6 +42,13 @@ preserves falsy values such as `0`, omits absent keys, and **propagates
 failed reads/writes** instead of quietly returning an empty save or pretending
 that a failed upload succeeded.
 
+**Known limitation of Yandex V29 inherited by this port:** the original
+`yandex-bridge.js` only uploads a newest `.sav` up to **120,000 bytes** to
+the platform storage. Larger saves are still persisted in IndexedDB locally,
+but **cross-device cloud transfer of these files is not yet implemented**.
+Do not describe large-save cloud sync as working until chunked uploads and
+a bounded-time restore are implemented and tested on real Playgama accounts.
+
 Browser-local OpenTTD persistence is inherited from the V29 runtime. The
 automated tests verify SDK API compatibility, **not** that a real Playgama
 account has cloud-save capacity for every possible large `.sav` file. Check
@@ -49,11 +56,17 @@ large save files, reload and cross-device restores with the Playgama QA tool.
 
 ### Ads and ranking
 
-Interstitial minimum/initial delays are both 150 seconds. Ads may only be
-requested at the game's natural pauses. Pause/resume/audio restoration must
+Interstitial minimum/initial delays are both 150 seconds. The Playgama V3
+package removes the Yandex V29 timer that could interrupt active gameplay
+after 150 seconds. Instead, after sufficient gameplay, the existing
+`yandexGameSetGameplay(false)` path requests ads only when returning to
+a menu or other natural game pause. The exact patch is mechanically verified
+against the Yandex V29 source and dynamically tested in Node VM.
+Pause/resume/audio restoration must
 be verified during Playgama QA. Rewarded ads and in-game banners are disabled.
 The adapter reports leaderboard methods as available only if the active
-platform supports the relevant leaderboard type. Playgama's native
+platform supports the relevant leaderboard type. The V3 shell displays an
+offline status instead of attempting an unsupported leaderboard fetch. Playgama's native
 `playgama` adapter does not provide ordinary `in_game` leaderboards by
 default; optional SaaS leaderboards require separate configuration.
 
@@ -73,8 +86,9 @@ default; optional SaaS leaderboards require separate configuration.
   including the tutorial, vehicle purchases, map scrolling, settings and
   sound state across tab switches.
 
-CI runs `node playgama/test-playgama-bridge-v2.cjs` and creates the
-`OpenTTD-v14-Playgama-Desktop-Mobile-V2-from-Yandex-V29.zip` archive plus
+CI runs `node playgama/test-playgama-bridge-v2.cjs` plus the integration
+test `node playgama/test-v29-natural-break-ads.cjs`, and creates
+`OpenTTD-v14-Playgama-Desktop-Mobile-V3-from-Yandex-V29.zip` plus
 SHA-256 and results report. **A successful CI run is not equivalent to
 passing the hosted Playgama QA/moderation tests.**
 
