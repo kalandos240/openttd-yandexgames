@@ -1,13 +1,24 @@
-name: Build Playgama V1 from verified Yandex V29
+name: Build Playgama V8 from verified Yandex V29
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - port/playgama-v1-from-yandex-v29-bridge2
+      - port/playgama-v2-from-yandex-v29-storage-fix
     paths:
       - 'playgama/package_from_yandex_v29.py'
       - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/playgama-bridge-loader.js'
+      - 'playgama/patch_v29_nonblocking_startup.py'
+      - 'playgama/test-v29-first-launch.cjs'
+      - 'playgama/test-playgama-bridge-v2.cjs'
+      - 'playgama/patch_v29_playgama_breaks.py'
+      - 'playgama/patch_v29_startup_timeout.py'
+      - 'playgama/patch_v29_frame_upload.py'
+      - 'playgama/test-v29-frame-cadence.cjs'
+      - 'playgama/test-v29-natural-break-ads.cjs'
+      - 'playgama/openttd-playgama-cloud-saves.js'
+      - 'playgama/test-v29-chunked-cloud.cjs'
       - 'playgama/playgama-bridge-config.json'
       - '.github/workflows/build-playgama-from-yandex-v29.yml'
 
@@ -62,24 +73,90 @@ jobs:
           python3 -m py_compile playgama/package_from_yandex_v29.py
           python3 playgama/package_from_yandex_v29.py dist-playgama \
             --adapter playgama/playgama-yandex-compat.js \
-            --config playgama/playgama-bridge-config.json
+            --bridge-loader playgama/playgama-bridge-loader.js \
+            --config playgama/playgama-bridge-config.json \
+            --cloud-saves playgama/openttd-playgama-cloud-saves.js
+
+      - name: Apply verified V29 Playgama natural-break and leaderboard fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_playgama_breaks.py
+          python3 playgama/patch_v29_playgama_breaks.py dist-playgama \
+            --verify-original /tmp/v29-base
+
+      - name: Align native restore and startup timeouts without changing gameplay code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_startup_timeout.py
+          python3 playgama/patch_v29_startup_timeout.py dist-playgama \
+            --verify-original /tmp/v29-base
+
+      - name: Limit full-frame WebGL uploads according to Firefox CPU profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_frame_upload.py
+          python3 playgama/patch_v29_frame_upload.py dist-playgama \
+            --verify-original /tmp/v29-base
+
+      - name: Decouple native first-run from optional Playgama CDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_nonblocking_startup.py
+          python3 playgama/patch_v29_nonblocking_startup.py dist-playgama \
+            --verify-original /tmp/v29-base
+
+      - name: Offline Playgama SDK contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check playgama/playgama-bridge-loader.js
+          node --check playgama/playgama-yandex-compat.js
+          node --check playgama/test-playgama-bridge-v2.cjs
+          node playgama/test-playgama-bridge-v2.cjs
+          node --check playgama/test-v29-first-launch.cjs
+          node playgama/test-v29-first-launch.cjs
+          node --check dist-playgama/yandex-bridge.js
+          node --check dist-playgama/openttd-global-ranking.js
+          node playgama/test-v29-natural-break-ads.cjs dist-playgama/yandex-bridge.js
+          node --check dist-playgama/openttd-playgama-cloud-saves.js
+          node --check playgama/test-v29-chunked-cloud.cjs
+          node playgama/test-v29-chunked-cloud.cjs
+          node --check playgama/test-v29-frame-cadence.cjs
+          node playgama/test-v29-frame-cadence.cjs dist-playgama/openttd-runtime.js
 
       - name: Validate SDK and preserved V29 runtime
         shell: bash
         run: |
           set -euo pipefail
 
-          grep -Fq 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/index.html
+          grep -Fq '<script src="playgama-bridge-loader.js"></script>' dist-playgama/index.html
+          grep -Fq 'https://bridge.playgama.com/v2/stable/playgama-bridge.js' dist-playgama/playgama-bridge-loader.js
           grep -Fq 'playgama-yandex-compat.js' dist-playgama/index.html
           ! grep -Fq 'yandex-bootstrap.js' dist-playgama/index.html
           ! grep -Fq '/sdk.js' dist-playgama/index.html
           test ! -e dist-playgama/yandex-bootstrap.js
+          test -s dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq '<script src="yandex-bridge.js"></script><script src="openttd-playgama-cloud-saves.js"></script>' dist-playgama/index.html
+          grep -Fq 'window.yandexRestoreOpenTTDCloud = async function(FS, personalDir)' dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq 'window.yandexBackupOpenTTDCloud = function(FS, personalDir)' dist-playgama/openttd-playgama-cloud-saves.js
 
           grep -Fq 'Playgama Bridge v2+ required' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'window.yandexGamesSDKReady' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'createLeaderboards' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'bridge.storage.get(requested)' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'info.bridge.storage.get(requested, info.type)' dist-playgama/openttd-playgama-cloud-saves.js
+          grep -Fq 'info.bridge.storage.set(keyList, valueList, info.type)' dist-playgama/openttd-playgama-cloud-saves.js
+
+          grep -Fq 'await bridge.storage.set(' dist-playgama/playgama-yandex-compat.js
+          ! grep -Fq 'bridge.storage?.get?.(String(key))' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'openAuthDialog' dist-playgama/playgama-yandex-compat.js
-          grep -Fq 'setMinimumDelayBetweenInterstitial?.(150)' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'setMinimumDelayBetweenInterstitial?.(180)' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'const AD_MIN_GAMEPLAY_MS = 180 * 1000;' dist-playgama/yandex-bridge.js
+          grep -Fq 'const AD_MIN_INTERVAL_MS = 180 * 1000;' dist-playgama/yandex-bridge.js
           node --check dist-playgama/playgama-yandex-compat.js
           python3 -m json.tool dist-playgama/playgama-bridge-config.json >/dev/null
 
@@ -88,8 +165,8 @@ jobs:
           from pathlib import Path
           cfg = json.loads(Path('dist-playgama/playgama-bridge-config.json').read_text(encoding='utf-8'))
           ads = cfg['advertisement']
-          assert ads['minimumDelayBetweenInterstitial'] == 150
-          assert ads['initialInterstitialDelay'] == 150
+          assert ads['minimumDelayBetweenInterstitial'] == 180
+          assert ads['initialInterstitialDelay'] == 180
           assert ads['interstitial']['disable'] is False
           assert ads['rewarded']['disable'] is True
           assert ads['banner']['disable'] is True
@@ -97,24 +174,29 @@ jobs:
           PY
 
           for file in \
-            openttd-runtime.js \
             openttd-yandex-mobile.js \
             openttd-full-viewport.js \
             openttd-yandex-fixes.js \
-            openttd-global-ranking.js \
             openttd-ranking-core.js \
             openttd-classic-ai.js \
             openttd-shell-2.js \
             openttd-yandex-shell-i18n.js \
             openttd-yandex-web-keys.js \
-            openttd-vanilla-migration.js \
-            yandex-bridge.js
+            openttd-vanilla-migration.js
           do
             cmp "/tmp/v29-base/$file" "dist-playgama/$file"
           done
 
+          grep -Fq 'Playgama requires interstitials at natural breaks' dist-playgama/yandex-bridge.js
+          ! grep -Fq "maybeShowInterstitial('gameplay-timer');" dist-playgama/yandex-bridge.js
+          grep -Fq "maybeShowInterstitial('logical-pause');" dist-playgama/yandex-bridge.js
+          grep -Fq "await methodAvailable(sdk, 'leaderboards.getEntries')" dist-playgama/openttd-global-ranking.js
           grep -Fq 'const isFullscreenLike = (raw, outer) => {' dist-playgama/openttd-full-viewport.js
           grep -Fq "canvas.style.setProperty('cursor', 'none', 'important');" dist-playgama/openttd-full-viewport.js
+          grep -Fq '__otFrameNow-__otSDL.__openttdLastPresentedAt<33.333' dist-playgama/openttd-runtime.js
+          grep -Fq 'filesystem/cloud initialization exceeded 30000 ms' dist-playgama/openttd-runtime.js
+          grep -Fq 'new Promise((A=>setTimeout(A,8500)))' dist-playgama/openttd-runtime.js
+          grep -Fq 'window.__openttdPlatformStartupIndependent===true?Q():' dist-playgama/openttd-runtime.js
           grep -Fq '_em_openttd_force_window_resize' dist-playgama/openttd-runtime.js
           grep -Fq '__openttdWebGLPresenter' dist-playgama/openttd-runtime.js
           grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' dist-playgama/openttd-yandex-mobile.js
@@ -142,11 +224,11 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama V1 archive and report
+      - name: Create Playgama V8 archive and report
         shell: bash
         run: |
           set -euo pipefail
-          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip"
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip"
           (cd dist-playgama && zip -9 -X -r "../${archive}" .)
           unzip -t "$archive" >/dev/null
           sha256sum "$archive" | tee out/SHA256SUMS.txt
@@ -154,42 +236,61 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip')
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip')
           unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
           report = (
-              'OpenTTD v14 Playgama Desktop-Mobile V1\n'
+              'OpenTTD v14 Playgama Desktop-Mobile V8\n'
               'base=Yandex V29 verified artifact 10524282138\n'
               'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
               'playgama_bridge=v2/stable\n'
-              'platform_layer_only=true\n'
-              'v29_runtime_preserved=true\n'
+              'native_gameplay_code_unchanged=true\n'
+              'v29_runtime_two_timeouts_presenter_cap_and_sdk_startup_guard=true\n'
               'v29_mobile_preserved=true\n'
               'v29_fullscreen_preserved=true\n'
               'v29_cursor_preserved=true\n'
               'v29_ai_preserved=true\n'
               'v29_localization_preserved=true\n'
               'interstitial_enabled=true\n'
-              'interstitial_minimum_delay_seconds=150\n'
+              'interstitial_minimum_delay_seconds=180\n'
               'rewarded_enabled=false\n'
               'banner_enabled=false\n'
-              'cloud_storage_adapter=true\n'
+              'cloud_storage_adapter=v2_batched_keys\n'
               'leaderboard_adapter=true\n'
               'authorization_adapter=true\n'
+              'sdk_contract_tests=PASS\n'
+              'first_launch_nonblocking_sdk_and_late_game_ready_test=PASS\n'
+              'cold_start_bridge_init_budget_ms=1800\n'
+              'native_sdk_dependency_skipped=true\n'
+              'cold_start_cloud_metadata_batch=6_keys_1_round_trip\n'
+              'ad_policy=180_seconds_eligibility_natural_break_only\n'
+              'ad_sdk_promise_rejection_restores_game=true\n'
+              'unsupported_leaderboard_status=offline\n'
+              'v29_shell_patch_exact_delta=PASS\n'
+              'cloud_save_chunking=experimental_64KiB_A_B_CRC32\n'
+              'cloud_save_large_file_offline_and_corruption_tests=PASS\n'
+              'cloud_save_startup_budget_ms=6500\n'
+              'native_cloud_restore_timeout_ms=8500\n'
+              'native_startup_watchdog_ms=30000\n'
+              'native_runtime_patch_exact_two_timeout_replacements=PASS\n'
+              'native_runtime_patch_exact_presenter_throttle=PASS\n'
+              'firefox_profile_webgl_upload_cap_fps=30\n'
+              'cloud_stale_backup_guard_and_metadata_bounds=PASS\n'
+              'clean_first_start_empty_storage_test=PASS\n'
               'unexpected_external_urls=0\n'
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
           )
-          Path('out/PLAYGAMA-V1-RESULTS.txt').write_text(report, encoding='utf-8')
+          Path('out/PLAYGAMA-V8-RESULTS.txt').write_text(report, encoding='utf-8')
           print(report)
           PY
 
-      - name: Upload Playgama V1
+      - name: Upload Playgama V8
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-v14-playgama-desktop-mobile-v1-from-yandex-v29
+          name: openttd-v14-playgama-desktop-mobile-v8-from-yandex-v29
           path: |
-            out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip
-            out/PLAYGAMA-V1-RESULTS.txt
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip
+            out/PLAYGAMA-V8-RESULTS.txt
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90

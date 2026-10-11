@@ -77,6 +77,12 @@
   wrapAudioContext();
 
   const initializeBridge = async () => {
+    // This Promise is provided by the non-blocking local SDK script loader.
+    // It may resolve after OpenTTD's first frame; never hold native startup.
+    if (window.playgamaBridgeScriptReady) {
+      const scriptLoaded = await window.playgamaBridgeScriptReady;
+      if (!scriptLoaded) throw new Error('Playgama Bridge CDN load failed');
+    }
     if (!window.bridge || typeof window.bridge.initialize !== 'function') {
       throw new Error('Playgama Bridge script is unavailable');
     }
@@ -92,7 +98,11 @@
     document.documentElement.dataset.playgamaBridge = 'ready';
     document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || 'v2');
 
-    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(150); } catch (_) {}
+    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(180); } catch (_) {}
+
+    console.info('[Playgama/OpenTTD] Interstitial SDK:', bridge.advertisement?.isInterstitialSupported === true
+      ? 'supported; eligible every 180 seconds at natural pauses'
+      : 'unavailable on current platform; check ad blockers and Playgama QA');
 
     platformAudioEnabled = bridge.platform?.isAudioEnabled !== false;
     if (!platformAudioEnabled) pauseTrackedAudio();
@@ -114,20 +124,8 @@
       console.warn('[Playgama] audio event subscription failed:', error);
     }
 
-    // Storage availability must never be a startup gate.
-    try {
-      const markerKey = '__openttd_playgama_bridge';
-      await Promise.race([
-        (async () => {
-          await bridge.storage?.get?.(markerKey);
-          await bridge.storage?.set?.(markerKey, { updatedAt: Date.now() });
-        })(),
-        new Promise((resolve) => setTimeout(resolve, 1000)),
-      ]);
-    } catch (error) {
-      console.info('[Playgama] storage marker unavailable; local persistence will still work.', error);
-    }
-
+    // Bridge handles platform/cloud/local storage routing internally. Do not
+    // probe the player's data or gate startup on a test write.
     return bridge;
   };
 
@@ -140,24 +138,41 @@
   const createPlayer = (bridge) => {
     if (pseudoPlayer) return pseudoPlayer;
     pseudoPlayer = {
+      // The original Yandex layer expects { key: value }, while Bridge v2
+      // explicitly accepts arrays of keys and returns values in the same order.
+      // Never silently swallow write errors: a failed cloud write is not a save.
       async getData(keys) {
-        const requested = Array.isArray(keys) ? keys : (keys == null ? [] : [keys]);
-        const result = {};
-        for (const key of requested) {
-          try {
-            const value = await bridge.storage?.get?.(String(key));
-            if (value !== undefined && value !== null) result[key] = value;
-          } catch (_) {}
+        const requested = (Array.isArray(keys) ? keys : (keys == null ? [] : [keys]))
+          .map(String);
+        if (!requested.length) return {};
+        if (typeof bridge.storage?.get !== 'function') {
+          throw new Error('Playgama storage.get is unavailable');
         }
+        const values = await bridge.storage.get(requested);
+        if (!Array.isArray(values) || values.length !== requested.length) {
+          throw new Error('Playgama storage.get returned unexpected data');
+        }
+        const result = {};
+        requested.forEach((key, index) => {
+          if (values[index] !== null && values[index] !== undefined) {
+            result[key] = values[index];
+          }
+        });
         return result;
       },
       async setData(data) {
-        for (const [key, value] of Object.entries(data || {})) {
-          try { await bridge.storage?.set?.(String(key), value); } catch (_) {}
+        const entries = Object.entries(data || {});
+        if (!entries.length) return;
+        if (typeof bridge.storage?.set !== 'function') {
+          throw new Error('Playgama storage.set is unavailable');
         }
+        await bridge.storage.set(
+          entries.map(([key]) => String(key)),
+          entries.map(([, value]) => value)
+        );
       },
       isAuthorized() {
-        return bridge.player?.isAuthorized === true || bridge.player?.isAuthorizationSupported === false;
+        return bridge.player?.isAuthorized === true;
       },
       getMode() { return 'full'; },
       getUniqueID() { return String(bridge.player?.id || ''); },
@@ -202,8 +217,18 @@
     };
 
     advertisement.on?.(eventName, listener);
-    try { advertisement.showInterstitial(options.placement || null); }
-    catch (error) {
+    try {
+      const result = advertisement.showInterstitial(options.placement || null);
+      // Some platform providers reject the Promise but emit no FAILED event.
+      // End the local pause instead of leaving OpenTTD blocked indefinitely.
+      Promise.resolve(result).catch((error) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        setPauseReason('interstitial', false);
+        safeCall(callbacks.onError, error);
+      });
+    } catch (error) {
       finished = true;
       cleanup();
       setPauseReason('interstitial', false);
@@ -295,15 +320,24 @@
       },
       isAvailableMethod(methodName) {
         const method = String(methodName || '');
+        const leaderboardType = bridge.leaderboards?.type || 'not_available';
         if (method === 'leaderboards.setScore') {
-          return Promise.resolve(typeof bridge.leaderboards?.setScore === 'function');
+          return Promise.resolve(leaderboardType !== 'not_available' &&
+            typeof bridge.leaderboards?.setScore === 'function');
         }
         if (method === 'leaderboards.getEntries') {
-          return Promise.resolve(typeof bridge.leaderboards?.getEntries === 'function');
+          return Promise.resolve(leaderboardType === 'in_game' &&
+            typeof bridge.leaderboards?.getEntries === 'function');
+        }
+        if (method === 'auth.openAuthDialog') {
+          return Promise.resolve(bridge.player?.isAuthorizationSupported === true &&
+            typeof bridge.player?.authorize === 'function');
+        }
+        if (method === 'adv.showFullscreenAdv') {
+          return Promise.resolve(bridge.advertisement?.isInterstitialSupported === true);
         }
         return Promise.resolve(new Set([
           'getPlayer',
-          'adv.showFullscreenAdv',
           'features.LoadingAPI.ready',
           'features.GameplayAPI.start',
           'features.GameplayAPI.stop'
@@ -314,6 +348,13 @@
     window.ysdk = pseudoSdk;
     window.playgamaYandexCompatSdk = pseudoSdk;
     window.yandexGameLanguage = pseudoSdk.environment.i18n.lang;
+    // On a slow first visit the native engine may have started before the
+    // nonblocking SDK download finished. Tell Playgama the game is ready now,
+    // rather than losing the only GAME_READY message at the old 3s gate.
+    if (window.Module?.calledRun === true) {
+      void pseudoSdk.features.LoadingAPI.ready();
+      if (window.__openttdGameplayActive === true) void pseudoSdk.features.GameplayAPI.start();
+    }
     return pseudoSdk;
   };
 
