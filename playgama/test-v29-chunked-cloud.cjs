@@ -106,6 +106,17 @@ function same(actual, expected) {
   assert.deepEqual(Buffer.from(actual), Buffer.from(expected));
 }
 async function main() {
+  // Fresh Playgama iframe: no IndexedDB data, no config and no cloud saves.
+  // This must resolve harmlessly and must not create a fake save.
+  const virginStorage = storage();
+  const virginFS = filesystem();
+  const virgin = boot(virginStorage, virginFS);
+  await virgin.restore();
+  assert.equal(virgin.status().restored,false,'New profile should start without waiting for a save');
+  assert.equal(virginFS.files.size,0,'Fresh launch must not create invalid OpenTTD files');
+  await virgin.save();
+  assert.equal(virgin.status().backup.state,'no-save','New profile has no saved game yet');
+
   const backend=storage();
   const dir='/home/openttd/save/';
   const first = bytes(512*1024 + 17);
