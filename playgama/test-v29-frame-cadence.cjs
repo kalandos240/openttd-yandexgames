@@ -20,7 +20,7 @@ assert.match(limiter,/__otSDL.__openttdPresenterCanvas===__otCanvas/);
 const tick = new Function('Module','performance','A','B',
   'var __otW=A,__otH=B,__otPixels=0;' + limiter + 'return "uploaded";');
 const canvas={width:1280,height:720};
-const state={SDL2:{__openttdPresenterCanvas:canvas}};
+const state={canvas,SDL2:{__openttdPresenterCanvas:canvas}};
 let elapsed=10_000;
 const clock={now:()=>elapsed};
 let uploads=0;
@@ -33,12 +33,9 @@ canvas.width=1440; canvas.height=900; elapsed+=1;
 assert.equal(tick(state,clock,1440,900),'uploaded',
   'A canvas dimension change must force an immediate upload');
 const canvas2={width:1440,height:900};
-state.SDL2.__openttdPresenterCanvas=canvas;
+state.canvas=canvas2; // Presenter was initialized on old canvas.
 elapsed+=1;
-assert.equal(tick({SDL2:state.SDL2},clock,1440,900),'uploaded');
-elapsed+=1;
-state.SDL2.__openttdPresenterCanvas=canvas2;
-assert.equal(tick({canvas:canvas2,SDL2:state.SDL2},clock,1440,900),'uploaded',
+assert.equal(tick(state,clock,1440,900),'uploaded',
   'Recreating the presenter must never skip initial frame');
 // Does not inject into Emscripten scheduler: only the presentation hook.
 assert.equal(runtime.includes('runIter'),true);
