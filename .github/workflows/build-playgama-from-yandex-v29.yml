@@ -1,4 +1,4 @@
-name: Build Playgama V7 from verified Yandex V29
+name: Build Playgama V8 from verified Yandex V29
 
 on:
   workflow_dispatch:
@@ -9,6 +9,8 @@ on:
       - 'playgama/package_from_yandex_v29.py'
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/playgama-bridge-loader.js'
+      - 'playgama/patch_v29_nonblocking_startup.py'
+      - 'playgama/test-v29-first-launch.cjs'
       - 'playgama/test-playgama-bridge-v2.cjs'
       - 'playgama/patch_v29_playgama_breaks.py'
       - 'playgama/patch_v29_startup_timeout.py'
@@ -99,6 +101,14 @@ jobs:
           python3 playgama/patch_v29_frame_upload.py dist-playgama \
             --verify-original /tmp/v29-base
 
+      - name: Decouple native first-run from optional Playgama CDN
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_nonblocking_startup.py
+          python3 playgama/patch_v29_nonblocking_startup.py dist-playgama \
+            --verify-original /tmp/v29-base
+
       - name: Offline Playgama SDK contract tests
         shell: bash
         run: |
@@ -107,6 +117,8 @@ jobs:
           node --check playgama/playgama-yandex-compat.js
           node --check playgama/test-playgama-bridge-v2.cjs
           node playgama/test-playgama-bridge-v2.cjs
+          node --check playgama/test-v29-first-launch.cjs
+          node playgama/test-v29-first-launch.cjs
           node --check dist-playgama/yandex-bridge.js
           node --check dist-playgama/openttd-global-ranking.js
           node playgama/test-v29-natural-break-ads.cjs dist-playgama/yandex-bridge.js
@@ -184,6 +196,7 @@ jobs:
           grep -Fq '__otFrameNow-__otSDL.__openttdLastPresentedAt<33.333' dist-playgama/openttd-runtime.js
           grep -Fq 'filesystem/cloud initialization exceeded 30000 ms' dist-playgama/openttd-runtime.js
           grep -Fq 'new Promise((A=>setTimeout(A,8500)))' dist-playgama/openttd-runtime.js
+          grep -Fq 'window.__openttdPlatformStartupIndependent===true?Q():' dist-playgama/openttd-runtime.js
           grep -Fq '_em_openttd_force_window_resize' dist-playgama/openttd-runtime.js
           grep -Fq '__openttdWebGLPresenter' dist-playgama/openttd-runtime.js
           grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' dist-playgama/openttd-yandex-mobile.js
@@ -211,11 +224,11 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama V7 archive and report
+      - name: Create Playgama V8 archive and report
         shell: bash
         run: |
           set -euo pipefail
-          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V7-from-Yandex-V29.zip"
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip"
           (cd dist-playgama && zip -9 -X -r "../${archive}" .)
           unzip -t "$archive" >/dev/null
           sha256sum "$archive" | tee out/SHA256SUMS.txt
@@ -223,15 +236,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V7-from-Yandex-V29.zip')
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip')
           unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
           report = (
-              'OpenTTD v14 Playgama Desktop-Mobile V7\n'
+              'OpenTTD v14 Playgama Desktop-Mobile V8\n'
               'base=Yandex V29 verified artifact 10524282138\n'
               'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
               'playgama_bridge=v2/stable\n'
               'native_gameplay_code_unchanged=true\n'
-              'v29_runtime_two_startup_timeout_literals_plus_presenter_upload_throttle=true\n'
+              'v29_runtime_two_timeouts_presenter_cap_and_sdk_startup_guard=true\n'
               'v29_mobile_preserved=true\n'
               'v29_fullscreen_preserved=true\n'
               'v29_cursor_preserved=true\n'
@@ -245,6 +258,10 @@ jobs:
               'leaderboard_adapter=true\n'
               'authorization_adapter=true\n'
               'sdk_contract_tests=PASS\n'
+              'first_launch_nonblocking_sdk_and_late_game_ready_test=PASS\n'
+              'cold_start_bridge_init_budget_ms=1800\n'
+              'native_sdk_dependency_skipped=true\n'
+              'cold_start_cloud_metadata_batch=6_keys_1_round_trip\n'
               'ad_policy=180_seconds_eligibility_natural_break_only\n'
               'ad_sdk_promise_rejection_restores_game=true\n'
               'unsupported_leaderboard_status=offline\n'
@@ -263,17 +280,17 @@ jobs:
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
           )
-          Path('out/PLAYGAMA-V7-RESULTS.txt').write_text(report, encoding='utf-8')
+          Path('out/PLAYGAMA-V8-RESULTS.txt').write_text(report, encoding='utf-8')
           print(report)
           PY
 
-      - name: Upload Playgama V7
+      - name: Upload Playgama V8
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-v14-playgama-desktop-mobile-v7-from-yandex-v29
+          name: openttd-v14-playgama-desktop-mobile-v8-from-yandex-v29
           path: |
-            out/OpenTTD-v14-Playgama-Desktop-Mobile-V7-from-Yandex-V29.zip
-            out/PLAYGAMA-V7-RESULTS.txt
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V8-from-Yandex-V29.zip
+            out/PLAYGAMA-V8-RESULTS.txt
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90
