@@ -108,7 +108,7 @@ async function main() {
   assert.equal(env.yandexGameLanguage, 'ru');
 
   const player = await sdk.getPlayer();
-  assert.deepEqual(await player.getData([]), {});
+  assert.equal(Object.keys(await player.getData([])).length, 0);
   const loaded = await player.getData(['settings', 'empty', 'zero']);
   assert.equal(loaded.settings.sound, false);
   assert.equal('empty' in loaded, false);
