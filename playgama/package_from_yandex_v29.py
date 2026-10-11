@@ -6,7 +6,7 @@ import re
 import shutil
 
 BRIDGE_URL = "https://bridge.playgama.com/v2/stable/playgama-bridge.js"
-BRIDGE_TAG = f'<script src="{BRIDGE_URL}"></script>'
+BRIDGE_TAG = '<script src="playgama-bridge-loader.js"></script>'
 ADAPTER_TAG = '<script src="playgama-yandex-compat.js"></script>'
 CLOUD_TAG = '<script src="openttd-playgama-cloud-saves.js"></script>'
 V29_BRIDGE_TAG = '<script src="yandex-bridge.js"></script>'
@@ -37,7 +37,7 @@ def patch_index(html: str) -> str:
     replacement = BRIDGE_TAG + ADAPTER_TAG
     if yandex in html:
         html = html.replace(yandex, replacement, 1)
-    elif BRIDGE_URL not in html or 'playgama-yandex-compat.js' not in html:
+    elif 'playgama-bridge-loader.js' not in html or 'playgama-yandex-compat.js' not in html:
         raise SystemExit("yandex-bootstrap.js insertion point is missing")
     if CLOUD_TAG not in html:
         if html.count(V29_BRIDGE_TAG) != 1:
@@ -52,6 +52,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("dist", type=Path)
     ap.add_argument("--adapter", type=Path, required=True)
+    ap.add_argument("--bridge-loader", type=Path, required=True)
     ap.add_argument("--config", type=Path, required=True)
     ap.add_argument("--cloud-saves", type=Path, required=True)
     args = ap.parse_args()
@@ -65,6 +66,7 @@ def main() -> None:
     index.write_text(html, encoding="utf-8")
 
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
+    shutil.copy2(args.bridge_loader, dist / "playgama-bridge-loader.js")
     shutil.copy2(args.config, dist / "playgama-bridge-config.json")
     shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
 
@@ -75,8 +77,8 @@ def main() -> None:
 
     (dist / "PLAYGAMA-INTEGRATION.txt").write_text(NOTICE, encoding="utf-8")
 
-    if BRIDGE_URL not in html:
-        raise SystemExit("Playgama Bridge v2 bootstrap missing")
+    if BRIDGE_TAG not in html:
+        raise SystemExit("Nonblocking Playgama Bridge v2 bootstrap missing")
     if "/sdk.js" in html:
         raise SystemExit("Yandex SDK reference remains in index.html")
 
