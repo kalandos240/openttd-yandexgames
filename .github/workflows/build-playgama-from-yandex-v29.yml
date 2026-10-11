@@ -1,4 +1,4 @@
-name: Build Playgama V4 from verified Yandex V29
+name: Build Playgama V5 from verified Yandex V29
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ on:
       - 'playgama/playgama-yandex-compat.js'
       - 'playgama/test-playgama-bridge-v2.cjs'
       - 'playgama/patch_v29_playgama_breaks.py'
+      - 'playgama/patch_v29_startup_timeout.py'
       - 'playgama/test-v29-natural-break-ads.cjs'
       - 'playgama/openttd-playgama-cloud-saves.js'
       - 'playgama/test-v29-chunked-cloud.cjs'
@@ -78,6 +79,14 @@ jobs:
           python3 playgama/patch_v29_playgama_breaks.py dist-playgama \
             --verify-original /tmp/v29-base
 
+      - name: Align native restore and startup timeouts without changing gameplay code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile playgama/patch_v29_startup_timeout.py
+          python3 playgama/patch_v29_startup_timeout.py dist-playgama \
+            --verify-original /tmp/v29-base
+
       - name: Offline Playgama SDK contract tests
         shell: bash
         run: |
@@ -135,7 +144,6 @@ jobs:
           PY
 
           for file in \
-            openttd-runtime.js \
             openttd-yandex-mobile.js \
             openttd-full-viewport.js \
             openttd-yandex-fixes.js \
@@ -155,6 +163,8 @@ jobs:
           grep -Fq "await methodAvailable(sdk, 'leaderboards.getEntries')" dist-playgama/openttd-global-ranking.js
           grep -Fq 'const isFullscreenLike = (raw, outer) => {' dist-playgama/openttd-full-viewport.js
           grep -Fq "canvas.style.setProperty('cursor', 'none', 'important');" dist-playgama/openttd-full-viewport.js
+          grep -Fq 'filesystem/cloud initialization exceeded 14000 ms' dist-playgama/openttd-runtime.js
+          grep -Fq 'new Promise((A=>setTimeout(A,8500)))' dist-playgama/openttd-runtime.js
           grep -Fq '_em_openttd_force_window_resize' dist-playgama/openttd-runtime.js
           grep -Fq '__openttdWebGLPresenter' dist-playgama/openttd-runtime.js
           grep -Fq 'V21: calledRun is the Emscripten lifecycle signal' dist-playgama/openttd-yandex-mobile.js
@@ -182,11 +192,11 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama V4 archive and report
+      - name: Create Playgama V5 archive and report
         shell: bash
         run: |
           set -euo pipefail
-          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip"
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V5-from-Yandex-V29.zip"
           (cd dist-playgama && zip -9 -X -r "../${archive}" .)
           unzip -t "$archive" >/dev/null
           sha256sum "$archive" | tee out/SHA256SUMS.txt
@@ -194,10 +204,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip')
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V5-from-Yandex-V29.zip')
           unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
           report = (
-              'OpenTTD v14 Playgama Desktop-Mobile V4\n'
+              'OpenTTD v14 Playgama Desktop-Mobile V5\n'
               'base=Yandex V29 verified artifact 10524282138\n'
               'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
               'playgama_bridge=v2/stable\n'
@@ -222,21 +232,25 @@ jobs:
               'cloud_save_chunking=experimental_64KiB_A_B_CRC32\n'
               'cloud_save_large_file_offline_and_corruption_tests=PASS\n'
               'cloud_save_startup_budget_ms=6500\n'
+              'native_cloud_restore_timeout_ms=8500\n'
+              'native_startup_watchdog_ms=14000\n'
+              'native_runtime_patch_exact_two_timeout_replacements=PASS\n'
+              'cloud_stale_backup_guard_and_metadata_bounds=PASS\n'
               'unexpected_external_urls=0\n'
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
           )
-          Path('out/PLAYGAMA-V4-RESULTS.txt').write_text(report, encoding='utf-8')
+          Path('out/PLAYGAMA-V5-RESULTS.txt').write_text(report, encoding='utf-8')
           print(report)
           PY
 
-      - name: Upload Playgama V4
+      - name: Upload Playgama V5
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-v14-playgama-desktop-mobile-v4-from-yandex-v29
+          name: openttd-v14-playgama-desktop-mobile-v5-from-yandex-v29
           path: |
-            out/OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip
-            out/PLAYGAMA-V4-RESULTS.txt
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V5-from-Yandex-V29.zip
+            out/PLAYGAMA-V5-RESULTS.txt
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90
