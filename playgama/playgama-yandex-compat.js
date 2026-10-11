@@ -77,6 +77,12 @@
   wrapAudioContext();
 
   const initializeBridge = async () => {
+    // This Promise is provided by the non-blocking local SDK script loader.
+    // It may resolve after OpenTTD's first frame; never hold native startup.
+    if (window.playgamaBridgeScriptReady) {
+      const scriptLoaded = await window.playgamaBridgeScriptReady;
+      if (!scriptLoaded) throw new Error('Playgama Bridge CDN load failed');
+    }
     if (!window.bridge || typeof window.bridge.initialize !== 'function') {
       throw new Error('Playgama Bridge script is unavailable');
     }
@@ -342,6 +348,13 @@
     window.ysdk = pseudoSdk;
     window.playgamaYandexCompatSdk = pseudoSdk;
     window.yandexGameLanguage = pseudoSdk.environment.i18n.lang;
+    // On a slow first visit the native engine may have started before the
+    // nonblocking SDK download finished. Tell Playgama the game is ready now,
+    // rather than losing the only GAME_READY message at the old 3s gate.
+    if (window.Module?.calledRun === true) {
+      void pseudoSdk.features.LoadingAPI.ready();
+      if (window.__openttdGameplayActive === true) void pseudoSdk.features.GameplayAPI.start();
+    }
     return pseudoSdk;
   };
 
