@@ -114,20 +114,8 @@
       console.warn('[Playgama] audio event subscription failed:', error);
     }
 
-    // Storage availability must never be a startup gate.
-    try {
-      const markerKey = '__openttd_playgama_bridge';
-      await Promise.race([
-        (async () => {
-          await bridge.storage?.get?.(markerKey);
-          await bridge.storage?.set?.(markerKey, { updatedAt: Date.now() });
-        })(),
-        new Promise((resolve) => setTimeout(resolve, 1000)),
-      ]);
-    } catch (error) {
-      console.info('[Playgama] storage marker unavailable; local persistence will still work.', error);
-    }
-
+    // Bridge handles platform/cloud/local storage routing internally. Do not
+    // probe the player's data or gate startup on a test write.
     return bridge;
   };
 
@@ -140,24 +128,41 @@
   const createPlayer = (bridge) => {
     if (pseudoPlayer) return pseudoPlayer;
     pseudoPlayer = {
+      // The original Yandex layer expects { key: value }, while Bridge v2
+      // explicitly accepts arrays of keys and returns values in the same order.
+      // Never silently swallow write errors: a failed cloud write is not a save.
       async getData(keys) {
-        const requested = Array.isArray(keys) ? keys : (keys == null ? [] : [keys]);
-        const result = {};
-        for (const key of requested) {
-          try {
-            const value = await bridge.storage?.get?.(String(key));
-            if (value !== undefined && value !== null) result[key] = value;
-          } catch (_) {}
+        const requested = (Array.isArray(keys) ? keys : (keys == null ? [] : [keys]))
+          .map(String);
+        if (!requested.length) return {};
+        if (typeof bridge.storage?.get !== 'function') {
+          throw new Error('Playgama storage.get is unavailable');
         }
+        const values = await bridge.storage.get(requested);
+        if (!Array.isArray(values) || values.length !== requested.length) {
+          throw new Error('Playgama storage.get returned unexpected data');
+        }
+        const result = {};
+        requested.forEach((key, index) => {
+          if (values[index] !== null && values[index] !== undefined) {
+            result[key] = values[index];
+          }
+        });
         return result;
       },
       async setData(data) {
-        for (const [key, value] of Object.entries(data || {})) {
-          try { await bridge.storage?.set?.(String(key), value); } catch (_) {}
+        const entries = Object.entries(data || {});
+        if (!entries.length) return;
+        if (typeof bridge.storage?.set !== 'function') {
+          throw new Error('Playgama storage.set is unavailable');
         }
+        await bridge.storage.set(
+          entries.map(([key]) => String(key)),
+          entries.map(([, value]) => value)
+        );
       },
       isAuthorized() {
-        return bridge.player?.isAuthorized === true || bridge.player?.isAuthorizationSupported === false;
+        return bridge.player?.isAuthorized === true;
       },
       getMode() { return 'full'; },
       getUniqueID() { return String(bridge.player?.id || ''); },
@@ -295,15 +300,24 @@
       },
       isAvailableMethod(methodName) {
         const method = String(methodName || '');
+        const leaderboardType = bridge.leaderboards?.type || 'not_available';
         if (method === 'leaderboards.setScore') {
-          return Promise.resolve(typeof bridge.leaderboards?.setScore === 'function');
+          return Promise.resolve(leaderboardType !== 'not_available' &&
+            typeof bridge.leaderboards?.setScore === 'function');
         }
         if (method === 'leaderboards.getEntries') {
-          return Promise.resolve(typeof bridge.leaderboards?.getEntries === 'function');
+          return Promise.resolve(leaderboardType === 'in_game' &&
+            typeof bridge.leaderboards?.getEntries === 'function');
+        }
+        if (method === 'auth.openAuthDialog') {
+          return Promise.resolve(bridge.player?.isAuthorizationSupported === true &&
+            typeof bridge.player?.authorize === 'function');
+        }
+        if (method === 'adv.showFullscreenAdv') {
+          return Promise.resolve(bridge.advertisement?.isInterstitialSupported === true);
         }
         return Promise.resolve(new Set([
           'getPlayer',
-          'adv.showFullscreenAdv',
           'features.LoadingAPI.ready',
           'features.GameplayAPI.start',
           'features.GameplayAPI.stop'
