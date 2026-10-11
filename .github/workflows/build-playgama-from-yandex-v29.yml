@@ -1,13 +1,14 @@
-name: Build Playgama V1 from verified Yandex V29
+name: Build Playgama V2 from verified Yandex V29
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - port/playgama-v1-from-yandex-v29-bridge2
+      - port/playgama-v2-from-yandex-v29-storage-fix
     paths:
       - 'playgama/package_from_yandex_v29.py'
       - 'playgama/playgama-yandex-compat.js'
+      - 'playgama/test-playgama-bridge-v2.cjs'
       - 'playgama/playgama-bridge-config.json'
       - '.github/workflows/build-playgama-from-yandex-v29.yml'
 
@@ -64,6 +65,14 @@ jobs:
             --adapter playgama/playgama-yandex-compat.js \
             --config playgama/playgama-bridge-config.json
 
+      - name: Offline Playgama SDK contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check playgama/playgama-yandex-compat.js
+          node --check playgama/test-playgama-bridge-v2.cjs
+          node playgama/test-playgama-bridge-v2.cjs
+
       - name: Validate SDK and preserved V29 runtime
         shell: bash
         run: |
@@ -78,6 +87,9 @@ jobs:
           grep -Fq 'Playgama Bridge v2+ required' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'window.yandexGamesSDKReady' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'createLeaderboards' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'bridge.storage.get(requested)' dist-playgama/playgama-yandex-compat.js
+          grep -Fq 'await bridge.storage.set(' dist-playgama/playgama-yandex-compat.js
+          ! grep -Fq 'bridge.storage?.get?.(String(key))' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'openAuthDialog' dist-playgama/playgama-yandex-compat.js
           grep -Fq 'setMinimumDelayBetweenInterstitial?.(150)' dist-playgama/playgama-yandex-compat.js
           node --check dist-playgama/playgama-yandex-compat.js
@@ -142,11 +154,11 @@ jobs:
           echo "Unpacked Playgama bytes: ${unpacked_bytes}"
           test "${unpacked_bytes}" -lt 300000000
 
-      - name: Create Playgama V1 archive and report
+      - name: Create Playgama V2 archive and report
         shell: bash
         run: |
           set -euo pipefail
-          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip"
+          archive="out/OpenTTD-v14-Playgama-Desktop-Mobile-V2-from-Yandex-V29.zip"
           (cd dist-playgama && zip -9 -X -r "../${archive}" .)
           unzip -t "$archive" >/dev/null
           sha256sum "$archive" | tee out/SHA256SUMS.txt
@@ -154,10 +166,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
-          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip')
+          archive = Path('out/OpenTTD-v14-Playgama-Desktop-Mobile-V2-from-Yandex-V29.zip')
           unpacked = sum(p.stat().st_size for p in Path('dist-playgama').rglob('*') if p.is_file())
           report = (
-              'OpenTTD v14 Playgama Desktop-Mobile V1\n'
+              'OpenTTD v14 Playgama Desktop-Mobile V2\n'
               'base=Yandex V29 verified artifact 10524282138\n'
               'base_commit=646b534248c8984c5cac97fbdf5c63f14e5d09ed\n'
               'playgama_bridge=v2/stable\n'
@@ -172,24 +184,25 @@ jobs:
               'interstitial_minimum_delay_seconds=150\n'
               'rewarded_enabled=false\n'
               'banner_enabled=false\n'
-              'cloud_storage_adapter=true\n'
+              'cloud_storage_adapter=v2_batched_keys\n'
               'leaderboard_adapter=true\n'
               'authorization_adapter=true\n'
+              'sdk_contract_tests=PASS\n'
               'unexpected_external_urls=0\n'
               f'unpacked_file_bytes={unpacked}\n'
               f'zip_sha256={hashlib.sha256(archive.read_bytes()).hexdigest()}\n'
           )
-          Path('out/PLAYGAMA-V1-RESULTS.txt').write_text(report, encoding='utf-8')
+          Path('out/PLAYGAMA-V2-RESULTS.txt').write_text(report, encoding='utf-8')
           print(report)
           PY
 
-      - name: Upload Playgama V1
+      - name: Upload Playgama V2
         uses: actions/upload-artifact@v4
         with:
-          name: openttd-v14-playgama-desktop-mobile-v1-from-yandex-v29
+          name: openttd-v14-playgama-desktop-mobile-v2-from-yandex-v29
           path: |
-            out/OpenTTD-v14-Playgama-Desktop-Mobile-V1-from-Yandex-V29.zip
-            out/PLAYGAMA-V1-RESULTS.txt
+            out/OpenTTD-v14-Playgama-Desktop-Mobile-V2-from-Yandex-V29.zip
+            out/PLAYGAMA-V2-RESULTS.txt
             out/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 90
