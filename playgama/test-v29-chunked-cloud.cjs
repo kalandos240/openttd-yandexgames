@@ -115,7 +115,7 @@ async function main() {
   let app=boot(backend,fs1);
   assert.equal(app.env.__openttdPlaygamaCloudDebug.maxSaveBytes > 120000,true);
   await app.save();
-  assert.equal(app.status().backup.state,'uploaded');
+  assert.equal(app.status()?.backup?.state,'uploaded', JSON.stringify(app.status()));
   assert.equal(app.status().backup.slot,'a');
   assert.equal(backend.map.get('openttdSaveMetaV2A').chunks>4,true);
   assert.equal(backend.writes.at(-1),'openttdSaveMetaV2A','commit metadata last');
