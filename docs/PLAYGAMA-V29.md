@@ -1,4 +1,4 @@
-# OpenTTD Playgama V5 — based on verified Yandex V29
+# OpenTTD Playgama V6 — based on verified Yandex V29
 
 This is **not** the old Playgama v10 runtime. The active release pipeline is
 `.github/workflows/build-playgama-from-yandex-v29.yml`, running on branch
@@ -11,13 +11,15 @@ This is **not** the old Playgama v10 runtime. The active release pipeline is
   `646b534248c8984c5cac97fbdf5c63f14e5d09ed`.
 - The action downloads that exact artifact, validates the original V29 QA
   report and verifies fullscreen, cursor, touch, localization, AI and shell
-  gameplay files byte-for-byte with `cmp`. The large Emscripten runtime
-  differs in **exactly two literal startup timeouts**, checked against the
-  original source by `playgama/patch_v29_startup_timeout.py`. Gameplay,
-  rendering logic and WASM content remain unchanged.
+  gameplay files byte-for-byte with `cmp`. The large Emscripten JS runtime differs in the **two startup timeouts**
+  and one profile-driven framebuffer upload throttle, all byte-exact
+  checked against original V29 with `playgama/patch_v29_startup_timeout.py`
+  and `playgama/patch_v29_frame_upload.py`. Native WASM and game simulation
+  remain unchanged.
 - Playgama packaging replaces the Yandex SDK bootstrap, adds the
   Bridge adapter/config/cloud-save module, and narrowly patches the ad policy,
-  unsupported leaderboard response, and two runtime startup timeouts.
+  unsupported leaderboard response, two runtime startup timeouts, and a
+  WebGL texture upload throttling guard.
   A missing original Yandex V29 artifact **fails the build** instead of
   substituting an older runtime.
 
@@ -46,7 +48,7 @@ preserves falsy values such as `0`, omits absent keys, and **propagates
 failed reads/writes** instead of quietly returning an empty save or pretending
 that a failed upload succeeded.
 
-**V5 cloud save upgrade (experimental):** the new module is loaded
+**V6 cloud save upgrade (experimental):** the new module is loaded
 after `yandex-bridge.js` and replaces ONLY the Yandex
 `yandexRestoreOpenTTDCloud`/`yandexBackupOpenTTDCloud` hooks.
 It removes the previous 120,000-byte client upload ceiling by encoding the
@@ -64,8 +66,8 @@ Startup cloud restore is limited to a **6.5-second budget**. The original
 Yandex V29 Emscripten startup would give up on cloud restore after 2.5 seconds,
 which could allow a slow cloud response to write into the already-running
 game. V5 changes that outer timeout to **8.5 seconds** and the native
-filesystem/watchdog timeout from 8 to **14 seconds**. Both edits are
-mechanically verified as the ONLY compiled JS runtime differences from V29.
+filesystem/watchdog timeout from 8 to **14 seconds**. Both timeout edits plus the separately verified framebuffer-upload guard
+are the ONLY compiled JS runtime differences from V29.
 An expired 6.5-second cloud request does not restore local files after
 gameplay has started; the game instead continues with local IDBFS progress. Existing V29
 `openttdSaveV1`, `openttdConfigV1`, and `openttdMobileConfigV1`
@@ -84,19 +86,52 @@ large save files, reload and cross-device restores with the Playgama QA tool.
 
 ### Ads and ranking
 
-Interstitial minimum/initial delays are both 150 seconds. The Playgama V5
+Interstitial minimum/initial delays are both **180 seconds**. The Playgama V6
 package removes the Yandex V29 timer that could interrupt active gameplay
-after 150 seconds. Instead, after sufficient gameplay, the existing
+after 180 seconds. Instead, after at least three minutes of active gameplay, the existing
 `yandexGameSetGameplay(false)` path requests ads only when returning to
 a menu or other natural game pause. The exact patch is mechanically verified
 against the Yandex V29 source and dynamically tested in Node VM.
 Pause/resume/audio restoration must
 be verified during Playgama QA. Rewarded ads and in-game banners are disabled.
 The adapter reports leaderboard methods as available only if the active
-platform supports the relevant leaderboard type. The V5 shell displays an
+platform supports the relevant leaderboard type. The V6 shell displays an
 offline status instead of attempting an unsupported leaderboard fetch. Playgama's native
 `playgama` adapter does not provide ordinary `in_game` leaderboards by
 default; optional SaaS leaderboards require separate configuration.
+
+### Performance diagnosis (Firefox profile from 2026-10-11)
+
+- Recorded game tab: about **8.7 seconds** at 1 ms sample interval;
+  **6.41 seconds of CPU time** on the game main thread.
+- Around **2.22 seconds of CPU time** is observed in
+  `WebGLRenderingContext.texSubImage2D → memcpy`, caused by full framebuffer
+  texture upload every browser refresh tick, even on high-refresh monitors.
+- V6 alters only the JS framebuffer presenter: **upload no more than about
+  30 frames per second** in steady state, without slowing native simulation
+  and input ticks; redraw is forced immediately on canvas resize or a new
+  WebGL context. This limits browser/GPU copying cost but has **not** yet
+  been benchmarked on the end-user system after redeployment.
+- Re-measure CPU/frame time with Firefox Profiler after installing V6.
+  Verify panning, native UI animation and hover feel before publishing.
+
+### Advertisements and debugging
+
+- The interstitial API was **already integrated** through the Playgama Bridge;
+  it was not disabled. V6 switches both SDK min/initial cooldown and native
+  ad eligibility to **180 seconds**. An actual ad is **requested at the next
+  user-driven logical pause/menu** after this threshold, *not during active
+  simulation*, because Playgama's policies prohibit interrupting gameplay.
+- The SDK reports its interstitial support in the console via
+  `[Playgama/OpenTTD] Interstitial SDK:` on init.
+- User's Firefox console reported failure to load
+  `https://playgama.com/ads/v0.3.js?clid=playgama_ai`. The profile also
+  lists the Adblock Plus extension. Try QA with a browser profile without
+  adblocking before treating absent ads as a game integration error.
+  Sandbox/test ad inventory may differ from production; real show
+  callbacks cannot be guaranteed locally.
+- On a rejected Bridge `showInterstitial()` Promise, V6 clears its
+  ad-pause state instead of leaving the game frozen.
 
 ## Publication requirements and QA
 
@@ -119,8 +154,8 @@ CI runs `node playgama/test-playgama-bridge-v2.cjs`,
 `node playgama/test-v29-chunked-cloud.cjs` (large-save round trip,
 failed write, corrupted slot, malformed metadata, old-format import, stale
 offline saves, timed-out responses, authorization recovery, and local fallback).
-The byte-exact native timeout patch is also validated by Python in CI.
-It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V5-from-Yandex-V29.zip`
+The byte-exact native timeout patch and frame-upload patch are validated by Python; an executable JavaScript test confirms high-refresh uploads are capped and window resizes bypass the cap.
+It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V6-from-Yandex-V29.zip`
 plus SHA-256 and results report. **A successful CI run is not equivalent to
 passing the hosted Playgama QA/moderation tests.**
 
