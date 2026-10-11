@@ -1,4 +1,4 @@
-# OpenTTD Playgama V3 — based on verified Yandex V29
+# OpenTTD Playgama V4 — based on verified Yandex V29
 
 This is **not** the old Playgama v10 runtime. The active release pipeline is
 `.github/workflows/build-playgama-from-yandex-v29.yml`, running on branch
@@ -42,12 +42,27 @@ preserves falsy values such as `0`, omits absent keys, and **propagates
 failed reads/writes** instead of quietly returning an empty save or pretending
 that a failed upload succeeded.
 
-**Known limitation of Yandex V29 inherited by this port:** the original
-`yandex-bridge.js` only uploads a newest `.sav` up to **120,000 bytes** to
-the platform storage. Larger saves are still persisted in IndexedDB locally,
-but **cross-device cloud transfer of these files is not yet implemented**.
-Do not describe large-save cloud sync as working until chunked uploads and
-a bounded-time restore are implemented and tested on real Playgama accounts.
+**V4 cloud save upgrade (experimental):** the new module is loaded
+after `yandex-bridge.js` and replaces ONLY the Yandex
+`yandexRestoreOpenTTDCloud`/`yandexBackupOpenTTDCloud` hooks.
+It removes the previous 120,000-byte client upload ceiling by encoding the
+**most recent** OpenTTD `.sav` into Base64 and splitting it into 64 KiB text
+chunks. It keeps two independent metadata generations (slots A/B),
+writes all chunks before their commit marker, validates size and CRC32 on
+restore, and falls back to the previous valid slot if the latest is corrupt.
+Writes are debounced and serialized; unchanged files are not uploaded again.
+A 64 MiB **client memory-safety ceiling** applies (not a Playgama quota).
+
+Startup cloud restore is limited to a 6.5-second budget, after which the
+game continues with existing local IDBFS progress. Existing V29
+`openttdSaveV1`, `openttdConfigV1`, and `openttdMobileConfigV1`
+records can be imported. Cloud synchronization is attempted only when
+Playgama `platform_internal` storage is both supported and available.
+Some portals require player authorization. Total cloud storage limits,
+per-value limits, real account authorization and cross-device persistence
+must be checked in hosted Playgama QA: passing local tests cannot prove
+that a portal accepts arbitrary large saves. If the cloud quota rejects an
+upload, the **local** save must remain intact and an error is logged.
 
 Browser-local OpenTTD persistence is inherited from the V29 runtime. The
 automated tests verify SDK API compatibility, **not** that a real Playgama
@@ -56,7 +71,7 @@ large save files, reload and cross-device restores with the Playgama QA tool.
 
 ### Ads and ranking
 
-Interstitial minimum/initial delays are both 150 seconds. The Playgama V3
+Interstitial minimum/initial delays are both 150 seconds. The Playgama V4
 package removes the Yandex V29 timer that could interrupt active gameplay
 after 150 seconds. Instead, after sufficient gameplay, the existing
 `yandexGameSetGameplay(false)` path requests ads only when returning to
@@ -65,7 +80,7 @@ against the Yandex V29 source and dynamically tested in Node VM.
 Pause/resume/audio restoration must
 be verified during Playgama QA. Rewarded ads and in-game banners are disabled.
 The adapter reports leaderboard methods as available only if the active
-platform supports the relevant leaderboard type. The V3 shell displays an
+platform supports the relevant leaderboard type. The V4 shell displays an
 offline status instead of attempting an unsupported leaderboard fetch. Playgama's native
 `playgama` adapter does not provide ordinary `in_game` leaderboards by
 default; optional SaaS leaderboards require separate configuration.
@@ -86,10 +101,12 @@ default; optional SaaS leaderboards require separate configuration.
   including the tutorial, vehicle purchases, map scrolling, settings and
   sound state across tab switches.
 
-CI runs `node playgama/test-playgama-bridge-v2.cjs` plus the integration
-test `node playgama/test-v29-natural-break-ads.cjs`, and creates
-`OpenTTD-v14-Playgama-Desktop-Mobile-V3-from-Yandex-V29.zip` plus
-SHA-256 and results report. **A successful CI run is not equivalent to
+CI runs `node playgama/test-playgama-bridge-v2.cjs`,
+`node playgama/test-v29-natural-break-ads.cjs`, and
+`node playgama/test-v29-chunked-cloud.cjs` (large-save round trip,
+failed write, corrupted slot, old-format import and offline fallback).
+It creates `OpenTTD-v14-Playgama-Desktop-Mobile-V4-from-Yandex-V29.zip`
+plus SHA-256 and results report. **A successful CI run is not equivalent to
 passing the hosted Playgama QA/moderation tests.**
 
 ## Licensing and source
