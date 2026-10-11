@@ -131,7 +131,7 @@ jobs:
             openttd-shell-2.js \
             openttd-yandex-shell-i18n.js \
             openttd-yandex-web-keys.js \
-            openttd-vanilla-migration.js \
+            openttd-vanilla-migration.js
           do
             cmp "/tmp/v29-base/$file" "dist-playgama/$file"
           done
