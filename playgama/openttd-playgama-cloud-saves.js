@@ -27,6 +27,7 @@
   const READ_BATCH = 16;
   const WRITE_BATCH = 4;
   const MAX_SAVE_BYTES = 64 * 1024 * 1024; // browser safety guard, not a platform quota
+  const MAX_CHUNKS = Math.ceil(Math.ceil(MAX_SAVE_BYTES / 3) * 4 / CHUNK_CHARS);
   const CLOUD_DEBOUNCE_MS = 2500;
   const CLOUD_MIN_WRITE_MS = 10000;
   const RESTORE_STARTUP_BUDGET_MS = 6500;
@@ -38,6 +39,7 @@
   let lastCloudWriteAt = 0;
   let storageInfoPromise = null;
   let latestRemoteMeta = null;
+  let lastCloudConfigText = null;
 
   const bridgeReady = window.playgamaBridgeReady || Promise.resolve(window.bridge || null);
 
@@ -161,7 +163,15 @@
         return null;
       }
       return { bridge, type: internalType };
-    })();
+    })().then(info => {
+      // Authorization can change during a session. Re-check if unavailable,
+      // rather than permanently disabling cloud saves after one guest lookup.
+      if (!info) storageInfoPromise = null;
+      return info;
+    }, error => {
+      storageInfoPromise = null;
+      throw error;
+    });
     return storageInfoPromise;
   }
 
@@ -203,7 +213,14 @@
       if (!meta || Number(meta.version) !== CLOUD_VERSION || meta.slot !== slot) continue;
       const chunks = Number(meta.chunks);
       const size = Number(meta.size);
-      if (!Number.isInteger(chunks) || chunks <= 0 || !Number.isFinite(size) || size <= 0 || size > MAX_SAVE_BYTES) continue;
+      if (!Number.isInteger(chunks) || chunks <= 0 || chunks > MAX_CHUNKS ||
+          !Number.isInteger(size) || size <= 0 || size > MAX_SAVE_BYTES) continue;
+      // Reject forged metadata before allocating a potentially enormous chunk
+      // array or consuming the entire 6.5-second startup budget.
+      const expectedBase64Length = Math.ceil(size / 3) * 4;
+      if (chunks !== Math.ceil(expectedBase64Length / CHUNK_CHARS) ||
+          Number(meta.base64Length) !== expectedBase64Length ||
+          (meta.chunkChars != null && Number(meta.chunkChars) !== CHUNK_CHARS)) continue;
       metas.push(meta);
     }
     metas.sort((x, y) => Number(y.mtime || y.updatedAt || 0) - Number(x.mtime || x.updatedAt || 0));
@@ -324,12 +341,11 @@
   }
 
   async function writeConfig(FS, personalDir) {
-    const config = {
-      version: CLOUD_VERSION,
-      updatedAt: Date.now(),
-      config: readConfig(FS, personalDir),
-    };
+    const text = readConfig(FS, personalDir);
+    if (text === lastCloudConfigText) return;
+    const config = { version: CLOUD_VERSION, updatedAt: Date.now(), config: text };
     await storageSet(CONFIG_KEY, config);
+    lastCloudConfigText = text;
   }
 
   async function writeSave(FS, personalDir) {
@@ -349,6 +365,12 @@
     const current = metas[0] || latestRemoteMeta;
     if (metaMatchesLocal(current, { ...save, bytes }, bytes.length)) {
       return { state: 'unchanged', bytes: bytes.length };
+    }
+    if (current && statTime(save.stat) < Number(current.mtime || 0)) {
+      // When a player resumes an older offline session on another device,
+      // never silently destroy a newer cloud backup. A new local save with
+      // a newer mtime may still be intentionally uploaded afterwards.
+      return { state: 'remote-newer', bytes: bytes.length, remoteMtime: Number(current.mtime || 0) };
     }
 
     const targetSlot = current?.slot === 'a' ? 'b' : 'a';
@@ -432,7 +454,9 @@
       }
       const configValues = await storageGet(
         [CONFIG_KEY, LEGACY_CONFIG_KEY, 'openttdMobileConfigV1'], deadline);
+      remainingBudget(deadline);
       if (Array.isArray(configValues)) {
+        if (typeof configValues[0]?.config === 'string') lastCloudConfigText = configValues[0].config;
         restoreConfig(FS, personalDir, configValues[0]);
         if (!configValues[0]) restoreConfig(FS, personalDir, configValues[2] || configValues[1]);
       }
