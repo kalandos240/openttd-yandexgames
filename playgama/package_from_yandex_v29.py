@@ -8,6 +8,8 @@ import shutil
 BRIDGE_URL = "https://bridge.playgama.com/v2/stable/playgama-bridge.js"
 BRIDGE_TAG = f'<script src="{BRIDGE_URL}"></script>'
 ADAPTER_TAG = '<script src="playgama-yandex-compat.js"></script>'
+CLOUD_TAG = '<script src="openttd-playgama-cloud-saves.js"></script>'
+V29_BRIDGE_TAG = '<script src="yandex-bridge.js"></script>'
 
 NOTICE = """OpenTTD Playgama build
 ======================
@@ -16,10 +18,13 @@ Platform SDK: Playgama Bridge v2 stable.
 
 The V29 OpenTTD runtime, adaptive viewport, mobile/touch behavior, AI bundle,
 localization and gameplay are preserved. Only the platform bootstrap is
-replaced with the Playgama Bridge compatibility layer.
+replaced with the Playgama Bridge compatibility layer. Playgama-specific
+chunked cloud saves replace the legacy 120 KB Yandex cloud hook; locally
+persisted save files are not removed or reset.
 
 Interstitial ads use the existing safe gameplay interval and pause/resume hooks.
-Cloud data is mapped through Bridge v2 storage. Global ranking uses the
+Cloud data is stored in platform_internal using Bridge v2 array-based storage,
+in alternating A/B slots with CRC32 and a bounded cold-start restore. Global ranking uses the
 companyrating leaderboard through Bridge v2 leaderboards.
 Rewarded and banner ads are disabled because this port has no matching mechanic.
 """
@@ -32,6 +37,12 @@ def patch_index(html: str) -> str:
         html = html.replace(yandex, replacement, 1)
     elif BRIDGE_URL not in html or 'playgama-yandex-compat.js' not in html:
         raise SystemExit("yandex-bootstrap.js insertion point is missing")
+    if CLOUD_TAG not in html:
+        if html.count(V29_BRIDGE_TAG) != 1:
+            raise SystemExit("Cannot install Playgama cloud saves: V29 bridge anchor missing")
+        html = html.replace(V29_BRIDGE_TAG, V29_BRIDGE_TAG + CLOUD_TAG, 1)
+    if html.count(CLOUD_TAG) != 1:
+        raise SystemExit("Cloud adapter script appears more than once")
     return html
 
 
@@ -40,6 +51,7 @@ def main() -> None:
     ap.add_argument("dist", type=Path)
     ap.add_argument("--adapter", type=Path, required=True)
     ap.add_argument("--config", type=Path, required=True)
+    ap.add_argument("--cloud-saves", type=Path, required=True)
     args = ap.parse_args()
 
     dist = args.dist.resolve()
@@ -52,6 +64,7 @@ def main() -> None:
 
     shutil.copy2(args.adapter, dist / "playgama-yandex-compat.js")
     shutil.copy2(args.config, dist / "playgama-bridge-config.json")
+    shutil.copy2(args.cloud_saves, dist / "openttd-playgama-cloud-saves.js")
 
     for obsolete in ("yandex-bootstrap.js", "YANDEX-INTEGRATION.txt"):
         path = dist / obsolete
