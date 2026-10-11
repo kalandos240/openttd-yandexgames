@@ -82,14 +82,14 @@ function filesystem(original={}) {
     syncfs(populate, callback) {callback(null);},
   };
 }
-function boot(storageBackend, fsApi) {
+function boot(storageBackend, fsApi, options={}) {
   const logs = { errors:[],warnings:[] };
   const env={
     bridge: {storage:storageBackend.impl, STORAGE_TYPE:{PLATFORM_INTERNAL:'platform_internal'}},
     Module:{calledRun:true,postRun:[]}, console:{
       info() {}, warn(...args){logs.warnings.push(args);},error(...args){logs.errors.push(args);}
     },
-    Uint8Array, Date, Promise, btoa, atob, setTimeout, clearTimeout,
+    Uint8Array, Date:options.Date||Date, Promise, btoa, atob, setTimeout, clearTimeout,
     requestIdleCallback(callback) {setTimeout(callback,0);},
   };
   env.window=env;env.playgamaBridgeReady=Promise.resolve(env.bridge);
@@ -119,6 +119,20 @@ async function main() {
   assert.equal(app.status().backup.slot,'a');
   assert.equal(backend.map.get('openttdSaveMetaV2A').chunks>4,true);
   assert.equal(backend.writes.at(-1),'openttdSaveMetaV2A','commit metadata last');
+  // Subsequent syncs must not rewrite identical config or identical save.
+  const firstConfigWrites = backend.writes.filter(k => k === 'openttdConfigV2').length;
+  await app.save();
+  assert.equal(app.status().backup.state,'unchanged');
+  assert.equal(backend.writes.filter(k => k === 'openttdConfigV2').length,firstConfigWrites);
+
+  // A stale offline device must NOT overwrite a newer committed cloud save.
+  const remoteMeta = backend.map.get('openttdSaveMetaV2A');
+  const staleFS = filesystem({[dir+'transport.sav']:bytes(300000,44)});
+  staleFS.files.get(dir+'transport.sav').mtime = remoteMeta.mtime - 60000;
+  const staleApp = boot(backend,staleFS);
+  await staleApp.save();
+  assert.equal(staleApp.status().backup.state,'remote-newer');
+  assert.equal(backend.map.get('openttdSaveMetaV2A').mtime,remoteMeta.mtime);
 
   const fs2=filesystem();
   app=boot(backend,fs2);
@@ -153,6 +167,35 @@ async function main() {
   await app.restore();
   same(fs4.readFile(dir+'transport.sav'),second);
 
+  // Malformed metadata should be rejected before allocating millions of
+  // chunk keys. The other valid slot must be restored normally.
+  backend.map.set('openttdSaveMetaV2A',{
+    ...backend.map.get('openttdSaveMetaV2A'),chunks:100000000
+  });
+  const fsBadMeta=filesystem();
+  const badMetaApp=boot(backend,fsBadMeta);
+  await badMetaApp.restore();
+  same(fsBadMeta.readFile(dir+'transport.sav'),second);
+
+  // A cloud response that arrives after the startup budget expires must
+  // not write into MEMFS after native OpenTTD may have entered gameplay.
+  let virtualNow=Date.now();
+  class FakeDate extends Date {static now(){return virtualNow;}}
+  const delayed=storage();
+  for(const [key,value] of backend.map) delayed.map.set(key,value);
+  const originalGet=delayed.impl.get;
+  delayed.impl.get=async (keys,type)=>{
+    const out=await originalGet(keys,type);
+    if(keys.some(k=>k.startsWith('openttdSaveChunk'))) virtualNow+=7000;
+    return out;
+  };
+  const fsDelayed=filesystem();
+  const lateApp=boot(delayed,fsDelayed,{Date:FakeDate});
+  await lateApp.restore();
+  assert.equal(fsDelayed.files.has(dir+'transport.sav'),false,
+    'Cloud response past 6500ms must not overwrite a live game');
+  assert.equal(lateApp.status().restored,false);
+
   // Legacy Yandex data must migrate without needing an existing local save.
   const old=storage(), legacy=bytes(151000,99);
   old.map.set('openttdSaveV1', {
@@ -173,7 +216,11 @@ async function main() {
   await app.save();
   same(fs6.readFile(dir+'local.sav'),existing);
   assert.equal(app.status().available,false);
+  off.available=true;
+  await app.save();
+  assert.equal(app.status().backup.state,'uploaded',
+    'Cloud backup must recover when player authorizes storage later');
 
-  console.log('Playgama cloud saves: >120 KB, A/B commits, corruption, legacy migration, offline fallback: PASS');
+  console.log('Playgama cloud saves: >120 KB, A/B commits, corruption, stale device, timeout, legacy migration, storage availability: PASS');
 }
 main().catch(e => {console.error(e);process.exitCode=1;});
