@@ -67,6 +67,7 @@ function makeEnvironment(options = {}) {
       off(name) { adListeners.delete(name); },
       showInterstitial() {
         calls.ads++;
+        if (options.rejectAd) return Promise.reject(new Error('advertisement request rejected'));
         const listener = adListeners.get('interstitial_state_changed');
         if (listener) {
           listener('opened');
@@ -136,7 +137,7 @@ async function main() {
   assert.equal(calls.ads, 1);
   assert.equal(opened, 1);
   assert.equal(closed, 1);
-  assert.equal(calls.minimumAdDelay, 150);
+  assert.equal(calls.minimumAdDelay, 180);
 
   assert.equal(await sdk.isAvailableMethod('leaderboards.getEntries'), true);
   assert.equal(await sdk.isAvailableMethod('leaderboards.setScore'), true);
@@ -150,6 +151,17 @@ async function main() {
   assert.equal(await unavailable.isAvailableMethod('leaderboards.getEntries'), false);
   assert.equal(await unavailable.isAvailableMethod('leaderboards.setScore'), false);
   assert.equal(await unavailable.isAvailableMethod('adv.showFullscreenAdv'), false);
+
+  // A provider may reject showInterstitial() without emitting FAILED.
+  // The platform adapter must release its pause and call onError exactly once.
+  const rejectedAdsEnv = makeEnvironment({ rejectAd: true });
+  const rejectedAdsSdk = await rejectedAdsEnv.env.yandexGamesSDKReady;
+  let errorCount = 0;
+  rejectedAdsSdk.adv.showFullscreenAdv({ callbacks: {
+    onError(e) { assert.match(String(e), /advertisement request rejected/); errorCount++; }
+  } });
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  assert.equal(errorCount, 1, 'Rejected ad Promise must not hang game pause');
 
   const failedRead = await makeEnvironment({ failRead: true }).env.yandexGamesSDKReady;
   await assert.rejects(
