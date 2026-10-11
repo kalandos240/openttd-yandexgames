@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+OLD_FREQUENCY = '  const AD_MIN_GAMEPLAY_MS = 150 * 1000;\n  const AD_MIN_INTERVAL_MS = 150 * 1000;'
+NEW_FREQUENCY = '  const AD_MIN_GAMEPLAY_MS = 180 * 1000;\n  const AD_MIN_INTERVAL_MS = 180 * 1000;'
+
 OLD_AD = '''  function scheduleAdDueTimer() {
     clearAdDueTimer();
     if (!gameplayActive || adOpen || adCountdownActive || !pageVisible || yandexPauseEventActive) return;
@@ -46,6 +49,7 @@ def replace_exact(path: Path, before: str, after: str) -> None:
 
 def patch(root: Path) -> None:
     replace_exact(root/'yandex-bridge.js', OLD_AD, NEW_AD)
+    replace_exact(root/'yandex-bridge.js', OLD_FREQUENCY, NEW_FREQUENCY)
     replace_exact(root/'openttd-global-ranking.js', OLD_RANK, NEW_RANK)
     replace_exact(root/'index.html', OLD_COMMENT, NEW_COMMENT)
     assert_patched(root)
@@ -55,6 +59,8 @@ def assert_patched(root: Path) -> None:
     ad = (root/'yandex-bridge.js').read_text(encoding='utf-8')
     rank = (root/'openttd-global-ranking.js').read_text(encoding='utf-8')
     html = (root/'index.html').read_text(encoding='utf-8')
+    if OLD_FREQUENCY in ad or ad.count(NEW_FREQUENCY) != 1:
+        raise SystemExit('Playgama 180-second ad interval patch is missing')
     if OLD_AD in ad or ad.count(NEW_AD) != 1:
         raise SystemExit('Playgama natural-break ads patch is missing or incomplete')
     if "maybeShowInterstitial('logical-pause');" not in ad:
@@ -71,9 +77,12 @@ def verify_exact_delta(pristine: Path, patched: Path) -> None:
     """Prove packaging touched only three declared text regions."""
     for name, before, after in (
         ('yandex-bridge.js', OLD_AD, NEW_AD),
+        ('yandex-bridge.js', OLD_FREQUENCY, NEW_FREQUENCY),
         ('openttd-global-ranking.js', OLD_RANK, NEW_RANK),
     ):
-        expected = (pristine/name).read_text(encoding='utf-8').replace(before, after, 1)
+        original = (pristine/name).read_text(encoding='utf-8')
+        expected = original.replace(OLD_AD, NEW_AD, 1).replace(
+            OLD_FREQUENCY, NEW_FREQUENCY, 1) if name == 'yandex-bridge.js' else original.replace(before, after, 1)
         actual = (patched/name).read_text(encoding='utf-8')
         if expected != actual:
             raise SystemExit(f'Unexpected Playgama customization outside approved patch: {name}')
