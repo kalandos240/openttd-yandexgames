@@ -32,6 +32,7 @@
   const CLOUD_MIN_WRITE_MS = 10000;
   const RESTORE_STARTUP_BUDGET_MS = 6500;
   const STORAGE_REQUEST_TIMEOUT_MS = 5000;
+  const BRIDGE_INITIALIZATION_BUDGET_MS = 1800;
 
   let cloudTimer = 0;
   let cloudWriteInFlight = false;
@@ -141,7 +142,17 @@
   async function resolveStorageInfo() {
     if (storageInfoPromise) return storageInfoPromise;
     storageInfoPromise = (async () => {
-      const bridge = await bridgeReady;
+      // The SDK CDN can hang on a new Playgama sandbox visit. Its network
+      // initialization is optional and must not stall OpenTTD's first launch.
+      // On timeout, retain local IDBFS; a later backup can retry once the
+      // Playgama SDK actually becomes available.
+      let bridge;
+      try {
+        bridge = await deadlinePromise(bridgeReady, BRIDGE_INITIALIZATION_BUDGET_MS);
+      } catch (error) {
+        console.info('[Playgama/OpenTTD] Bridge initialization delayed; starting with local files.', error);
+        return null;
+      }
       if (!bridge?.storage) return null;
 
       const internalType = bridge.STORAGE_TYPE?.PLATFORM_INTERNAL || 'platform_internal';
@@ -204,8 +215,8 @@
     return true;
   }
 
-  async function readSlotMetas(deadline) {
-    const values = await storageGet([SLOT_META.a, SLOT_META.b], deadline);
+  async function readSlotMetas(deadline, prefetched = null) {
+    const values = prefetched || await storageGet([SLOT_META.a, SLOT_META.b], deadline);
     const metas = [];
     for (let i = 0; i < 2; i++) {
       const slot = i === 0 ? 'a' : 'b';
@@ -452,22 +463,24 @@
         window.__openttdPlaygamaCloudStatus = { available: false, reason: 'platform_internal unavailable; local IDBFS active' };
         return;
       }
-      const configValues = await storageGet(
-        [CONFIG_KEY, LEGACY_CONFIG_KEY, 'openttdMobileConfigV1'], deadline);
+      // One Bridge round-trip rather than three sequential requests on every
+      // cold launch (settings, V2 slot headers and the old Yandex save key).
+      const initial = await storageGet(
+        [CONFIG_KEY, LEGACY_CONFIG_KEY, 'openttdMobileConfigV1',
+          SLOT_META.a, SLOT_META.b, LEGACY_SAVE_KEY], deadline);
       remainingBudget(deadline);
-      if (Array.isArray(configValues)) {
-        if (typeof configValues[0]?.config === 'string') lastCloudConfigText = configValues[0].config;
-        restoreConfig(FS, personalDir, configValues[0]);
-        if (!configValues[0]) restoreConfig(FS, personalDir, configValues[2] || configValues[1]);
+      if (Array.isArray(initial)) {
+        if (typeof initial[0]?.config === 'string') lastCloudConfigText = initial[0].config;
+        restoreConfig(FS, personalDir, initial[0]);
+        if (!initial[0]) restoreConfig(FS, personalDir, initial[2] || initial[1]);
       }
 
-      const metas = await readSlotMetas(deadline);
+      const metas = await readSlotMetas(deadline, initial.slice(3, 5));
       let restored = false;
       if (metas.length) restored = await restoreV2Save(FS, personalDir, metas, deadline);
 
       if (!restored && !metas.length) {
-        const legacy = await storageGet(LEGACY_SAVE_KEY, deadline);
-        restored = restoreLegacySave(FS, personalDir, legacy, deadline);
+        restored = restoreLegacySave(FS, personalDir, initial[5], deadline);
       }
 
       if (restored) {
