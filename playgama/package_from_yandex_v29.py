@@ -16,11 +16,13 @@ NOTICE = """OpenTTD Playgama build
 Base: verified Yandex V29 package (commit 646b534248c8984c5cac97fbdf5c63f14e5d09ed).
 Platform SDK: Playgama Bridge v2 stable.
 
-The V29 OpenTTD runtime, adaptive viewport, mobile/touch behavior, AI bundle,
-localization and gameplay are preserved. Only the platform bootstrap is
-replaced with the Playgama Bridge compatibility layer. Playgama-specific
-chunked cloud saves replace the legacy 120 KB Yandex cloud hook; locally
-persisted save files are not removed or reset.
+The V29 OpenTTD gameplay implementation, WASM content, adaptive viewport,
+touch controls, AI and localization are preserved. Two startup timeout
+constants in the compiled JS runtime are intentionally changed and
+byte-diff-verified: cloud restore 2500->8500 ms and watchdog 8000->14000 ms.
+The Playgama Bridge replaces the Yandex SDK and a Playgama cloud module
+replaces the original 120 KB upload hook. Local IDBFS files are not removed.
+Cloud storage quotas and cloud sync between real devices remain unverified.
 
 Interstitial ads use the existing safe gameplay interval and pause/resume hooks.
 Cloud data is stored in platform_internal using Bridge v2 array-based storage,
@@ -92,7 +94,7 @@ def main() -> None:
     if bad:
         raise SystemExit(f"Invalid archive paths: {bad}")
 
-    print(f"Playgama V1 package ready: {dist}")
+    print(f"Playgama V5 package ready: {dist}")
     print(f"Unpacked bytes: {total}")
 
 
