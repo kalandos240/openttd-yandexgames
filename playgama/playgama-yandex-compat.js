@@ -92,7 +92,11 @@
     document.documentElement.dataset.playgamaBridge = 'ready';
     document.documentElement.dataset.playgamaBridgeVersion = String(bridge.version || 'v2');
 
-    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(150); } catch (_) {}
+    try { bridge.advertisement?.setMinimumDelayBetweenInterstitial?.(180); } catch (_) {}
+
+    console.info('[Playgama/OpenTTD] Interstitial SDK:', bridge.advertisement?.isInterstitialSupported === true
+      ? 'supported; eligible every 180 seconds at natural pauses'
+      : 'unavailable on current platform; check ad blockers and Playgama QA');
 
     platformAudioEnabled = bridge.platform?.isAudioEnabled !== false;
     if (!platformAudioEnabled) pauseTrackedAudio();
@@ -207,8 +211,18 @@
     };
 
     advertisement.on?.(eventName, listener);
-    try { advertisement.showInterstitial(options.placement || null); }
-    catch (error) {
+    try {
+      const result = advertisement.showInterstitial(options.placement || null);
+      // Some platform providers reject the Promise but emit no FAILED event.
+      // End the local pause instead of leaving OpenTTD blocked indefinitely.
+      Promise.resolve(result).catch((error) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        setPauseReason('interstitial', false);
+        safeCall(callbacks.onError, error);
+      });
+    } catch (error) {
       finished = true;
       cleanup();
       setPauseReason('interstitial', false);
